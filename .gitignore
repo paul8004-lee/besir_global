@@ -1,0 +1,12 @@
+build/
+build-device/
+DerivedData/
+**/xcuserdata/
+*.xcuserstate
+.DS_Store
+proxy/.dev.vars
+proxy/.dev.vars.*
+proxy/.wrangler/
+proxy/node_modules/
+.env
+.env.*
