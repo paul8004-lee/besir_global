@@ -10,3 +10,4 @@ proxy/.wrangler/
 proxy/node_modules/
 .env
 .env.*
+HACKATHON.md
