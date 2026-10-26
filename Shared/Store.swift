@@ -15,19 +15,6 @@ final class Store: ObservableObject {
     /// 식사 기록(be full sir). 시간표에 그리는 블록이 아니라 "무엇을 먹었나"의 이력이라
     /// daysWithSchedule에는 넣지 않는다 — 식당까지 가는 이동은 별도 ScheduledEvent가 담당한다.
     @Published var meals: [MealLog] = []
-    /// besir 서버 계정 로그인 상태(SPEC-SYNC-002). 데이터 배열이 아니라 상태 하나라 저장 파일이 없고,
-    /// 세션은 Keychain에서 시작 때 복원한다. 계정 id는 `cloudAccount.userId`로 읽는다.
-    @Published var cloudAccount: CloudAccountState = CloudAccount.storedState()
-    /// 로그인·로그아웃·삭제·세션 확인을 하는 서비스(진행 표시·문구도 여기). 상태 자체는 위 `cloudAccount`.
-    private(set) lazy var cloudService = CloudAccount(store: self)
-    /// 서버가 구글 캘린더에 일정을 보여 주는 연결의 상태(SPEC-SYNC-007). 기기는 구글과 말하지 않으므로 이 값은
-    /// 서버 상태 응답을 그대로 옮긴 것이고 저장 파일이 없다 — 앱을 다시 켜면 `.none`에서 시작해 앞으로 올 때
-    /// 한 번 읽어 채운다. 화면·AI는 이 값과 아래 둘만 읽는다(계약 3).
-    @Published var googleLink: GoogleLinkState = .none
-    /// 구글이 거절해 반영되지 못한 항목 수. 같은 상태 응답에서 읽는다 — 항목 id 목록은 앱이 쓸 곳이 없어 읽지 않는다.
-    @Published var googleFailedCount = 0
-    /// 서버가 구글에 마지막으로 반영한 시각(없으면 nil).
-    @Published var googleLastSuccess: Date?
     /// "이 날짜에 일정이 있는가"만 O(1)로 확인하기 위한 캐시(yyyyMMdd 정수 키).
     /// 월간 캘린더 그리드는 이 값만 보고 점을 찍는다 — events/activities 전체를 매 프레임
     /// 스캔하면(특히 좌우 스와이프 애니메이션 중 여러 번 재계산되며) 버벅임이 생겼다.
@@ -103,35 +90,13 @@ final class Store: ObservableObject {
     /// 하나다. rescheduleNearestNotifications 꼬리에서 꺼낸다(REQ-009).
     private var pendingCatchUpIDs: Set<UUID> = []
 
-    /// 2단계 1회 정리(SPEC-SYNC-007 ②): 옛 기기 구글 동기화가 남긴 흔적을 시작 때 치운다.
-    /// 매 실행마다 지나가지만 효과는 첫 실행뿐이다 — 토큰도 묘비 파일도 두 번째 실행부터는 없다.
-    /// - Keychain의 옛 구글 리프레시 토큰: 기기가 구글과 직접 말하는 길은 1단계에서 닫혔고 2단계에
-    ///   코드도 사라진다. 항목이 없을 때의 `Keychain.delete`는 no-op라 별도 확인이 필요 없다.
-    /// - 옛 삭제 묘비 파일(아래 URL): 되살림을 막던 옛 동기화가 사라져 읽는 이가 없다. 없는 것이
-    ///   정상이라 없으면 그대로 둔다. 있는데 지우지 못하면 조용히 삼키지 않고 저장 실패 표지를 세운다 —
-    ///   실패해도 다음 실행이 또 시도해 위험은 없지만, "없어야 할 파일이 못 사라지는" 걸 아무도 모르는
-    ///   게 더 나쁘다(실패가 조용히 묻히는 결함의 반대 길).
-    private func cleanUpLegacyGoogleState() {
-        Keychain.delete("besir.google.refreshToken")
-        let tombstoneURL = AppConfig.supportDirectory.appendingPathComponent("deleted_gcal_ids.json")
-        guard FileManager.default.fileExists(atPath: tombstoneURL.path) else { return }
-        do { try FileManager.default.removeItem(at: tombstoneURL) }
-        catch { syncStorageWriteFailed = true }
-    }
-
     init(notifications: NotificationManager) {
         self.notifications = notifications
         self.config = AppConfig.load()
-        // 상태 파일을 데이터 파일보다 먼저 읽는다 — 데이터 파일을 못 읽었다는 표지(D15)는 어떤 저장보다 먼저
-        // 상태 파일에 적혀야 하는데, 그 표지를 적을 파일이 이 시점에 읽혀 있어야 한다.
-        syncFile = CloudSync.readStateFile()
         load()
         loadFavorites()
         loadActivities()
         loadMeals()
-        cleanUpLegacyGoogleState()
-        refreshCloudSyncState()
-        // 시작 시 동기화는 App의 scenePhase(.active)에서 호출한다(여기서 또 호출하면 중복 위험).
     }
 
     /// 점(달력 날짜 키)은 일간 나열과 같은 겹침 판정으로 채운다 — 자정을 넘는 블록은 구간이
@@ -774,13 +739,12 @@ final class Store: ObservableObject {
 
     private func saveActivities() {
         drvSaveActivitiesCount += 1   // t50 S1 — REQ-005 계수기(앱 논리 영향 없음)
-        noteLocalChanges(kind: .activity)
         try? FileManager.default.createDirectory(at: AppConfig.supportDirectory, withIntermediateDirectories: true)
-        if (try? JSONEncoder().encode(activities).write(to: activitiesURL)) == nil { syncStorageWriteFailed = true }
+        try? JSONEncoder().encode(activities).write(to: activitiesURL)
     }
 
     private func loadActivities() {
-        guard let decoded: [ActivityBlock] = loadDataFile(activitiesURL, kind: .activity) else { return }
+        guard let decoded: [ActivityBlock] = loadDataFile(activitiesURL) else { return }
         activities = decoded
     }
 
@@ -837,13 +801,12 @@ final class Store: ObservableObject {
 
     private func saveMeals() {
         drvSaveMealsCount += 1   // SPEC-SYNC-004 §2.6 계수기(앱 논리 영향 없음)
-        noteLocalChanges(kind: .meal)
         try? FileManager.default.createDirectory(at: AppConfig.supportDirectory, withIntermediateDirectories: true)
-        if (try? JSONEncoder().encode(meals).write(to: mealsURL)) == nil { syncStorageWriteFailed = true }
+        try? JSONEncoder().encode(meals).write(to: mealsURL)
     }
 
     private func loadMeals() {
-        guard let decoded: [MealLog] = loadDataFile(mealsURL, kind: .meal) else { return }
+        guard let decoded: [MealLog] = loadDataFile(mealsURL) else { return }
         meals = decoded.sorted { $0.loggedAt > $1.loggedAt }
     }
 
@@ -861,13 +824,12 @@ final class Store: ObservableObject {
 
     private func saveFavorites() {
         drvSaveFavoritesCount += 1   // SPEC-SYNC-004 §2.6 계수기(앱 논리 영향 없음)
-        noteLocalChanges(kind: .favorite)
         try? FileManager.default.createDirectory(at: AppConfig.supportDirectory, withIntermediateDirectories: true)
-        if (try? JSONEncoder().encode(favorites).write(to: favoritesURL)) == nil { syncStorageWriteFailed = true }
+        try? JSONEncoder().encode(favorites).write(to: favoritesURL)
     }
 
     private func loadFavorites() {
-        guard let decoded: [FavoritePlace] = loadDataFile(favoritesURL, kind: .favorite) else { return }
+        guard let decoded: [FavoritePlace] = loadDataFile(favoritesURL) else { return }
         favorites = decoded
     }
 
@@ -1465,10 +1427,9 @@ final class Store: ObservableObject {
     var drvRescheduleCount = 0
     var drvSaveCount = 0
     var drvSaveActivitiesCount = 0
-    /// SPEC-SYNC-004 §2.6 — 식사·즐겨찾기 저장과 상태 파일 쓰기 횟수. 앱 논리는 읽지 않는다.
+    /// SPEC-SYNC-004 §2.6 — 식사·즐겨찾기 저장 횟수. 앱 논리는 읽지 않는다.
     var drvSaveMealsCount = 0
     var drvSaveFavoritesCount = 0
-    var drvSyncStateWriteCount = 0
 
     /// 조회 결과 (초, 출처). nil은 조회 실패 — 대역에서도 실패 모양을 흉내 낼 수 있게 옵셔널이다.
     private func lookupTravelSeconds(_ mode: TransportMode, origin: Place, destination: Place) async
@@ -2437,202 +2398,13 @@ final class Store: ObservableObject {
         config.save()
     }
 
-    // MARK: - 기기 동기화: 변경 감지(SPEC-SYNC-004 §2.1)
-
-    /// 동기화 상태 파일(`CloudSync.stateFileURL`)의 메모리 사본. 저장마다 파일을 다시 읽으면 끌기 중 끊기므로 시작 때
-    /// 한 번 읽고, 쓰는 길은 `writeSyncFile` 하나로 모아 사본과 파일이 갈라지지 않게 한다.
-    /// `.absent`(로그인한 적 없음·로그아웃 뒤)와 `.unreadable`(손상)에서는 감지가 아무것도 하지 않는다 —
-    /// 못 읽는 파일을 빈 기준으로 바꿔 감지를 켜면 모든 항목이 새것이 되어 서버로 쏟아진다(R2).
-    private(set) var syncFile: CloudSyncFileStatus = .absent
-    /// 서버에서 받은 항목을 적용하는 동안 true — 적용이 배열을 바꾸고 저장 함수를 지나갈 때 그 변화가
-    /// "사용자의 고침"으로 감지되어 되돌려 올라가는 메아리를 막는다. 켜고 끄는 적용 함수는 뒤 단계(S2)에서 온다.
-    var isApplyingSyncChanges = false
-    /// 드라이버 대역: 같은 밀리초 안의 두 번째 고침(D2)을 결정적으로 재려고 시계를 고정한다. 앱 논리 영향 없음.
-    var drvSyncClock: (() -> Date)?
-
-    /// 화면(S4)이 읽는 동기화 상태 하나(계약 3). 상태 파일에서 파생하므로 값을 따로 들고 갈라지지 않게
-    /// `refreshCloudSyncState()` 한 곳에서만 다시 계산한다.
-    @Published var cloudSync = CloudSyncState()
-    /// 주기가 겹쳐 돌지 않게 하는 표지와, 진행 중에 또 불렸을 때 "끝난 뒤 한 번 더"의 출발점.
-    var syncCycleRunning = false
-    var syncRerunOrigin: CloudSyncOrigin?
-    /// 상태 파일이 없거나 깨져 `lastError`를 적을 곳이 없을 때의 마지막 실패(비저장) — 화면에는 보여야 한다.
-    var syncFailureWithoutFile: CloudSyncFailure?
-    /// 데이터 파일·상태 파일·백업 쓰기가 실패했다는 표지(비저장). 저장 함수는 동기라 실패를 돌려줄 곳이 없어
-    /// 여기 세워 두고, 주기의 마감이 `lastError`로 옮긴다 — `try?`로 삼키면 기준과 디스크가 어긋난 채 아무도 모른다.
-    var syncStorageWriteFailed = false
-    /// 최초 연결 ② 진행 중(비저장). 화면의 "처음 동기화하는 중…".
-    private(set) var syncFirstConnectInProgress = false
-    /// 이번 실행에서 읽지 못한 데이터 파일의 종류(비저장). 상태 파일이 없거나 깨져 표지를 적지 못한 경우에도
-    /// 통째 바꾸기가 그 파일을 새로 쓰게 한다 — 클라우드에 그 종류가 0개면 "바뀐 배열"이 아니라 깨진 파일이 남는다(C2).
-    private var syncUnreadableAtLoad = Set<SyncKind>()
-    /// 연달아 실패한 주기 수 — 묶음 트리거의 재시도 지연을 정한다(REQ-014). 성공하면 0. 비저장:
-    /// 앱을 다시 켜면 첫 시도는 늘 3초로 시작해도 된다.
-    var syncFailureCount = 0
-    private var syncDebounceTask: Task<Void, Never>?
-    /// 드라이버 대역 — 전송·세션·401 처리를 한꺼번에 가짜로 갈아 끼운다(실제 Keychain·네트워크를 쓰지 않음).
-    var drvSyncIO: CloudSyncIO?
-    /// 드라이버 대역: 묶음 타이머를 실제로 걸지 않고 정해진 지연만 알려 준다(타이머가 시험 중에 몰래 주기를 돌리지 않게).
-    var drvSyncDebounce: ((TimeInterval) -> Void)?
-
-    func refreshCloudSyncState() {
-        var file: CloudSyncFile?
-        if case .ready(let f) = syncFile { file = f }
-        let derived = CloudSyncState(file: file, isRunning: cloudSync.isRunning,
-                                     firstSyncInProgress: syncFirstConnectInProgress,
-                                     failureWithoutFile: syncFailureWithoutFile)
-        if derived != cloudSync { cloudSync = derived }   // 같은 값의 대입도 화면을 다시 그리게 한다
-    }
-
-    func setFirstSyncInProgress(_ on: Bool) {
-        syncFirstConnectInProgress = on
-        refreshCloudSyncState()
-    }
-
-    /// 동기화가 찍는 시각(고친 시각·백업 폴더 이름)의 한 출처 — 드라이버가 시계를 고정하면 둘 다 따른다.
-    var syncNow: Date { drvSyncClock?() ?? Date() }
-
-    /// 백업이 복사하는 네 데이터 파일. 경로가 `private`라 백업 쪽(`CloudSync.makeBackup`)은 이 목록으로만 안다.
-    var syncDataFileURLs: [URL] { [eventsURL, activitiesURL, mealsURL, favoritesURL] }
-
-    /// 지금 격리된 칸의 키 — [클라우드에서 다시 받기]의 먼저 밀어 넣기가 "새로 격리했는가"를 가르는 데 쓴다.
-    var syncQuarantinedKeys: Set<String> {
-        guard case .ready(let file) = syncFile else { return [] }
-        return Set(file.outbox.filter { $0.value.quarantined }.keys)
-    }
-
-    /// 상태 파일을 지우고 감지를 끈다(로그아웃, 최초 연결 ①의 409, 다른 계정 로그인).
-    func discardSyncStateFile() {
-        if !CloudSync.removeStateFile() { syncStorageWriteFailed = true }
-        syncFile = .absent
-        syncFailureWithoutFile = nil
-        refreshCloudSyncState()
-    }
-
-    /// 최초 연결 ①: 빈 기준에 모든 로컬 항목의 upsert 칸을 단 상태 파일을 쓴다. 칸을 만드는 규칙은 감지와 같은
-    /// 한 함수(`stampSyncChanges`)다 — ①만의 칸 만들기가 따로 있으면 시각·세대 규칙이 갈라진다.
-    func beginFirstUpload(userId: String?) {
-        var file = CloudSyncFile(userId: userId)
-        let now = syncNow
-        _ = stampSyncChanges(.event, items: events, file: &file, now: now)
-        _ = stampSyncChanges(.activity, items: activities, file: &file, now: now)
-        _ = stampSyncChanges(.meal, items: meals, file: &file, now: now)
-        _ = stampSyncChanges(.favorite, items: favorites, file: &file, now: now)
-        writeSyncFile(file)
-    }
-
-    /// 데이터 파일을 읽지 못했을 때(시작 때, 어떤 저장보다 먼저). 같은 이름·같은 바이트의 사본이 이미 어느 백업에
-    /// 있으면 새 백업을 만들지 않는다(R17). 표지는 상태 파일이 **읽힐 때만** 적는다 — 없으면 적을 곳이 없고, 깨진
-    /// 파일을 새로 쓰면 빈 기준의 읽히는 파일이 되어 감지가 다시 켜진다(R2, 그 경우는 REQ-009 경로가 다룬다).
-    private func noteUnreadableDataFile(_ kind: SyncKind, at url: URL) {
-        syncUnreadableAtLoad.insert(kind)
-        if !CloudSync.makeBackup(of: [url], now: syncNow, skipIfAlreadyBackedUp: true) { syncStorageWriteFailed = true }
-        guard case .ready(var file) = syncFile, !file.unreadable.contains(kind) else { return }
-        file.unreadable.append(kind)
-        writeSyncFile(file)
-    }
-
-    /// 로컬 변경이 생긴 뒤 3초(실패가 이어지면 늘어난 지연) 뒤에 주기를 돌린다. 새 변경이 오면 타이머를 다시 건다.
-    func armSyncDebounce() {
-        let delay = CloudSync.debounceDelay(consecutiveFailures: syncFailureCount)
-        if let drvSyncDebounce { drvSyncDebounce(delay); return }
-        syncDebounceTask?.cancel()
-        syncDebounceTask = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
-            catch { return }   // 취소는 오류가 아니라 "더 늦은 타이머가 대신한다"는 뜻이다
-            guard let self else { return }
-            await CloudSync.runCycle(self, origin: .debounce)
-        }
-    }
-
-    func cancelSyncDebounce() {
-        syncDebounceTask?.cancel()
-        syncDebounceTask = nil
-    }
-
-    /// 상태 파일의 **유일한 쓰기 길**. 사본을 먼저 바꾼다 — 디스크 쓰기가 실패해도 이번 실행의 감지는 사본을
-    /// 기준으로 이어지고, 재실행하면 디스크의 옛 기준과의 차이로 같은 변경이 다시 감지될 뿐 잃지는 않는다.
-    @discardableResult
-    func writeSyncFile(_ file: CloudSyncFile) -> Bool {
-        drvSyncStateWriteCount += 1
-        syncFile = .ready(file)
-        refreshCloudSyncState()
-        let written = CloudSync.writeStateFile(file)
-        if !written { syncStorageWriteFailed = true }
-        return written
-    }
-
-    /// 네 저장 함수가 몸통 앞에서 부르는 **감지 한 곳**. 화면·AI·끌기·반복 시리즈가 모두 저장 함수를 지나므로
-    /// 호출 경로마다 대기열 코드를 심지 않아도 빠지는 길이 없다. 세션 유무는 보지 않는다 — 401로 세션이
-    /// 지워져도 상태 파일이 있으면 계속 쌓는다(D18). `await`가 없는 동기 함수라 저장과 한 단위로 끝난다.
-    private func noteLocalChanges(kind: SyncKind) {
-        switch kind {
-        case .event: detectSyncChanges(kind, items: events)
-        case .activity: detectSyncChanges(kind, items: activities)
-        case .meal: detectSyncChanges(kind, items: meals)
-        case .favorite: detectSyncChanges(kind, items: favorites)
-        }
-    }
-
-    private func detectSyncChanges<T: SyncItem>(_ kind: SyncKind, items: [T]) {
-        guard !isApplyingSyncChanges, case .ready(var file) = syncFile else { return }
-        // 바뀐 것이 없으면 쓰지 않는다 — 재예약·재조회의 save()가 상태 파일을 쓰지 않는 이유다.
-        guard stampSyncChanges(kind, items: items, file: &file, now: syncNow) else { return }
-        writeSyncFile(file)
-        armSyncDebounce()
-    }
-
-    /// 칸 만들기의 몸통 — 감지와 최초 연결 ①이 함께 쓴다. 바뀐 id가 하나라도 있으면 true.
-    private func stampSyncChanges<T: SyncItem>(_ kind: SyncKind, items: [T], file: inout CloudSyncFile,
-                                               now date: Date) -> Bool {
-        let kindKey = kind.rawValue
-        // 비교 대상: 대기 칸이 있으면 칸의 지문(delete면 "없음"), 없으면 기준 지문. 기준만 보면 보내는 동안
-        // 고친 것이 이미 칸에 있는 판과 같다고 판정되어 사라진다(D16).
-        func comparisonTarget(_ key: String) -> String? {
-            if let entry = file.outbox[key] { return entry.op == .delete ? nil : entry.fp }
-            return file.baseline[kindKey]?[key]
-        }
-        let now = Int64(date.timeIntervalSince1970 * 1000)
-        var changed = false
-        // 칸은 기준을 건드리지 않고 덮는다(D16) — 기준은 서버 응답을 받았을 때만 전진한다.
-        func stamp(_ key: String, op: CloudSyncOutboxEntry.Op, fp: String?) {
-            let t = max(now, file.lastEditStamp + 1)   // D2 — 같은 ms의 두 고침도 순서가 갈린다
-            file.lastEditStamp = t
-            file.outbox[key] = CloudSyncOutboxEntry(kind: kind, op: op, editedAt: t,
-                                                    ver: (file.outbox[key]?.ver ?? 0) + 1,
-                                                    fp: fp, quarantined: false)   // 다시 고치면 격리가 풀린다(D25)
-            changed = true
-        }
-
-        var present = Set<String>()
-        for item in items {
-            let key = CloudSync.idKey(item.id)
-            present.insert(key)
-            let fp = CloudSync.fingerprint(of: item)
-            if fp != comparisonTarget(key) { stamp(key, op: .upsert, fp: fp) }
-        }
-
-        // 배열에서 사라진 id: 칸이나 기준에 "있음"으로 남은 것만 삭제다. 삭제가 끝나 기준에서 빠진 id는
-        // 어디에도 없으므로 다시 감지되지 않는다(R10). 못 읽은 파일 때문에 빈 배열이 된 종류는 삭제를
-        // 만들지 않는다 — 클라우드를 비우는 사고의 입구다(D15·R1).
-        if !file.unreadable.contains(kind) {
-            let known = Set(file.outbox.filter { $0.value.kind == kind }.keys)
-                .union(Array(file.baseline[kindKey]?.keys ?? [String: String]().keys))
-            for key in known.subtracting(present).sorted() where comparisonTarget(key) != nil {
-                stamp(key, op: .delete, fp: nil)
-            }
-        }
-        return changed
-    }
-
     // MARK: - 영속화
 
     func save() {
         drvSaveCount += 1   // t50 S1 — REQ-005 "저장 1" 계수기(앱 논리 영향 없음)
-        noteLocalChanges(kind: .event)
         try? FileManager.default.createDirectory(at: AppConfig.supportDirectory, withIntermediateDirectories: true)
         backupEventsBeforeFirstBicycleSave()
-        if (try? JSONEncoder().encode(events).write(to: eventsURL)) == nil { syncStorageWriteFailed = true }
+        try? JSONEncoder().encode(events).write(to: eventsURL)
     }
 
     /// D12 — 자전거 일정이 처음 저장되기 직전의 events.json을 한 번만 복사해 둔다.
@@ -2690,419 +2462,18 @@ final class Store: ObservableObject {
     }
 
     private func load() {
-        guard let decoded: [ScheduledEvent] = loadDataFile(eventsURL, kind: .event) else { return }
+        guard let decoded: [ScheduledEvent] = loadDataFile(eventsURL) else { return }
         events = decoded.sorted { $0.arrivalDate < $1.arrivalDate }
     }
 
-    /// 네 데이터 파일을 읽는 한 곳. 파일이 없으면 nil(처음 설치). 파일은 **있는데** 읽거나 디코딩하지 못하면
-    /// 빈 배열로 시작하는 것은 예전과 같지만, 그 사실을 동기화에 알린다(REQ-013) — 모르는 채 다음 저장이 빈 배열을
-    /// 쓰면 감지가 기준의 모든 항목을 삭제로 올려 클라우드까지 비운다(R1).
-    private func loadDataFile<T: Decodable>(_ url: URL, kind: SyncKind) -> T? {
+    /// 네 데이터 파일을 읽는 한 곳. 파일이 없거나 읽거나 디코딩하지 못하면 nil(빈 배열로 시작).
+    private func loadDataFile<T: Decodable>(_ url: URL) -> T? {
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         if let data = try? Data(contentsOf: url), let decoded = try? JSONDecoder().decode(T.self, from: data) {
             return decoded
         }
-        noteUnreadableDataFile(kind, at: url)
         return nil
     }
-}
-
-// MARK: - 기기 동기화: 밀어 넣기 조각과 응답·받은 항목의 적용(SPEC-SYNC-004 §2.2·§2.3)
-//
-// 이 확장이 Store.swift 안에 있는 이유: 적용은 저장 함수(`saveActivities` 등)가
-// 모두 `private`인 곳에서만 부를 수 있다. **적용 단위(`commitApplyUnit`)와 그 아래 함수들에는 `await`가 없다**
-// (D27) — 배열 변경 → 바뀐 배열 저장 → 상태 파일 쓰기가 메인 액터에서 중단점 없이 끝나야 그 사이 사용자 저장이
-// "적용 중"으로 오인되어 감지에서 빠지는 일도, `await` 앞뒤로 인덱스를 들고 가는 일도 없다.
-
-extension Store {
-    /// 기기 안에만 두는 필드를 옮겨 붙이는 **유일한 곳**(D22). 지금은 알림 id 하나다 — 받은 판으로 통째
-    /// 바꾸되 이 기기가 예약한 알림의 소속만 지킨다. 서버 페이로드는 이 필드를 실어 오지 않고(S6 렌즈 F2),
-    /// 옛 판의 JSON에 실려 온 모르는 키는 디코더가 조용히 버린다.
-    /// `local`이 nil(이 기기에 없는 id)이면 **비운다** — 없는 로컬 = 빈 로컬로 같은 줄을 타므로 새 항목용
-    /// 비우기 목록을 따로 두지 않는다(필드가 늘 때 한쪽만 고쳐지는 것을 막는다).
-    func carryDeviceLocalFields(from local: ScheduledEvent?, to received: ScheduledEvent) -> ScheduledEvent {
-        var merged = received
-        merged.notificationId = local?.notificationId
-        return merged
-    }
-
-    func carryDeviceLocalFields(from local: ActivityBlock?, to received: ActivityBlock) -> ActivityBlock {
-        received
-    }
-
-    /// 격리되지 않은 칸을 40칸까지 한 조각으로 만든다. 스냅샷은 **지금 배열에서** 만든다 — 칸에는 페이로드가
-    /// 없어 가장 늦은 고침이 나간다. `attempted`는 이번 주기에 이미 실은 칸이라, 응답 뒤 남은 칸(보내는 사이
-    /// 다시 고쳐진 것)을 같은 주기에 되풀이해 보내지 않는다. 16 KB를 넘는 페이로드는 서버가 400으로 거절하므로
-    /// 보내기 전에 격리한다(D25). 동기 함수 — 칸 고르기와 격리 표시 사이에 끼어들 저장이 없다.
-    func makePushChunk(attempted: inout Set<String>) -> [CloudSentOp] {
-        guard case .ready(var file) = syncFile else { return [] }
-        let candidates = file.outbox
-            .filter { !$0.value.quarantined && !attempted.contains($0.key) }
-            .sorted { ($0.value.editedAt, $0.key) < ($1.value.editedAt, $1.key) }
-        var chunk: [CloudSentOp] = []
-        var quarantinedAny = false
-        for (key, entry) in candidates {
-            if chunk.count == CloudSync.pushChunkSize { break }
-            attempted.insert(key)
-            switch entry.op {
-            case .delete:
-                chunk.append(CloudSentOp(key: key, kind: entry.kind, ver: entry.ver, fp: nil,
-                                         request: CloudPushOp(kind: entry.kind, id: key, editedAt: entry.editedAt,
-                                                              op: .delete, payload: nil)))
-            case .upsert:
-                // 항목이 배열에 없으면(저장 없이 배열만 바뀐 드문 순간) 이 칸은 건너뛴다 — 다음 저장의 감지가 삭제로 바꾼다.
-                guard let id = UUID(uuidString: key), let snap = syncSnapshot(kind: entry.kind, id: id) else { continue }
-                // 인코딩이 실패해 비었거나 판 번호 `"v"`가 없는 페이로드는 서버가 400으로 거절한다. 실어 보내면 같은
-                // 조각의 멀쩡한 칸까지 함께 격리되므로(D25) 16 KB 초과와 같이 그 칸만 보내기 전에 격리한다.
-                if snap.payload.utf8.count > CloudSync.maxPayloadBytes || !Self.hasPayloadVersion(snap.payload) {
-                    file.outbox[key]?.quarantined = true
-                    quarantinedAny = true
-                    continue
-                }
-                chunk.append(CloudSentOp(key: key, kind: entry.kind, ver: entry.ver, fp: snap.fp,
-                                         request: CloudPushOp(kind: entry.kind, id: key, editedAt: entry.editedAt,
-                                                              op: .upsert, payload: snap.payload)))
-            }
-        }
-        if quarantinedAny {
-            syncFile = .ready(file)
-            refreshCloudSyncState()
-        }
-        return chunk
-    }
-
-    private static func hasPayloadVersion(_ payload: String) -> Bool {
-        guard let obj = try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any] else { return false }
-        return obj["v"] != nil
-    }
-
-    private func syncSnapshot(kind: SyncKind, id: UUID) -> (payload: String, fp: String)? {
-        func snap<T: SyncItem>(_ item: T?) -> (payload: String, fp: String)? {
-            guard let item else { return nil }
-            return (String(decoding: item.syncPayloadJSON(), as: UTF8.self), CloudSync.fingerprint(of: item))
-        }
-        switch kind {
-        case .event: return snap(events.first { $0.id == id })
-        case .activity: return snap(activities.first { $0.id == id })
-        case .meal: return snap(meals.first { $0.id == id })
-        case .favorite: return snap(favorites.first { $0.id == id })
-        }
-    }
-
-    /// 400을 받은 조각의 칸을 격리한다(D25). 메모리만 고치고 파일은 주기 끝 마감 쓰기가 쓴다.
-    /// 칸의 `ver`이 보낸 그대로인 것만 격리한다 — 응답을 기다리는 사이 다시 고쳐 세대가 오른 칸은 서버가 본 적 없는
-    /// 새 판이라, 거절된 옛 판 때문에 묶이면 "다시 고치면 풀린다"가 순서상 거꾸로 적용된다.
-    func quarantineSyncEntries(sent: [CloudSentOp]) {
-        guard case .ready(let file) = syncFile else { return }
-        setSyncQuarantine(true, for: sent.filter { file.outbox[$0.key]?.ver == $0.ver }.map { $0.key })
-    }
-
-    /// [다시 시도]가 모든 격리를 푼다(REQ-018).
-    func releaseAllSyncQuarantine() {
-        guard case .ready(let file) = syncFile else { return }
-        setSyncQuarantine(false, for: Array(file.outbox.keys))
-    }
-
-    private func setSyncQuarantine(_ on: Bool, for keys: [String]) {
-        guard case .ready(var file) = syncFile else { return }
-        for key in keys where file.outbox[key] != nil { file.outbox[key]?.quarantined = on }
-        syncFile = .ready(file)
-        refreshCloudSyncState()
-    }
-
-    /// 밀어 넣기 응답 한 번 = 적용 단위 하나. 전이표(plan §2.2)의 "밀어 넣기" 행이 그대로다:
-    /// 적용된 연산은 **보낸 스냅샷**에서 기준이 전진하고, 진 연산은 **돌려받은 서버 항목**에서 전진한다
-    /// (진 연산의 기준을 보낸 판으로 두면 서버 판이 다음 저장에서 메아리로 다시 올라간다, R12).
-    /// 칸은 `ver`이 보낸 그대로일 때만 지운다 — 응답을 기다리는 사이 고친 것은 새 세대로 남는다.
-    /// 응답 id는 서버가 소문자로 돌려주므로 정규화한 키로 칸을 찾는다.
-    func applyPushResults(sent: [CloudSentOp], results: [CloudPushResult]) -> CloudApplyResult {
-        guard case .ready(var file) = syncFile else { return CloudApplyResult() }
-        let sentByKey = Dictionary(sent.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
-        var received: [CloudReceived] = []
-        for result in results {
-            let key = CloudSync.idKey(result.id)
-            guard let s = sentByKey[key] else { continue }
-            let sameVer = file.outbox[key]?.ver == s.ver
-            if result.applied {
-                if sameVer { file.outbox[key] = nil }
-                if s.request.op == .upsert, let fp = s.fp {
-                    file.baseline[s.kind.rawValue, default: [:]][key] = fp
-                } else {
-                    file.baseline[s.kind.rawValue]?[key] = nil
-                }
-            } else if let item = result.item {
-                // 졌다. 칸이 그대로면 서버 판이 이 기기의 판이 되고, 그새 다시 고쳤으면(칸이 남음) 로컬을 두고
-                // 기준만 서버 판으로 옮긴다 — 다음 주기에 서버가 새 칸을 판정한다.
-                if sameVer { file.outbox[key] = nil }
-                received.append(CloudReceived(item: item, applyLocal: sameVer))
-            }
-        }
-        return commitApplyUnit(received, file: &file, cursor: nil)
-    }
-
-    /// 받기 한 쪽 = 적용 단위 하나. 칸이 있는 id(격리 칸 포함)는 건너뛴다 — 아직 서버가 이 기기의 판을
-    /// 판정하지 않았고, 받은 판이 이기면 보내지 못한 고침을 덮어 버린다. 어느 판을 남길지는 고친 시각을
-    /// 비교하지 않고 칸 유무로만 정한다(REQ-019).
-    func applyPulledPage(_ page: CloudPullPage) -> CloudApplyResult {
-        guard case .ready(var file) = syncFile else { return CloudApplyResult() }
-        if page.items.isEmpty && page.next <= file.cursor { return CloudApplyResult() }
-        let received = page.items.compactMap { item -> CloudReceived? in
-            file.outbox[CloudSync.idKey(item.id)] == nil ? CloudReceived(item: item, applyLocal: true) : nil
-        }
-        return commitApplyUnit(received, file: &file, cursor: page.next)
-    }
-
-    /// 통째 바꾸기 = 적용 단위 하나(최초 연결 ②, 409 다시 받기, 깨진 상태 파일, [클라우드에서 다시 받기]). 네 배열을
-    /// 받은 살아 있는 항목으로 바꾸고, 새 상태 파일(기준 = 받은 항목의 지문, 대기 칸 없음, `unreadable` 비움)을 쓴다.
-    /// 대기 칸은 격리 칸까지 모두 버린다 — 먼저 밀어 넣기가 끝난 뒤라 남은 것은 서버가 받지 않은 칸뿐이고, 그 판은
-    /// 호출 전에 만든 백업에 남는다(plan 전이표 "바꿈" 행). `await`가 없다(D27): 배열 → 저장 → 상태 파일이 한 번에 끝난다.
-    /// 읽지 못한 종류는 바뀌지 않았어도(클라우드에 0개여도) 저장 함수로 새로 쓴다 — 아니면 깨진 파일이 남아 다음 실행에
-    /// 표지와 멈춤이 되살아난다(C2).
-    func replaceAllFromCloud(_ items: [CloudServerItem], cursor: Int64, userId: String?) -> CloudApplyResult {
-        isApplyingSyncChanges = true
-        defer { isApplyingSyncChanges = false }
-        let staleWriteFailure = beginSyncUnitWriteWatch()
-        defer { endSyncUnitWriteWatch(stale: staleWriteFailure) }
-        let before = syncUnitSnapshot()
-        var previous: CloudSyncFile?
-        if case .ready(let f) = syncFile { previous = f }
-        var file = CloudSyncFile(userId: userId)
-        file.cursor = cursor
-        file.lastEditStamp = previous?.lastEditStamp ?? 0   // 고친 시각은 이 기기에서 계속 커져야 한다(D2)
-        let rewrite = Set(previous?.unreadable ?? []).union(syncUnreadableAtLoad)
-        let known = Set(SyncKind.allCases.map { $0.rawValue })
-        var undecodable = items.filter { !known.contains($0.kind) }.count
-
-        // 받은 항목에서 새 배열을 만든다. 같은 id의 로컬 항목이 있으면 기기 안에만 두는 필드를 옮겨 붙인다(D22).
-        // 내용(지문)이 지금 배열과 같으면 nil — 저장하지 않는다.
-        func rebuild<T: SyncItem & Decodable>(_ kind: SyncKind, _ current: [T], carry: (T?, T) -> T) -> [T]? {
-            let local = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            var out: [T] = []
-            var fps: [String: String] = [:]
-            for item in items where item.kind == kind.rawValue {
-                let key = CloudSync.idKey(item.id)
-                guard let uuid = UUID(uuidString: key), let payload = item.payload,
-                      let decoded = try? JSONDecoder().decode(T.self, from: Data(payload.utf8)),
-                      decoded.id == uuid else { undecodable += 1; continue }
-                fps[key] = CloudSync.fingerprint(of: decoded)
-                out.append(carry(local[uuid], decoded))   // 로컬이 없어도 거친다 — 기기 전용 필드를 비운다(F2)
-            }
-            if !fps.isEmpty { file.baseline[kind.rawValue] = fps }
-            let before = Dictionary(current.map { (CloudSync.idKey($0.id), CloudSync.fingerprint(of: $0)) },
-                                    uniquingKeysWith: { first, _ in first })
-            return before == fps && current.count == out.count ? nil : out
-        }
-
-        var changed = Set<SyncKind>()
-        var droppedNotificationIds: [String] = []
-        if let arr = rebuild(.event, events, carry: { self.carryDeviceLocalFields(from: $0, to: $1) }) {
-            // 사라지는 일정의 출발 알림은 거둔다 — 끝 재예약이 없는 출발점(앞으로 옴)도 있어서. 취소는 디스크에 닿은 뒤에만
-            // 한다: 단위를 되돌리면 그 일정이 남으므로 알림도 남아야 한다.
-            let kept = Set(arr.map { $0.id })
-            droppedNotificationIds = events.filter { !kept.contains($0.id) }.compactMap { $0.notificationId }
-            events = arr.sorted { $0.arrivalDate < $1.arrivalDate }
-            changed.insert(.event)
-        }
-        if let arr = rebuild(.activity, activities, carry: { self.carryDeviceLocalFields(from: $0, to: $1) }) {
-            activities = arr.sorted { $0.startDate < $1.startDate }
-            changed.insert(.activity)
-        }
-        if let arr = rebuild(.meal, meals, carry: { _, new in new }) {
-            meals = arr.sorted { $0.loggedAt > $1.loggedAt }
-            changed.insert(.meal)
-        }
-        if let arr = rebuild(.favorite, favorites, carry: { _, new in new }) {
-            favorites = arr
-            changed.insert(.favorite)
-        }
-
-        saveSyncKinds(changed.union(rewrite))
-        if !syncStorageWriteFailed { writeSyncFile(file) }
-        if syncStorageWriteFailed {
-            // 옛 상태 파일(`unreadable` 표지 포함)을 그대로 두고 배열을 되돌린다 — 다음 주기가 같은 바꿈을 다시 한다(N5).
-            rollBackSyncUnit(to: before, kinds: changed)
-            return CloudApplyResult(rolledBack: true)
-        }
-        syncUnreadableAtLoad.removeAll()
-        for nid in droppedNotificationIds { notifications.cancel(id: nid) }
-        return CloudApplyResult(eventsChanged: changed.contains(.event), sawUndecodable: undecodable > 0)
-    }
-
-    /// 적용 단위의 마감: 바뀐 배열만 기존 저장 함수로 한 번씩 → 상태 파일 한 번(커서는 데이터 저장 뒤에만 전진)
-    /// → 알림 취소. 적용 중에는 감지를 끈다 — 저장 함수가 이 변화를 "사용자의
-    /// 고침"으로 세면 받은 판이 새 시각으로 되돌려 올라간다.
-    private func commitApplyUnit(_ received: [CloudReceived], file: inout CloudSyncFile, cursor: Int64?) -> CloudApplyResult {
-        isApplyingSyncChanges = true
-        defer { isApplyingSyncChanges = false }
-        let staleWriteFailure = beginSyncUnitWriteWatch()
-        defer { endSyncUnitWriteWatch(stale: staleWriteFailure) }
-        let before = syncUnitSnapshot()
-        let summary = applyServerItems(received, file: &file)
-        if let cursor { file.cursor = max(file.cursor, cursor) }
-        saveSyncKinds(summary.changedKinds)
-        if !syncStorageWriteFailed { writeSyncFile(file) }
-        if syncStorageWriteFailed {
-            // 디스크에 다 닿지 못했다 — 기준·커서도, 배열도 단위 전으로(N5). 알림 취소·구글 지우기는 하지 않는다.
-            rollBackSyncUnit(to: before, kinds: summary.changedKinds)
-            return CloudApplyResult(rolledBack: true)
-        }
-        for nid in summary.notificationIds { notifications.cancel(id: nid) }
-        return CloudApplyResult(eventsChanged: summary.changedKinds.contains(.event),
-                                sawUndecodable: summary.undecodable > 0)
-    }
-
-    // MARK: 적용 단위의 전부 아니면 전무(N5)
-    //
-    // 단위 안에서 데이터 파일이나 상태 파일 쓰기가 **새로** 실패하면 단위 전체를 되돌린다. 배열만 바꾸고 기준을 남기면
-    // 다음 저장의 감지가 받은 판을 이 기기의 고침으로 보고 새 시각으로 올려 더 새로운 서버 판을 덮는다(메아리, R12).
-    // 반대로 기준만 전진시키면 재실행 때 디스크의 옛 배열이 고침으로 감지된다. 그래서 메모리(배열·상태 사본)를
-    // 단위 전으로 돌리고, 쓰기에 나섰던 종류는 옛 배열로 다시 써 디스크도 맞춘다. 커서가 그대로라 다음 주기가 같은
-    // 쪽·같은 바꿈을 다시 한다. 앞 단위에서 이미 선 실패 표지는 이 단위를 되돌리게 하지도, 지워지지도 않는다.
-
-    /// 표지를 비워 이 단위의 실패만 재게 하고, 앞서 서 있던 값을 돌려준다.
-    private func beginSyncUnitWriteWatch() -> Bool {
-        let stale = syncStorageWriteFailed
-        syncStorageWriteFailed = false
-        return stale
-    }
-
-    private func endSyncUnitWriteWatch(stale: Bool) {
-        syncStorageWriteFailed = syncStorageWriteFailed || stale
-    }
-
-    private func syncUnitSnapshot() -> SyncUnitSnapshot {
-        SyncUnitSnapshot(events: events, activities: activities, meals: meals, favorites: favorites, syncFile: syncFile)
-    }
-
-    /// 적용 단위가 바꾼 종류만 기존 저장 함수로 한 번씩.
-    private func saveSyncKinds(_ kinds: Set<SyncKind>) {
-        if kinds.contains(.event) { save() }
-        if kinds.contains(.activity) { saveActivities() }
-        if kinds.contains(.meal) { saveMeals() }
-        if kinds.contains(.favorite) { saveFavorites() }
-    }
-
-    /// `kinds`는 이 단위가 메모리에서 바꾼 종류다. 그 종류만 되돌려 다시 쓴다 — 저장은 됐지만 내용이 그대로인 종류
-    /// (읽지 못한 종류를 새로 쓴 것)는 디스크가 이미 메모리와 같다. 다시 쓰기도 실패하면 표지가 남아 화면에 보인다.
-    /// `isApplyingSyncChanges`가 켜진 채 부른다 — 되돌림이 고침으로 감지되면 안 된다.
-    private func rollBackSyncUnit(to before: SyncUnitSnapshot, kinds: Set<SyncKind>) {
-        if kinds.contains(.event) { events = before.events }
-        if kinds.contains(.activity) { activities = before.activities }
-        if kinds.contains(.meal) { meals = before.meals }
-        if kinds.contains(.favorite) { favorites = before.favorites }
-        syncFile = before.syncFile   // `writeSyncFile`이 사본을 먼저 바꿨다면 그것도 되돌린다 — 디스크의 옛 파일과 맞춘다
-        refreshCloudSyncState()
-        saveSyncKinds(kinds)
-    }
-
-    private func applyServerItems(_ received: [CloudReceived], file: inout CloudSyncFile) -> SyncApplySummary {
-        var summary = SyncApplySummary()
-        let known = Set(SyncKind.allCases.map { $0.rawValue })
-        // 앱이 모르는 종류(더 새 앱이 만든 것)는 건너뛴다 — 막지 않는다.
-        summary.undecodable += received.filter { !known.contains($0.item.kind) }.count
-
-        let eventItems = received.filter { $0.item.kind == SyncKind.event.rawValue }
-        if !eventItems.isEmpty {
-            var arr = events   // 복사본에서 다 고치고 한 번만 대입 — 요소마다 대입하면 didSet 재계산이 건수 제곱으로 돈다
-            let changed = mergeReceived(eventItems, into: &arr, file: &file, summary: &summary,
-                                        carry: { self.carryDeviceLocalFields(from: $0, to: $1) },
-                                        notificationId: { $0.notificationId })
-            if changed {
-                arr.sort { $0.arrivalDate < $1.arrivalDate }
-                events = arr
-                summary.changedKinds.insert(.event)
-            }
-        }
-        let activityItems = received.filter { $0.item.kind == SyncKind.activity.rawValue }
-        if !activityItems.isEmpty {
-            var arr = activities
-            let changed = mergeReceived(activityItems, into: &arr, file: &file, summary: &summary,
-                                        carry: { self.carryDeviceLocalFields(from: $0, to: $1) },
-                                        notificationId: { _ in nil })
-            if changed {
-                arr.sort { $0.startDate < $1.startDate }
-                activities = arr
-                summary.changedKinds.insert(.activity)
-            }
-        }
-        let mealItems = received.filter { $0.item.kind == SyncKind.meal.rawValue }
-        if !mealItems.isEmpty {
-            var arr = meals
-            let changed = mergeReceived(mealItems, into: &arr, file: &file, summary: &summary,
-                                        carry: { _, new in new }, notificationId: { _ in nil })
-            if changed {
-                arr.sort { $0.loggedAt > $1.loggedAt }
-                meals = arr
-                summary.changedKinds.insert(.meal)
-            }
-        }
-        let favoriteItems = received.filter { $0.item.kind == SyncKind.favorite.rawValue }
-        if !favoriteItems.isEmpty {
-            var arr = favorites
-            let changed = mergeReceived(favoriteItems, into: &arr, file: &file, summary: &summary,
-                                        carry: { _, new in new }, notificationId: { _ in nil })
-            if changed { favorites = arr; summary.changedKinds.insert(.favorite) }
-        }
-        return summary
-    }
-
-    /// 한 종류의 받은 항목을 배열에 합친다. 배열에서 항목을 찾을 때는 정규화한 문자열 키가 아니라 `UUID` 값으로
-    /// 비교한다(키는 소문자, 모델의 `uuidString`은 대문자 — 문자열로 찾으면 못 찾는다). 이 안에는 `await`가 없어
-    /// 인덱스를 한 항목 처리 안에서만 쓴다. 기준은 `applyLocal`과 무관하게 서버 항목 쪽으로 옮긴다(D16).
-    private func mergeReceived<T: SyncItem & Decodable>(
-        _ list: [CloudReceived], into arr: inout [T], file: inout CloudSyncFile, summary: inout SyncApplySummary,
-        carry: (T?, T) -> T, notificationId: (T) -> String?
-    ) -> Bool {
-        var changed = false
-        for r in list {
-            let key = CloudSync.idKey(r.item.id)
-            guard let uuid = UUID(uuidString: key) else { summary.undecodable += 1; continue }
-            let kindKey = r.item.kind
-            let idx = arr.firstIndex { $0.id == uuid }
-            if r.item.deleted {
-                file.baseline[kindKey]?[key] = nil
-                if r.applyLocal, let idx {
-                    let removed = arr.remove(at: idx)
-                    // 알림 취소는 값으로만 모으고 단위가 디스크에 닿은 뒤에 한다 — 되돌린 단위가
-                    // 남아 있는 일정의 알림을 지우면 안 된다.
-                    if let nid = notificationId(removed) { summary.notificationIds.append(nid) }
-                    changed = true
-                }
-                continue
-            }
-            // 디코딩하지 못하는 페이로드(더 새 판 등)는 건너뛰고 알린다. 판 번호가 커도 읽히는 만큼은 적용한다.
-            guard let payload = r.item.payload,
-                  let decoded = try? JSONDecoder().decode(T.self, from: Data(payload.utf8)),
-                  decoded.id == uuid else { summary.undecodable += 1; continue }
-            let fp = CloudSync.fingerprint(of: decoded)
-            file.baseline[kindKey, default: [:]][key] = fp
-            guard r.applyLocal else { continue }
-            if let idx {
-                if CloudSync.fingerprint(of: arr[idx]) == fp { continue }   // 메아리 — 내용이 같으면 쓰지 않는다
-                arr[idx] = carry(arr[idx], decoded)
-            } else {
-                arr.append(carry(nil, decoded))   // 새 항목도 기기 전용 필드를 비운다(F2) — 지문은 이 셋을 보지 않아 기준·메아리는 그대로
-            }
-            changed = true
-        }
-        return changed
-    }
-}
-
-private struct SyncApplySummary {
-    var changedKinds = Set<SyncKind>()
-    var notificationIds: [String] = []
-    var undecodable = 0
-}
-
-/// 적용 단위 시작 때의 메모리 모습 — 단위 안의 디스크 쓰기가 실패하면 여기로 되돌린다(N5). 배열은 값 타입이라
-/// 복사는 쓰기 시 복사로 싸다.
-private struct SyncUnitSnapshot {
-    let events: [ScheduledEvent]
-    let activities: [ActivityBlock]
-    let meals: [MealLog]
-    let favorites: [FavoritePlace]
-    let syncFile: CloudSyncFileStatus
 }
 
 /// 재조회 뒤 알림 처리 판정(SPEC-ONTIME-006 REQ-006). 케이스 줄 순서가 판정 우선순위다 —
