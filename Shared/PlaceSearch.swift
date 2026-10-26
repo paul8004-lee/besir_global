@@ -4,6 +4,9 @@ import MapKit
 /// 장소 검색(자동완성). 카카오 로컬 키워드 검색을 우선 쓰고,
 /// 키가 없으면 MapKit MKLocalSearch 로 폴백한다.
 struct PlaceSearch {
+    /// 한 번의 장소 검색에서 줄에 보여 주는 후보 수의 상한.
+    static let maxSuggestions = 5
+
     let config: AppConfig
 
     func search(_ query: String, near center: CLLocationCoordinate2D?) async -> [Place] {

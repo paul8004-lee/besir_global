@@ -34,7 +34,6 @@ struct RootView: View {
     }
 
     @EnvironmentObject var store: Store
-    @EnvironmentObject var assistant: AIAssistant
     @State private var service: Service?
     @State private var showingSettings = false
 
@@ -53,28 +52,6 @@ struct RootView: View {
                 ContentView(onBack: { service = nil })
             case .full:
                 FullSirView(onBack: { service = nil })
-            }
-        }
-        // 어느 화면에 있든 같은 시트를 쓴다 — AI를 여는 버튼(우하단 besir 로고)도 이 자리에 있다.
-        .sheet(isPresented: $assistant.isPresented) {
-            AIChatView(assistant: assistant)
-        }
-        // 우하단 besir 로고 버튼(REQ-007). 화면마다 붙이지 않고 Group에 한 자리 오버레이로 두는
-        // 이유: 로비·시간표·be full sir 어디에 있든 같은 자리·같은 모양이어야 하고, 시트를 띄우는
-        // 주체도 이 뷰라 버튼과 시트가 함께 놓인다. 시간표 왼쪽 아래 '오늘' 버튼과 마주 보게
-        // 우하단에 두고(REQ-001 뒷문장), 스크롤 끝이 가려지지 않게 각 화면은 맨 아래 여백을 둔다.
-        .overlay(alignment: .bottomTrailing) {
-            if store.config.hasAI {
-                Button {
-                    assistant.isPresented = true
-                } label: {
-                    BesirMark(size: 28)
-                        .floatingCircle()
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("besir AI")
-                .padding(.trailing, FloatingCircle.inset)
-                .padding(.bottom, FloatingCircle.inset)
             }
         }
     }
