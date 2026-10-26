@@ -66,7 +66,8 @@ async function handleAI(request, env) {
   if (error) return error;
   const model = value.model ?? DEFAULT_MODEL;
   if (!ALLOWED_MODELS.has(model)) return json(400, { error: "model_not_allowed" });
-  return forward(META_RESPONSES_URL, { authorization: `Bearer ${env.META_API_KEY}` }, { ...value, model });
+  // Responses must not be stored by Meta: overwrite whatever the client sent.
+  return forward(META_RESPONSES_URL, { authorization: `Bearer ${env.META_API_KEY}` }, { ...value, model, store: false });
 }
 
 async function handleGoogle(request, env, url) {

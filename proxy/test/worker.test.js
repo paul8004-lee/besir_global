@@ -51,6 +51,18 @@ test("/ai refuses models outside the allow-list", async () => {
   assert.equal(seen.length, 0);
 });
 
+test("/ai sets store false when the client sends no store field", async () => {
+  const seen = mockUpstream();
+  await call("/ai", { body: { input: "hello" } });
+  assert.equal(JSON.parse(seen[0].init.body).store, false);
+});
+
+test("/ai overwrites a client store true with false", async () => {
+  const seen = mockUpstream();
+  await call("/ai", { body: { input: "hello", store: true } });
+  assert.equal(JSON.parse(seen[0].init.body).store, false);
+});
+
 test("/ai passes upstream errors through without leaking the key", async () => {
   mockUpstream(401, { error: "bad key" });
   const res = await call("/ai", { body: { input: "x" } });
