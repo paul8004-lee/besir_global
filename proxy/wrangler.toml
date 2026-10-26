@@ -1,0 +1,8 @@
+name = "besir-global-proxy"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+# Secrets (never committed): set with `wrangler secret put <NAME>`, or put in proxy/.dev.vars for local dev.
+#   META_API_KEY      Meta Model API key
+#   GOOGLE_MAPS_KEY   Google Places API (New) + Routes API key
+#   APP_TOKEN         shared token the iOS app sends as `x-besir-token`
