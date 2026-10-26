@@ -1,0 +1,4 @@
+# Copy to .dev.vars (git-ignored) for local dev. Production values go in `wrangler secret put`.
+META_API_KEY=
+GOOGLE_MAPS_KEY=
+APP_TOKEN=
