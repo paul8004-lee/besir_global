@@ -9,7 +9,7 @@ enum SharedInbox {
         var mimeType: String?
     }
 
-    static let appGroupID = "group.com.iseongmin.besir"
+    static let appGroupID = "group.com.iseongmin.besir.global"
 
     private static var containerURL: URL? {
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupID)
