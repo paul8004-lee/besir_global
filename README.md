@@ -33,7 +33,7 @@ Everything that differs from the baseline: [`pre-hackathon-baseline...main`](htt
 
 Each merged unit of work gets one line below, in the form "what was newly built — link to its commit".
 
-- _Nothing merged yet._
+- **Muse Spark proxy** — a new Cloudflare Worker, `besir-global-proxy`, that forwards `/ai` requests to Meta Muse Spark (`muse-spark-1.3`) with responses never stored by the provider, and relays `/places` and `/routes` for Google; keys live only in Worker secrets — [`fa5a918`](https://github.com/paul8004-lee/besir_global/commit/fa5a918b826e07db8ee1fe64c38257c7a9244afe)
 
 Some baseline files are edited in place, only for two reasons: the English localization of the app UI, and the split of the app and App Group identifiers from the earlier app. Both are listed as lines above when they land. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
