@@ -71,34 +71,37 @@ enum TravelFailure: String, CaseIterable {
     var caption: String { text.caption }
     var sentence: String { text.sentence }
 
-    /// 이유 판정의 단일 출처(plan §2.5). 순수 함수라 드라이버가 표 그대로 시험한다.
-    /// 본문 `error` 코드가 있으면 그것으로, 없으면 조회 실패다 — HTTP 상태는 이유를 가르지 않는다.
-    /// Worker가 내는 401은 언제나 본문에 `unauthorized`를 싣고, 카카오가 낸 401은 502 `kakao_auth`로
-    /// 오기 때문에(자동차 길찾기 통과분만 코드 없이 온다) 상태로 "설정 필요"를 가리면 같은 원인이
-    /// 수단마다 다른 말이 된다. 취소는 실패가 아니므로 nil.
+    /// The single source of the reason (plan §2.5). A pure function, so tests run it as a table.
+    /// The body code comes from `GoogleRoutes.errorCode(from:)`: the Worker's own code, or Google's status, or a Google
+    /// reason beginning `API_KEY_`. A code that means "the key or the app token is not accepted" gives `notConfigured`;
+    /// so does an HTTP status of 401 or 403. Every other answer is a failed lookup. The Worker never sends a no-route
+    /// code: "no route" comes from an empty 200 answer, not from this function. A cancelled lookup is not a failure.
     static func classify(hasProxy: Bool,
                          urlErrorCode: URLError.Code?,
                          bodyErrorCode: String?,
-                         isCancellation: Bool) -> TravelFailure? {
-        if isCancellation { return nil }   // 화면을 떠나며 끊긴 조회에 "조회 실패"를 붙이면 거짓 경고가 된다
+                         isCancellation: Bool,
+                         httpStatus: Int? = nil) -> TravelFailure? {
+        if isCancellation { return nil }   // a lookup cut off by leaving the screen must not show a false warning
         if !hasProxy { return .notConfigured }
         if let code = urlErrorCode, offlineCodes.contains(code) { return .offline }
-        if let body = bodyErrorCode {
-            switch body {
-            case "unauthorized": return .notConfigured
-            case "no_route": return .noRoute
-            default: return .lookupFailed   // kakao_*·bad_params·endpoint_not_allowed·upstream_error 등
-            }
+        if let body = bodyErrorCode, rejectedCodes.contains(body) || body.hasPrefix("API_KEY_") {
+            return .notConfigured
         }
-        return .lookupFailed   // 코드 없는 비-200·디코딩 실패·알 수 없는 오류
+        if let status = httpStatus, status == 401 || status == 403 { return .notConfigured }
+        return .lookupFailed   // other codes, other statuses, undecodable answers, unknown errors
     }
 
-    /// 기기 쪽 네트워크 문제로 보는 코드. 호스트 이름 해석·연결 실패는 Worker가 아니라 회선이 끊긴
-    /// 경우가 거의 전부라 포함한다.
-    /// 제외: timedOut — Worker의 카카오 호출에는 시간 제한이 없고 앱 요청도 기본 60초라, 카카오가
-    /// 느린 것인지 회선이 약한 것인지 가를 수 없다. "인터넷에 연결되어 있지 않아"라고 단정하는 것보다
-    /// "잠시 뒤 다시 시도"(조회 실패)가 어느 쪽이어도 맞는 말이다.
-    /// 제외: secureConnectionFailed·badServerResponse·cannotParseResponse·badURL은 회선이 아니라 조회 쪽 문제.
+    /// Codes that mean the Worker or Google did not accept the app token or the key.
+    private static let rejectedCodes: Set<String> = [
+        "unauthorized", "google_key_not_configured", "PERMISSION_DENIED", "UNAUTHENTICATED"
+    ]
+
+    /// Codes that point at the device's network. Host resolution and connection failures are almost always a dropped
+    /// connection rather than the Worker, so they are included.
+    /// Excluded: timedOut - the request timeout cannot tell a slow service from a weak connection, and "try again in a
+    /// moment" (a failed lookup) is right either way.
+    /// Excluded: secureConnectionFailed, badServerResponse, cannotParseResponse and badURL - those are the lookup's
+    /// problem, not the connection's.
     private static let offlineCodes: Set<URLError.Code> = [
         .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed,
         .internationalRoamingOff, .callIsActive,
@@ -106,17 +109,19 @@ enum TravelFailure: String, CaseIterable {
     ]
 }
 
-/// 특정 수단의 소요시간 추정 결과.
+/// The travel time estimate of one mode.
 struct TravelEstimate: Identifiable {
     let mode: TransportMode
-    /// 소요 시간(초). 계산 불가하면 nil.
+    /// Travel time in seconds. Nil when it could not be calculated.
     let duration: TimeInterval?
-    /// 거리(m). 알 수 없으면 nil.
+    /// Distance in metres. Nil when unknown.
     let distance: Double?
-    /// 데이터 출처 표기 (예: "카카오").
+    /// The data source (always "Google").
     let source: String
-    /// 값이 없을 때의 이유. 조회가 실제로 실패했을 때만 채운다 — 취소된 조회는 실패가 아니라 nil.
+    /// Why there is no value. Filled only when the lookup really failed; a cancelled lookup leaves it nil.
     var failure: TravelFailure? = nil
+    /// The warning strings Google returned with the route, in its order. Only walking and bicycling routes carry any.
+    var warnings: [String] = []
 
     var id: String { mode.rawValue }
 
