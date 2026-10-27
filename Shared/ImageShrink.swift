@@ -7,6 +7,12 @@ import UniformTypeIdentifiers
 enum SharedImage {
     static let maxBytes = 1_048_576
     static let maxLongEdge = 2048
+
+    /// The size of the image a base64 string holds, from its length and padding, without decoding it.
+    static func decodedByteCount(ofBase64 base64: String) -> Int {
+        let padding = base64.hasSuffix("==") ? 2 : (base64.hasSuffix("=") ? 1 : 0)
+        return max(0, base64.utf8.count / 4 * 3 - padding)
+    }
 }
 
 /// Brings a shared image down to a JPEG the Worker can read cheaply (SPEC-SHARE-001).
