@@ -1,6 +1,32 @@
-# besir — any input, one plan
+# besir — the app that connects your apps
 
-An iOS planning agent that turns screenshots, Instagram posts and camera snaps into schedules, departure alarms and meal plans, powered by Meta Muse Spark.
+An iOS planning agent, powered by Meta Muse Spark, that sits between the apps on your phone. What you find in one app becomes a plan, and the plan is carried to the next app for you.
+
+## Why besir: connecting apps
+
+Google connected websites. Facebook and Instagram connected people. **besir connects the apps on your phone.**
+
+Today a plan is spread across apps: a festival you saw on Instagram, a restaurant you found on a map, a booking in a reservation app, the time in your calendar. You copy and paste between them yourself. besir is the layer in the middle: it reads what you share, turns it into a plan with Muse Spark, and hands each piece to the app that needs it, filled in so that you only check it and confirm.
+
+Three principles guide every connection:
+
+- **Convenience** — besir fills in the details (time, place, travel time, party size); the user's only job is to confirm.
+- **Your apps stay your apps** — besir does not replace the apps you already use, so there is no new service to sign up for and no habit to give up. Instead it connects them, even apps from fields that seem to have nothing in common, so that the whole plan can be managed from one place.
+- **The user stays in control** — nothing is saved or sent to another app until the user taps Confirm, and besir only receives what the user chooses to share (no scraping).
+
+Not every app offers an API or MCP server for this, so besir carries data in one common shape — which app it came from, which app it goes to, what it is and its status — whatever the app on the other side supports.
+
+As an MVP, besir starts with one everyday scenario — an event you came across, a place to eat nearby, a booking and the time in your calendar — and connects the few apps that scenario needs. Each app connected later adds to what the others can do, so the value of besir grows with every new connection. The table below shows where each connection stands today.
+
+| Connection | Direction | Status |
+|---|---|---|
+| Instagram post or screenshot → besir, through the iOS share sheet | in | in progress |
+| Image → Muse Spark Open, read into a title, time and place | in | Worker route built; app wiring in progress |
+| besir ↔ Google Places and Routes | both ways | Places built; Routes in progress |
+| Muse Spark agent → besir schedule, through tool calls the user confirms | in | built |
+| besir → Apple Calendar | out | planned |
+| besir → a reservation app, filled in from the plan, and the booking back into besir | round trip | planned, with a simulated partner app clearly labeled *Simulated* |
+| besir → budget and health apps (what was spent, where and when) | out | roadmap |
 
 ## Pre-existing code (before the hackathon kickoff — Oct 26, 2026, 12:00 PM ET)
 
@@ -54,4 +80,4 @@ Some baseline files are edited in place, only for two reasons: the English local
 - **be healthy sir** — fit workouts into the free time between plans
 - **be fun sir** — suggest leisure and events that fit the day's schedule
 - **be rich sir** — track spending tied to each plan
-- **External integrations** — Apple Health, Ticketmaster, Plaid, and others
+- **More connections** — real partner apps in place of the simulated reservation partner, and outgoing records to budget and health apps (Apple Health, Plaid, Ticketmaster and others), each one confirmed by the user
