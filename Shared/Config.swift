@@ -46,7 +46,7 @@ struct AppConfig: Codable {
         var req = URLRequest(url: url)
         if let timeout { req.timeoutInterval = timeout }
         req.httpMethod = method
-        req.setValue(appToken, forHTTPHeaderField: "X-App-Token")
+        req.setValue(appToken, forHTTPHeaderField: "x-besir-token")
         if let bearer { req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization") }
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -69,6 +69,12 @@ struct AppConfig: Codable {
     var hasAI: Bool { hasProxy }
 
     static let supportDirectory: URL = {
+        // While the app process hosts the unit tests, use a throwaway directory so the tests
+        // never read or overwrite the data container of the installed app.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return FileManager.default.temporaryDirectory
+                .appendingPathComponent("besir-tests-\(UUID().uuidString)", isDirectory: true)
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("besir", isDirectory: true)
     }()
@@ -85,12 +91,34 @@ struct AppConfig: Codable {
         appToken: ""
     )
 
-    static func load() -> AppConfig {
-        guard let data = try? Data(contentsOf: configURL),
-              let cfg = try? JSONDecoder().decode(AppConfig.self, from: data) else {
-            return bundledDefaults   // 설정 파일 없으면 내장 기본값 사용
+    /// Proxy values compiled into the app (Info keys BesirProxyHost and BesirAppToken).
+    /// The address is `https://` plus the host. A missing, blank, non-string or unexpanded
+    /// build-setting value leaves that field blank.
+    static func bundled(info: [String: Any]?) -> AppConfig {
+        func value(_ key: String) -> String {
+            guard let raw = info?[key] as? String else { return "" }
+            let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.hasPrefix("$(") ? "" : text
         }
+        var cfg = bundledDefaults
+        let host = value("BesirProxyHost")
+        if !host.isEmpty { cfg.proxyBaseURL = "https://" + host }
+        cfg.appToken = value("BesirAppToken")
         return cfg
+    }
+
+    /// Combines the bundled values with a saved config.json: a non-blank bundled proxy field wins,
+    /// a saved one fills it only when the bundled one is blank, every other saved setting is kept.
+    static func merged(saved: AppConfig?, bundled: AppConfig) -> AppConfig {
+        var cfg = saved ?? bundled
+        if !bundled.proxyBaseURL.trimmingCharacters(in: .whitespaces).isEmpty { cfg.proxyBaseURL = bundled.proxyBaseURL }
+        if !bundled.appToken.trimmingCharacters(in: .whitespaces).isEmpty { cfg.appToken = bundled.appToken }
+        return cfg
+    }
+
+    static func load() -> AppConfig {
+        let saved = (try? Data(contentsOf: configURL)).flatMap { try? JSONDecoder().decode(AppConfig.self, from: $0) }
+        return merged(saved: saved, bundled: bundled(info: Bundle.main.infoDictionary))
     }
 
     func save() {

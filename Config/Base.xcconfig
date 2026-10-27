@@ -1,0 +1,7 @@
+// Build values for the Worker address and the app token. Both default to empty.
+// Config/Local.xcconfig (git-ignored, see Local.xcconfig.example) overrides them when it exists.
+
+BESIR_PROXY_HOST =
+BESIR_APP_TOKEN =
+
+#include? "Local.xcconfig"

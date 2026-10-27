@@ -36,6 +36,11 @@ struct RootView: View {
     @EnvironmentObject var store: Store
     @State private var service: Service?
     @State private var showingSettings = false
+    // The session lives here, not in the sheet, so the conversation survives closing the sheet. It sits in a reference
+    // holder because the sheet's content and onDismiss closures are built from a copy of this view and read a plain
+    // @State optional as nil (a blank sheet); the holder is the same object in every copy.
+    @State private var chatHolder = AgentChatHolder()
+    @State private var showingChat = false
 
     /// 로비 맨 위 줄의 besir 로고와 설정 톱니는 한 줄에 나란히 서지만 틀 크기는 따로 잡는다 — 로고(BesirMark)는 틀의 가로 약
     /// 88%·세로 약 85%만 칠하고 톱니는 틀을 거의 다 채워서, 같은 틀이면 톱니 잉크가 5~6pt 커 보인다. 틀 34·30이면 잉크가 둘 다 30pt 안팎으로
@@ -54,6 +59,31 @@ struct RootView: View {
                 FullSirView(onBack: { service = nil })
             }
         }
+        .sheet(isPresented: $showingChat, onDismiss: { Task { await chatHolder.session?.sheetDismissed() } }) {
+            if let session = chatHolder.session { AgentChatView(session: session) }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if store.config.hasAI {
+                Button {
+                    openChat()
+                } label: {
+                    BesirMark(size: 28)
+                        .floatingCircle()
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("besir AI")
+                .padding(.trailing, FloatingCircle.inset)
+                .padding(.bottom, FloatingCircle.inset)
+            }
+        }
+    }
+
+    private func openChat() {
+        if chatHolder.session == nil {
+            chatHolder.session = AgentSession(toolbox: AgentToolbox(store: store, now: { Date() }, timeZone: .current),
+                                              transport: AgentClient(config: store.config, now: { Date() }, timeZone: .current))
+        }
+        showingChat = true
     }
 
     /// 고를 것 두 개뿐. 설명 문구는 두지 않는다 — 이름만으로 충분하고,

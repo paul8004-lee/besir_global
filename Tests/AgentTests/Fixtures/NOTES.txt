@@ -1,0 +1,13 @@
+Fixtures for the AgentClient tests (SPEC-AGENT-002, M4b).
+
+tools.json: the four tool declarations (frozen, SPEC-AGENT-001).
+instructions-sample.txt: the instruction text the live measurement used, for the fixed clock Tuesday 2026-10-27T09:00 America/Los_Angeles (frozen). The file has no trailing newline: do not add one.
+response-function-call.json: derived from r10-a.resp.json (a recorded response with a reasoning item, a message item carrying phase "commentary", and a function_call item). Kept: id, object, status, model, output, usage. Dropped: every echo of the request (instructions, tools, input, reasoning, temperature, store, tool_choice, and the other request settings) and the timestamps.
+response-message.json: derived from r10-c.resp.json (a recorded response with a reasoning item and a message item), trimmed the same way.
+response-incomplete.json: hand-built. No real call in the planned measurement returned an incomplete status. It has status "incomplete", an output array with a reasoning item and a partial message, and no function call.
+
+Replaced fields: every id, call_id and previous_response_id string value now contains FIXTURE (resp_FIXTURE, rs_FIXTURE, msg_FIXTURE, fc_FIXTURE, call_FIXTURE), and every encrypted_content value is exactly ENC_FIXTURE. No URL and no host name appears in any fixture.
+Text was normalized to ASCII (typographic quotes and dashes replaced by plain ones; the recorded text needed no change).
+
+Top-level keys of the recorded stateless replay request (r10-c.req.json) minus model and reasoning, which the comparison excludes (the recorded requests measure the default effort and the Worker defaults the model, while the app always sends reasoning):
+REQUEST_KEYS_STATELESS: include,input,instructions,parallel_tool_calls,tools

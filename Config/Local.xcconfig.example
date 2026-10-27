@@ -1,0 +1,5 @@
+// Copy this file to Config/Local.xcconfig (git-ignored) and replace the placeholders.
+// Write the host without a scheme: a double slash starts a comment in an xcconfig file.
+// Use one space around the equals sign and no quotes.
+BESIR_PROXY_HOST = your-worker-host-here
+BESIR_APP_TOKEN = your-app-token-here

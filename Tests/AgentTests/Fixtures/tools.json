@@ -1,0 +1,90 @@
+[
+  {
+    "type": "function",
+    "name": "list_activities",
+    "description": "List the user's schedule items that overlap a date range.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "from": {
+          "type": "string",
+          "description": "Start of the range as a local date-time, YYYY-MM-DDTHH:MM."
+        },
+        "to": {
+          "type": "string",
+          "description": "End of the range as a local date-time, YYYY-MM-DDTHH:MM. After from, at most 31 days later."
+        }
+      },
+      "required": ["from", "to"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "create_activity",
+    "description": "Add a new schedule item.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Event title, at most 80 characters."
+        },
+        "start": {
+          "type": "string",
+          "description": "Start as a local date-time, YYYY-MM-DDTHH:MM."
+        },
+        "end": {
+          "type": "string",
+          "description": "End as a local date-time, YYYY-MM-DDTHH:MM. After start, at most 24 hours later."
+        }
+      },
+      "required": ["title", "start", "end"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "update_activity",
+    "description": "Change the title, start or end of an existing schedule item.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Event id returned by list_activities."
+        },
+        "title": {
+          "type": "string",
+          "description": "New title, at most 80 characters."
+        },
+        "start": {
+          "type": "string",
+          "description": "New start as a local date-time, YYYY-MM-DDTHH:MM."
+        },
+        "end": {
+          "type": "string",
+          "description": "New end as a local date-time, YYYY-MM-DDTHH:MM."
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "delete_activity",
+    "description": "Delete an existing schedule item.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Event id returned by list_activities."
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
+  }
+]
