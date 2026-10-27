@@ -206,10 +206,11 @@ enum AgentWire {
 final class AgentClient: AgentTransport {
     private let config: AppConfig
     private let now: () -> Date
-    private let timeZone: TimeZone
+    private let timeZone: () -> TimeZone
     private let session: URLSession
 
-    init(config: AppConfig, now: @escaping () -> Date, timeZone: TimeZone,
+    /// `timeZone` is read for every request, so a zone change while the app runs reaches the instruction text.
+    init(config: AppConfig, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone,
          session: URLSession = URLSession(configuration: .ephemeral)) {
         self.config = config
         self.now = now
@@ -217,11 +218,16 @@ final class AgentClient: AgentTransport {
         self.session = session
     }
 
+    convenience init(config: AppConfig, now: @escaping () -> Date, timeZone: TimeZone,
+                     session: URLSession = URLSession(configuration: .ephemeral)) {
+        self.init(config: config, now: now, timeZone: { timeZone }, session: session)
+    }
+
     var isConfigured: Bool { config.hasAI }
 
     /// The request for a history, made by the configuration's single request builder (60 second timeout).
     func makeRequest(history: [AgentEntry]) -> URLRequest? {
-        let body = AgentWire.requestBody(history: history, instructions: AgentWire.instructions(now: now(), timeZone: timeZone))
+        let body = AgentWire.requestBody(history: history, instructions: AgentWire.instructions(now: now(), timeZone: timeZone()))
         return config.proxyPOSTRequest("/ai", body: body, timeout: 60)
     }
 
