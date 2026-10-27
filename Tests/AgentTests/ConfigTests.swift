@@ -110,6 +110,39 @@ final class ConfigTests: XCTestCase {
         XCTAssertEqual(merged.appToken, Self.savedToken)
     }
 
+    // MARK: - What Save writes (audit D3)
+
+    func testT28_D3_BundledProxyFieldsAreNotWrittenToTheSavedConfig() throws {
+        var config = AppConfig.merged(saved: nil, bundled: AppConfig.bundled(info: bundledInfo))
+        config.autoAddToCalendar = false
+        // Positive counterpart: the merged config does hold the bundled values, so the blanks below are the change.
+        XCTAssertEqual(config.proxyBaseURL, Self.scheme + Self.host)
+        XCTAssertEqual(config.appToken, Self.token)
+        let written = config.persistable(bundled: AppConfig.bundled(info: bundledInfo))
+        XCTAssertEqual(written.proxyBaseURL, "")
+        XCTAssertEqual(written.appToken, "")
+        XCTAssertFalse(written.autoAddToCalendar)
+        let json = String(decoding: try JSONEncoder().encode(written), as: UTF8.self)
+        XCTAssertFalse(json.contains(Self.host))
+        XCTAssertFalse(json.contains(Self.token))
+        // Loading what was written gives the bundled values back.
+        let reloaded = AppConfig.merged(saved: written, bundled: AppConfig.bundled(info: bundledInfo))
+        XCTAssertEqual(reloaded.proxyBaseURL, Self.scheme + Self.host)
+        XCTAssertEqual(reloaded.appToken, Self.token)
+    }
+
+    func testT28_D3_BlankBundledFieldsKeepTheSavedProxyValues() {
+        let blank = AppConfig.bundled(info: ["BesirProxyHost": " ", "BesirAppToken": ""])
+        let written = savedConfig().persistable(bundled: blank)
+        XCTAssertEqual(written.proxyBaseURL, Self.scheme + Self.savedHost)
+        XCTAssertEqual(written.appToken, Self.savedToken)
+        // Field by field: only the field the bundle supplies is blanked.
+        let hostOnly = AppConfig.bundled(info: ["BesirProxyHost": Self.host, "BesirAppToken": ""])
+        let mixed = savedConfig().persistable(bundled: hostOnly)
+        XCTAssertEqual(mixed.proxyBaseURL, "")
+        XCTAssertEqual(mixed.appToken, Self.savedToken)
+    }
+
     // MARK: - The token header
 
     func testAG001_TokenSentOnlyInBesirTokenHeader() throws {
