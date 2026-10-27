@@ -2,6 +2,11 @@ name = "besir-global-proxy"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
 
+# Run near the US East API servers: calls to the model API that leave Cloudflare
+# from Hong Kong or Tokyo are answered 404 model_not_found.
+[placement]
+region = "aws:us-east-1"
+
 # Secrets (never committed): set with `wrangler secret put <NAME>`, or put in proxy/.dev.vars for local dev.
 #   META_API_KEY      Meta Model API key
 #   GOOGLE_MAPS_KEY   Google Places API (New) + Routes API key
