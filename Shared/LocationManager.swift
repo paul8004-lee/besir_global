@@ -115,11 +115,18 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             lastError = nil
             let region = (obj["region"] as? String) ?? (obj["regionName"] as? String)
             let city = obj["city"] as? String
-            let name = [region, city].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
+            let name = Self.joinedApproxName(region: region, city: city)
             currentPlaceName = name.isEmpty ? "Current Location (approx.)" : "\(name) (approx.)"
         } catch {
             // 폴백 실패 시 조용히 무시(상위에서 에러 메시지 처리)
         }
+    }
+
+    /// Joins region and city for the approximate name; writes the text once when both are exactly equal.
+    static func joinedApproxName(region: String?, city: String?) -> String {
+        let parts = [region, city].compactMap { $0 }.filter { !$0.isEmpty }
+        if parts.count == 2, parts[0] == parts[1] { return parts[0] }
+        return parts.joined(separator: " ")
     }
 
     // MARK: - CLLocationManagerDelegate
