@@ -81,7 +81,7 @@ struct RootView: View {
     private func openChat() {
         if chatHolder.session == nil {
             chatHolder.session = AgentSession(toolbox: AgentToolbox(store: store, now: { Date() }, timeZone: .current),
-                                              transport: AgentPendingTransport())
+                                              transport: AgentClient(config: store.config, now: { Date() }, timeZone: .current))
         }
         showingChat = true
     }
