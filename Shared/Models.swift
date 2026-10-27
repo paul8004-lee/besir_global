@@ -1039,10 +1039,10 @@ enum MealCategoryFilter: String, CaseIterable, Identifiable {
     case restaurant, cafe
 
     var id: String { rawValue }
-    /// The Google place type sent as the included type (stub in the RED run).
-    var includedType: String { "" }
-    /// The search word used when no keyword is given (stub in the RED run).
-    var categoryWord: String { "" }
+    /// The Google place type sent as the included type.
+    var includedType: String { self == .restaurant ? "restaurant" : "cafe" }
+    /// The search word used when no keyword is given.
+    var categoryWord: String { self == .restaurant ? "restaurants" : "cafes" }
     var title: String { self == .restaurant ? "Restaurants" : "Cafes" }
     var systemImage: String { self == .restaurant ? "fork.knife" : "cup.and.saucer.fill" }
 }
