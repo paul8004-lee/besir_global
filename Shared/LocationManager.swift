@@ -49,7 +49,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         lastError = nil
         let status = manager.authorizationStatus
         if status == .denied || status == .restricted {
-            lastError = "위치 권한이 꺼져 있습니다. 시스템 설정에서 허용해 주세요."
+            lastError = "Location permission is off. Allow it in Settings."
             return
         }
         // 이미 확보된 최신 위치가 있으면 즉시 사용 (재요청 시 콜백이 안 와 멈추는 문제 방지).
@@ -96,7 +96,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             await self.ipLocationFallback()
             if self.currentLocation == nil {
                 self.isLocating = false
-                self.lastError = "위치를 가져오지 못했습니다. 시스템 설정 → 위치 서비스를 확인하거나 출발지를 직접 검색해 주세요."
+                self.lastError = "Couldn't get your location. Check Settings → Location Services, or search for an origin yourself."
             }
         }
     }
@@ -116,7 +116,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             let region = (obj["region"] as? String) ?? (obj["regionName"] as? String)
             let city = obj["city"] as? String
             let name = [region, city].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
-            currentPlaceName = name.isEmpty ? "현재 위치(대략)" : "\(name) (대략)"
+            currentPlaceName = name.isEmpty ? "Current Location (approx.)" : "\(name) (approx.)"
         } catch {
             // 폴백 실패 시 조용히 무시(상위에서 에러 메시지 처리)
         }
@@ -132,7 +132,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                 if self.isLocating { manager.startUpdatingLocation() }
             } else if status == .denied || status == .restricted {
                 self.isLocating = false
-                self.lastError = "위치 권한이 거부되었습니다. 시스템 설정에서 허용해 주세요."
+                self.lastError = "Location permission was denied. Allow it in Settings."
             }
         }
     }
@@ -166,7 +166,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             for part in [p.administrativeArea, p.locality, p.subLocality, p.thoroughfare].compactMap({ $0 }) {
                 if !parts.contains(part) { parts.append(part) }
             }
-            let name = parts.isEmpty ? "현재 위치" : parts.joined(separator: " ")
+            let name = parts.isEmpty ? "Current Location" : parts.joined(separator: " ")
             Task { @MainActor in self?.currentPlaceName = name }
         }
     }

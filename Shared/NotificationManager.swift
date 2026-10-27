@@ -39,7 +39,7 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
 
     func bootstrap() {
         guard let center else {
-            lastError = "번들 식별자가 없어 알림을 사용할 수 없습니다."
+            lastError = "Notifications are unavailable because there is no bundle identifier."
             return
         }
         center.delegate = self
@@ -151,16 +151,16 @@ extension NotificationManager {
     static func alarmSentence(for verdict: AlarmVerdict, leadMinutes: Int,
                               variant: AlarmSentenceVariant) -> String {
         switch (variant, verdict) {
-        case (.caption, .off): return "알림 꺼짐"
-        case (.caption, .noPermission): return "알림 권한이 꺼져 있어 울리지 않아요"
-        case (.caption, .past): return "알림 시각이 지나 예약 없음"
-        case (.caption, .scheduled): return "\(leadMinutes)분 전 알림 예약됨"
-        case (.caption, .later): return "가까워지면 알림 예약돼요"
-        case (.summary, .off): return "출발 알림은 꺼져 있어요."
-        case (.summary, .noPermission): return "출발 \(leadMinutes)분 전 알림은 알림 권한이 꺼져 있어 울리지 않아요."
-        case (.summary, .past): return "알림 시각이 이미 지나 출발 알림은 예약되지 않았어요."
-        case (.summary, .scheduled): return "출발 \(leadMinutes)분 전 알림 예약됨."
-        case (.summary, .later): return "출발 \(leadMinutes)분 전 알림은 가까워지면 예약돼요."
+        case (.caption, .off): return "Alert off"
+        case (.caption, .noPermission): return "Notification permission is off, so it won't ring"
+        case (.caption, .past): return "Alert time has passed, nothing scheduled"
+        case (.caption, .scheduled): return "Alert scheduled \(leadMinutes) min before"
+        case (.caption, .later): return "Alert will be scheduled closer to the time"
+        case (.summary, .off): return "The departure alert is off."
+        case (.summary, .noPermission): return "The alert \(leadMinutes) min before departure won't ring because notification permission is off."
+        case (.summary, .past): return "The alert time has already passed, so no departure alert was scheduled."
+        case (.summary, .scheduled): return "Alert scheduled \(leadMinutes) min before departure."
+        case (.summary, .later): return "The alert \(leadMinutes) min before departure will be scheduled closer to the time."
         }
     }
 
@@ -169,7 +169,7 @@ extension NotificationManager {
     /// 현행 "출발 N분 전 알림."을 그대로 두게 한다.
     static func alarmSentence(permission: AlarmPermission) -> String? {
         guard permission == .denied else { return nil }
-        return "출발 알림은 알림 권한이 꺼져 있어 울리지 않아요."
+        return "The departure alert won't ring because notification permission is off."
     }
 
     /// UNAuthorizationStatus → 세 값. switch로 고정한다: 임시 권한(ephemeral) 분기는
@@ -205,5 +205,5 @@ extension NotificationManager {
 
     /// 활동 폼의 과거 알림 노트(D-6) — AddEventView:617과 글자까지 같되 앞 공백이 없다. 저쪽은
     /// `note +=`로 이어 붙이고 활동 폼은 줄의 단독 노트로 쓰기 때문이다.
-    static let activityPastAlarmNote = "알림 시각이 이미 지나 출발 알림이 예약되지 않아요."
+    static let activityPastAlarmNote = "The alert time has already passed, so no departure alert will be scheduled."
 }

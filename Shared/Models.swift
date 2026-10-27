@@ -13,10 +13,10 @@ enum TransportMode: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .car: return "자동차"
-        case .transit: return "대중교통"
-        case .walk: return "도보"
-        case .bicycle: return "자전거"
+        case .car: return "Car"
+        case .transit: return "Transit"
+        case .walk: return "Walk"
+        case .bicycle: return "Bicycle"
         }
     }
 
@@ -24,10 +24,10 @@ enum TransportMode: String, Codable, CaseIterable, Identifiable {
     /// 조합하지 않도록 이름과 조사를 한 곳에 묶어 둔다(D14) — 호출 쪽은 이 값만 붙인다.
     var titleWithParticle: String {
         switch self {
-        case .car: return "자동차로"
-        case .transit: return "대중교통으로"
-        case .walk: return "도보로"
-        case .bicycle: return "자전거로"
+        case .car: return "By car"
+        case .transit: return "By transit"
+        case .walk: return "On foot"
+        case .bicycle: return "By bicycle"
         }
     }
 
@@ -58,13 +58,13 @@ enum TravelFailure: String, CaseIterable {
     var text: (caption: String, sentence: String) {
         switch self {
         case .offline:
-            return ("오프라인", "인터넷에 연결되어 있지 않아 이동시간을 계산하지 못했어요.")
+            return ("Offline", "No internet connection, so travel time couldn't be calculated.")
         case .lookupFailed:
-            return ("조회 실패", "길찾기 서비스에서 답을 받지 못해 이동시간을 계산하지 못했어요. 잠시 뒤 다시 시도해 주세요.")
+            return ("Failed", "The directions service didn't respond, so travel time couldn't be calculated. Try again in a moment.")
         case .noRoute:
-            return ("경로 없음", "두 장소 사이의 경로를 찾지 못해 이동시간을 계산하지 못했어요.")
+            return ("No route", "No route was found between the two places, so travel time couldn't be calculated.")
         case .notConfigured:
-            return ("설정 필요", "길찾기 서버가 설정되어 있지 않아 이동시간을 계산하지 못했어요. 설정을 확인해 주세요.")
+            return ("Setup", "The directions server isn't set up, so travel time couldn't be calculated. Check the settings.")
         }
     }
 
@@ -124,10 +124,10 @@ struct TravelEstimate: Identifiable {
 
     /// "23분" 형태 문자열.
     var durationText: String {
-        guard let duration else { return "정보 없음" }
+        guard let duration else { return "No info" }
         let minutes = roundedMinutes(fromSeconds: duration)
-        if minutes < 60 { return "\(minutes)분" }
-        return "\(minutes / 60)시간 \(minutes % 60)분"
+        if minutes < 60 { return "\(minutes) min" }
+        return "\(minutes / 60) hr \(minutes % 60) min"
     }
 }
 
@@ -172,18 +172,18 @@ extension TransitStep {
     /// "도보 5분" / "1호선 탑승" / "101번 버스 탑승"
     var headline: String {
         switch kind {
-        case .walk: return "도보 \(minutes)분"
-        case .bus: return "\(line) 버스 탑승"
-        default: return "\(line) 탑승"
+        case .walk: return "Walk \(minutes) min"
+        case .bus: return "Take bus \(line)"
+        default: return "Take \(line)"
         }
     }
 
     /// "시청역까지 이동" / "시청역 → 종로3가역 · 3개 역 · 8분"
     var detail: String {
-        if kind == .walk { return "\(to)까지 이동" }
-        let unit = kind == .subway ? "개 역" : "개 정류장"
+        if kind == .walk { return "Walk to \(to)" }
+        let unit = kind == .subway ? " station(s)" : " stop(s)"
         let count = stationCount.map { " · \($0)\(unit)" } ?? ""
-        return "\(from) → \(to)\(count) · \(minutes)분"
+        return "\(from) → \(to)\(count) · \(minutes) min"
     }
 }
 
@@ -330,7 +330,7 @@ enum ScheduleLogic {
             .max(by: { $0.arrivalDate < $1.arrivalDate }) {
             before = (e.destination, e.title)
         } else if let home {
-            before = (home, "집")
+            before = (home, "Home")
         }
 
         var after: (Place, String)?
@@ -341,7 +341,7 @@ enum ScheduleLogic {
             .min(by: { $0.arrivalDate < $1.arrivalDate }) {
             after = (e.destination, e.title)
         } else if let home {
-            after = (home, "집")
+            after = (home, "Home")
         }
         return (before, after)
     }
@@ -1019,9 +1019,9 @@ enum MealCategory: String, Codable, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .diningOut: return "외식"
-        case .delivery: return "배달"
-        case .cooking: return "요리"
+        case .diningOut: return "Dining Out"
+        case .delivery: return "Delivery"
+        case .cooking: return "Cooking"
         }
     }
 
@@ -1043,7 +1043,7 @@ enum MealCategoryFilter: String, CaseIterable, Identifiable {
     var code: String { self == .restaurant ? "FD6" : "CE7" }
     /// 카카오 키워드 검색은 query가 비면 안 돼서 카테고리 이름을 그대로 넣는다.
     var query: String { self == .restaurant ? "음식점" : "카페" }
-    var title: String { self == .restaurant ? "맛집" : "카페" }
+    var title: String { self == .restaurant ? "Restaurants" : "Cafes" }
     var systemImage: String { self == .restaurant ? "fork.knife" : "cup.and.saucer.fill" }
 }
 
@@ -1053,7 +1053,7 @@ enum MealCategoryFilter: String, CaseIterable, Identifiable {
 enum NearbySort: String, CaseIterable, Identifiable {
     case distance, accuracy
     var id: String { rawValue }
-    var title: String { self == .distance ? "거리순" : "정확도순" }
+    var title: String { self == .distance ? "Distance" : "Relevance" }
 }
 
 /// 주변 검색 결과 한 건(거리·업종·연락처까지 포함).
