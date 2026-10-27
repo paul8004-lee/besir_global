@@ -6,6 +6,13 @@ import UIKit
 // SPEC-AGENT-002 (M4a): the chat sheet. Text is drawn with Text(verbatim:) so nothing the model or a title says is
 // read as markup or turned into a link. The only fixed texts are the control labels and the field's placeholder.
 
+/// Holds the chat session by reference. The sheet closures of RootView are built from a copy of that view, and a plain
+/// @State optional read there came out nil, which showed a blank sheet; the holder is one object in every copy.
+@MainActor
+final class AgentChatHolder {
+    var session: AgentSession?
+}
+
 struct AgentChatView: View {
     @ObservedObject var session: AgentSession
     @State private var draft = ""
