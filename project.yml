@@ -22,6 +22,9 @@ targets:
     sources:
       - Shared
       - Resources
+    configFiles:
+      Debug: Config/Base.xcconfig
+      Release: Config/Base.xcconfig
     info:
       path: Generated/Info-iOS.plist
       properties:
@@ -39,6 +42,9 @@ targets:
           - fetch
         BGTaskSchedulerPermittedIdentifiers:
           - com.iseongmin.besir.sync
+        # Worker address and app token, filled at build time from Config/Local.xcconfig.
+        BesirProxyHost: $(BESIR_PROXY_HOST)
+        BesirAppToken: $(BESIR_APP_TOKEN)
     entitlements:
       path: Generated/besir-iOS.entitlements
       properties:
@@ -54,6 +60,30 @@ targets:
         # 자동 서명 + 본인 Apple ID 팀(xcodegen 재생성 시에도 유지).
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: DFEME8ZQT9
+    # `xcodebuild test -scheme besir-iOS` runs the unit tests below.
+    scheme:
+      testTargets:
+        - besirTests
+
+  besirTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/AgentTests
+        excludes:
+          - Fixtures
+      - path: Tests/AgentTests/Fixtures
+        buildPhase: resources
+    dependencies:
+      - target: besir-iOS
+    settings:
+      base:
+        # The tests run inside the app process (hosted), so they can reach Shared/ types.
+        PRODUCT_NAME: besirTests
+        PRODUCT_BUNDLE_IDENTIFIER: com.iseongmin.besir.global.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/besir.app/besir
+        BUNDLE_LOADER: $(TEST_HOST)
 
   besirShare:
     type: app-extension
