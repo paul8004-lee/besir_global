@@ -25,11 +25,19 @@ final class ShareViewController: UIViewController {
         card.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(label)
         view.addSubview(card)
+#if DEBUG
+        // Debug only: room for the several lines of the record result.
+        let cardSize = CGSize(width: 300, height: 170)
+        label.numberOfLines = 0
+        label.widthAnchor.constraint(lessThanOrEqualTo: card.widthAnchor, constant: -16).isActive = true
+#else
+        let cardSize = CGSize(width: 220, height: 80)
+#endif
         NSLayoutConstraint.activate([
             card.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             card.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            card.widthAnchor.constraint(equalToConstant: 220),
-            card.heightAnchor.constraint(equalToConstant: 80),
+            card.widthAnchor.constraint(equalToConstant: cardSize.width),
+            card.heightAnchor.constraint(equalToConstant: cardSize.height),
             label.centerXAnchor.constraint(equalTo: card.centerXAnchor),
             label.centerYAnchor.constraint(equalTo: card.centerYAnchor),
         ])
@@ -71,24 +79,50 @@ final class ShareViewController: UIViewController {
             }
         }
         // The image is shrunk to a small JPEG here, once, so the queue never holds a large one.
+#if DEBUG
+        var queueLine = "Queue: nothing to store"
+#endif
         if let queued = SharedInbox.prepare(text: text, imageData: imageData, mime: mimeType) {
+#if DEBUG
+            queueLine = SharedInbox.standard.enqueue(queued) ? "Queue: stored" : "Queue: write failed"
+#else
             SharedInbox.standard.enqueue(queued)
+#endif
         }
 #if DEBUG
-        label.text = "Found: \(writeObservation(itemCount: items.count))"
-        try? await Task.sleep(nanoseconds: 2_500_000_000)
+        label.font = .preferredFont(forTextStyle: .footnote)
+        label.text = (writeObservation(itemCount: items.count) + [queueLine, inboxLine()]).joined(separator: "\n")
+        // Long enough to read and to screenshot; the Release build closes at once.
+        try? await Task.sleep(nanoseconds: 8_000_000_000)
 #endif
         finish()
     }
 
 #if DEBUG
-    /// Appends this share's record to the App Group file and returns the kinds found, for the label.
-    private func writeObservation(itemCount: Int) -> String {
+    /// Appends this share's record to the App Group file and returns the lines for the card: the kinds found and what the
+    /// write did. A missing container and a failed write are both said out loud (domain and code only, no path, no content).
+    private func writeObservation(itemCount: Int) -> [String] {
         let record = ShareObservation.record(at: Date(), itemCount: itemCount, attachments: observed)
-        if let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: SharedInbox.appGroupID) {
-            ShareObservation.append(record, to: container.appendingPathComponent(ShareObservation.fileName))
+        var lines = ["Found: \(ShareObservation.summary(of: record))"]
+        guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: SharedInbox.appGroupID) else {
+            return lines + ["App Group: no container"]
         }
-        return ShareObservation.summary(of: record)
+        lines.append("App Group: container found")
+        let file = container.appendingPathComponent(ShareObservation.fileName)
+        do {
+            try ShareObservation.append(record, to: file)
+            lines.append(FileManager.default.fileExists(atPath: file.path) ? "Record: written, file present" : "Record: written, file missing")
+        } catch {
+            lines.append("Record: failed \(ShareObservation.describe(error))")
+        }
+        return lines
+    }
+
+    /// How many item files the queue folder holds right now (a count, nothing else).
+    private func inboxLine() -> String {
+        guard let directory = SharedInbox.standard.directory else { return "Inbox: no folder" }
+        let count = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.count
+        return count.map { "Inbox: \($0) file(s)" } ?? "Inbox: folder not readable"
     }
 #endif
 

@@ -76,16 +76,21 @@ enum ShareObservation {
         Record(at: ISO8601DateFormatter().string(from: date), itemCount: itemCount, attachments: attachments)
     }
 
-    /// Appends the record to the JSON array at `fileURL` (newest last, the newest `keepCount` kept). Returns false when it could not write.
-    @discardableResult
-    static func append(_ record: Record, to fileURL: URL) -> Bool {
+    /// Appends the record to the JSON array at `fileURL` (newest last, the newest `keepCount` kept). Throws when it cannot write,
+    /// so the Debug card can say so instead of showing a record that was never saved.
+    static func append(_ record: Record, to fileURL: URL) throws {
         var records = (try? Data(contentsOf: fileURL)).flatMap { try? JSONDecoder().decode([Record].self, from: $0) } ?? []
         records.append(record)
         if records.count > keepCount { records.removeFirst(records.count - keepCount) }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(records) else { return false }
-        return (try? data.write(to: fileURL, options: .atomic)) != nil
+        try encoder.encode(records).write(to: fileURL, options: .atomic)
+    }
+
+    /// One short line for a write error on the Debug card: the error domain and code only, never a path or content.
+    static func describe(_ error: Error) -> String {
+        let nsError = error as NSError
+        return "\(nsError.domain) \(nsError.code)"
     }
 
     /// The kinds found, in order, for the Debug label of the extension (for example `image, url`).
