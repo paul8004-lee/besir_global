@@ -313,7 +313,7 @@ struct ContentView: View {
         NavigationSplitView {
             sidebar
         } detail: {
-            ContentUnavailableView("일정을 선택하세요", systemImage: "calendar")
+            ContentUnavailableView("Select an Event", systemImage: "calendar")
         }
         // NavigationSplitView의 detail 컬럼은 iPhone처럼 좁은 화면(compact)에서는 실제 네비게이션
         // push가 있어야 사이드바에서 넘어간다 — selection 상태만 바꿔서는(제스처로 탭했을 때처럼)
@@ -327,7 +327,7 @@ struct ContentView: View {
                     EventDetailView(event: event)
                         .toolbar {
                             ToolbarItem(placement: .cancellationAction) {
-                                Button("닫기") { selection = nil }
+                                Button("Close") { selection = nil }
                             }
                         }
                 }
@@ -399,7 +399,7 @@ struct ContentView: View {
                     .floatingCircle()
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("오늘")
+            .accessibilityLabel("Today")
             .padding(.leading, FloatingCircle.inset)
             .padding(.bottom, FloatingCircle.inset)
         }
@@ -423,14 +423,14 @@ struct ContentView: View {
             // 상태를 다시 정리하지 않게 nil 확인이 문이 된다.
             set: { if !$0 { pendingMove = nil; cancelSeriesPreview() } }
         ), titleVisibility: .visible) {
-            Button("전체 반복 일정 이동") { applyPendingMove(true) }
-            Button("이 일정만 이동") { applyPendingMove(false) }
-            Button("취소", role: .cancel) { pendingMove = nil; cancelSeriesPreview() }
+            Button("Move Entire Series") { applyPendingMove(true) }
+            Button("Move This Event Only") { applyPendingMove(false) }
+            Button("Cancel", role: .cancel) { pendingMove = nil; cancelSeriesPreview() }
         }
         .toolbar {
             if let onBack {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button { onBack() } label: { Label("홈", systemImage: "chevron.left") }
+                    Button { onBack() } label: { Label("Home", systemImage: "chevron.left") }
                 }
             }
             // 맥은 지금 모양 그대로(O-C1 — '+' 메뉴 포함 전부), 아이폰은 우상단을 비운다(REQ-001).
@@ -441,24 +441,24 @@ struct ContentView: View {
             #if os(macOS)
             ToolbarItem(placement: .primaryAction) {
                 Button { selectedDate = Date(); isMonthExpanded = false } label: { Image(systemName: "calendar.badge.clock") }
-                    .help("오늘로 이동")
+                    .help("Go to Today")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showingSettings = true } label: { Image(systemName: "gearshape") }
-                    .help("설정")
+                    .help("Settings")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { showingFavorites = true } label: { Image(systemName: "star") }
-                    .help("즐겨찾기 장소")
+                    .help("Favorite Places")
             }
             ToolbarItem(placement: .primaryAction) {
                 Menu {
-                    Button { showingAdd = true } label: { Label("이동 일정 추가", systemImage: "arrow.triangle.turn.up.right.diamond") }
-                    Button { showingAddActivity = true } label: { Label("활동 추가", systemImage: "clock") }
+                    Button { showingAdd = true } label: { Label("Add Travel Event", systemImage: "arrow.triangle.turn.up.right.diamond") }
+                    Button { showingAddActivity = true } label: { Label("Add Activity", systemImage: "clock") }
                 } label: {
                     Image(systemName: "plus")
                 }
-                .help("새 일정 추가")
+                .help("Add New Event")
             }
             #else
             #endif
@@ -480,9 +480,9 @@ struct ContentView: View {
                     .font(.title3)
             }
             .buttonStyle(.plain)
-            .help(isMonthExpanded ? "일간 보기로" : "월간 보기로")
+            .help(isMonthExpanded ? "Switch to Day View" : "Switch to Month View")
             // .help는 맥 툴팁용 — iOS VoiceOver용으로 같은 문구를 라벨에도 둔다.
-            .accessibilityLabel(isMonthExpanded ? "일간 보기로" : "월간 보기로")
+            .accessibilityLabel(isMonthExpanded ? "Switch to Day View" : "Switch to Month View")
             #endif
 
             Spacer()
@@ -755,7 +755,7 @@ struct ContentView: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { selectDay(day, collapsingMonth: false) }
         #if os(iOS)
-        .accessibilityAction(named: "월간 보기로") { expandMonth() }
+        .accessibilityAction(named: "Switch to Month View") { expandMonth() }
         #endif
     }
 
@@ -875,7 +875,7 @@ struct ContentView: View {
                                                         .onAppear {
                                                             // 수리 3b 진단: 관찰자가 실제로 붙었는지 — 이 줄이
                                                             // 없으면 대기만 세워지고 관찰자가 아예 안 붙은 것.
-                                                            arrivalLog.notice("도착 관찰자 등장 block=\(p.id, privacy: .public) page=\(dayTitle(date), privacy: .public)")
+                                                            arrivalLog.notice("arrival observer appeared block=\(p.id, privacy: .public) page=\(dayTitle(date), privacy: .public)")
                                                             settleArrivalIfNeeded(page: date, block: p, columnX: f.x,
                                                                                   frame: g.frame(in: .global))
                                                         }
@@ -1034,7 +1034,7 @@ struct ContentView: View {
                 }
 
                 if dayEvents.isEmpty && dayActivities.isEmpty {
-                    Text("일정 없음").foregroundStyle(Theme.faint).font(.caption).padding()
+                    Text("No events").foregroundStyle(Theme.faint).font(.caption).padding()
                 }
             }
             // 블록을 꾹 눌러 드래그하는 동안만 스크롤을 잠가 화면 스크롤과 블록 이동이 서로 방해하지
@@ -1068,9 +1068,9 @@ struct ContentView: View {
         if let waiting = pendingArrival {
             let expected = Self.arrivalGutter + columnX
             if abs(fr.minX - expected) >= 1 {
-                arrivalLog.notice("도착 판정 가로문 block=\(block.id, privacy: .public) minX=\(Int(fr.minX)) 기대=\(Int(expected))")
+                arrivalLog.notice("arrival check, horizontal gate: block=\(block.id, privacy: .public) minX=\(Int(fr.minX)) expected=\(Int(expected))")
             } else if !calendar.isDate(page, inSameDayAs: waiting.day) {
-                arrivalLog.notice("도착 판정 날문 block=\(block.id, privacy: .public) page=\(dayTitle(page), privacy: .public) 대기날=\(dayTitle(waiting.day), privacy: .public)")
+                arrivalLog.notice("arrival check, day gate: block=\(block.id, privacy: .public) page=\(dayTitle(page), privacy: .public) waitingDay=\(dayTitle(waiting.day), privacy: .public)")
             }
         }
         guard abs(fr.minX - (Self.arrivalGutter + columnX)) < 1,
@@ -1093,14 +1093,14 @@ struct ContentView: View {
     private func scrollArrivalBlock(day: Date, block: PositionedBlock, blockHeight: CGFloat) {
         #if os(iOS)
         guard let sv = PageScrollRegistry.byDay[calendar.startOfDay(for: day)]?.value else {
-            arrivalLog.notice("도착 스크롤 miss — 페이지 스크롤 뷰 등록 없음 day \(dayTitle(day), privacy: .public)")
+            arrivalLog.notice("arrival scroll miss — no page scroll view registered, day \(dayTitle(day), privacy: .public)")
             return
         }
         let y = offsetY(for: block) + blockHeight / 3 - sv.bounds.height / 3
         let ceiling = sv.contentSize.height + sv.adjustedContentInset.bottom - sv.bounds.height
         // 수리 3b 진단: 쓰기까지 왔다는 것과 쓴 값을 남긴다 — 관측(로그 0줄)은 쓰기 자체가
         // 없었음을 뜻했지만, 쓰고도 효과가 없던 갈래와 이 로그로 가른다.
-        arrivalLog.notice("도착 스크롤 씀 block=\(block.id, privacy: .public) y=\(Int(y)) ceiling=\(Int(ceiling)) 이전=\(Int(sv.contentOffset.y)) day=\(dayTitle(day), privacy: .public)")
+        arrivalLog.notice("arrival scroll applied: block=\(block.id, privacy: .public) y=\(Int(y)) ceiling=\(Int(ceiling)) previous=\(Int(sv.contentOffset.y)) day=\(dayTitle(day), privacy: .public)")
         sv.setContentOffset(CGPoint(x: sv.contentOffset.x, y: min(max(y, 0), ceiling)), animated: false)
         #endif
     }
@@ -1561,7 +1561,7 @@ struct ContentView: View {
         switch drag.kind {
         case .activity(let a):
             if a.recurrenceId != nil {
-                pendingMove = PendingMove(message: "'\(a.title)'은(는) 반복 일정입니다. 어떻게 옮길까요?") { whole in
+                pendingMove = PendingMove(message: "'\(a.title)' is a repeating event. How do you want to move it?") { whole in
                     store.moveActivity(a, byMinutes: drag.deltaMinutes, wholeSeries: whole)
                 }
                 // 선택창 동안 미리보기(t71, REQ-012) — 활동 블록의 놓은 날은 시작+Δ의 달력 날.
@@ -1582,7 +1582,7 @@ struct ContentView: View {
                 followAfterDrop(of: e, pressedOn: drag.pageDate, deltaSign: drag.direction)
             }
             if e.recurrenceId != nil {
-                pendingMove = PendingMove(message: "'\(e.title)'은(는) 반복 일정입니다. 어떻게 옮길까요?",
+                pendingMove = PendingMove(message: "'\(e.title)' is a repeating event. How do you want to move it?",
                                           apply: { whole in
                                               store.adjustTravelLeg(e, byMinutes: drag.deltaMinutes, wholeSeries: whole,
                                                                     pressedOn: drag.pageDate)
@@ -1625,7 +1625,7 @@ struct ContentView: View {
             arrivalWatchId = blockId
             // 수리 3b 진단: 대기가 세워졌는데도 스크롤이 0줄 로그로 끝났다 — 어느 문에서
             // 끊기는지 이 로그와 아래 관찰자·판정 로그의 조합으로 가른다.
-            arrivalLog.notice("미리보기 도착 대기 세움 block=\(blockId, privacy: .public) day=\(dayTitle(target), privacy: .public)")
+            arrivalLog.notice("preview arrival wait set: block=\(blockId, privacy: .public) day=\(dayTitle(target), privacy: .public)")
         }
         selectedDate = target
     }
@@ -1812,7 +1812,7 @@ private final class PagerScrollController {
         if recentMoves.count >= Self.breakerLimit {
             if !tripped {
                 tripped = true
-                pagerLog.error("가로 페이저 되돌림이 \(Self.breakerWindow, privacy: .public)초 안에 \(Self.breakerLimit, privacy: .public)번 — 고리로 보고 멈춘다")
+                pagerLog.error("horizontal pager snapped back \(Self.breakerLimit, privacy: .public) times within \(Self.breakerWindow, privacy: .public) s — treating it as a loop and stopping")
             }
             return
         }
