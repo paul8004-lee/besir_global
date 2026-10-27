@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": 400,
+    "message": "Example request problem. This is a synthetic fixture.",
+    "status": "INVALID_ARGUMENT"
+  }
+}

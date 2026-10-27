@@ -1,0 +1,28 @@
+{
+  "places": [
+    {
+      "id": "fixture-place-0001",
+      "displayName": { "text": "Example Cafe", "languageCode": "en" },
+      "formattedAddress": "100 Sample Avenue, Exampleton, EX 94100, USA",
+      "location": { "latitude": 37.7801, "longitude": -122.4101 },
+      "primaryTypeDisplayName": { "text": "Coffee shop", "languageCode": "en" },
+      "googleMapsUri": "https://maps.example.invalid/place/0001"
+    },
+    {
+      "id": "fixture-place-0002",
+      "displayName": { "text": "Example Cafe", "languageCode": "en" },
+      "formattedAddress": "200 Sample Boulevard, Exampleton, EX 94100, USA",
+      "location": { "latitude": 37.7712, "longitude": -122.4233 },
+      "primaryTypeDisplayName": { "text": "Coffee shop", "languageCode": "en" },
+      "googleMapsUri": "https://maps.example.invalid/place/0002"
+    },
+    {
+      "id": "fixture-place-0003",
+      "displayName": { "text": "Sample Noodle House", "languageCode": "en" },
+      "formattedAddress": "300 Placeholder Way, Exampleton, EX 94100, USA",
+      "location": { "latitude": 37.7655, "longitude": -122.4312 },
+      "primaryTypeDisplayName": { "text": "Noodle restaurant", "languageCode": "en" },
+      "googleMapsUri": "https://maps.example.invalid/place/0003"
+    }
+  ]
+}

@@ -1034,37 +1034,38 @@ enum MealCategory: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// 주변 추천에서 찾을 장소 종류. 카카오 로컬의 category_group_code에 대응한다.
+/// The kind of place a nearby search looks for. Each case maps to one Google place type and one plain search word.
 enum MealCategoryFilter: String, CaseIterable, Identifiable {
     case restaurant, cafe
 
     var id: String { rawValue }
-    /// 카카오 로컬 카테고리 코드.
-    var code: String { self == .restaurant ? "FD6" : "CE7" }
-    /// 카카오 키워드 검색은 query가 비면 안 돼서 카테고리 이름을 그대로 넣는다.
-    var query: String { self == .restaurant ? "음식점" : "카페" }
+    /// The Google place type sent as the included type (stub in the RED run).
+    var includedType: String { "" }
+    /// The search word used when no keyword is given (stub in the RED run).
+    var categoryWord: String { "" }
     var title: String { self == .restaurant ? "Restaurants" : "Cafes" }
     var systemImage: String { self == .restaurant ? "fork.knife" : "cup.and.saucer.fill" }
 }
 
-/// 주변 검색 정렬 기준.
-/// 카카오 로컬이 지원하는 건 이 둘뿐이다 — **평점순은 만들 수 없다**(이 API가 평점을 주지 않는다).
-/// `accuracy`는 카카오의 자체 순위로, 많이 찾는 곳이 위로 오는 경향이 있어 평점순의 대용에 가깝다.
+/// Sort order of a nearby search.
+/// Distance is computed on the device from the straight-line distance, so it covers only the places Google returned.
+/// Relevance keeps the order Google answered in. A rating order cannot be built because the requested fields carry no rating.
 enum NearbySort: String, CaseIterable, Identifiable {
     case distance, accuracy
     var id: String { rawValue }
     var title: String { self == .distance ? "Distance" : "Relevance" }
 }
 
-/// 주변 검색 결과 한 건(거리·업종·연락처까지 포함).
+/// One nearby search result (distance, category and link included).
 struct NearbyPlace: Identifiable {
     var id: String { "\(place.name)-\(place.latitude)-\(place.longitude)" }
     let place: Place
-    /// "한식", "초밥,롤" 같은 세부 업종.
+    /// The primary type display name Google gives, such as a coffee shop; empty when Google gives none.
     let category: String
     let distanceMeters: Int?
+    /// Always nil: the phone number is not requested because it would move every call to a higher billing tier.
     let phone: String?
-    /// 카카오맵 상세 페이지 주소.
+    /// The Google Maps page address of the place; nil when Google gives none.
     let url: String?
 
     /// "230m" / "1.4km"

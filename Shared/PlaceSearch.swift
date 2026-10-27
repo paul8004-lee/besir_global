@@ -8,17 +8,27 @@ struct PlaceSearch {
     static let maxSuggestions = 5
 
     let config: AppConfig
+    var transport: GooglePlaces.Transport = GooglePlaces.urlSession
 
     func search(_ query: String, near center: CLLocationCoordinate2D?) async -> [Place] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 2 else { return [] }
+        guard trimmed.count >= 2,
+              let request = GooglePlaces.searchRequest(query: trimmed, near: center, config: config),
+              let data = await GooglePlaces.fetch(request, transport: transport) else { return [] }
+        return GooglePlaces.parsePlaces(data)
+    }
 
-        if config.hasProxy {
-            if let kakao = try? await kakaoKeyword(trimmed), !kakao.isEmpty {
-                return kakao
-            }
-        }
-        return await mapKitSearch(trimmed, near: center)
+    func nearbyPlaces(category: MealCategoryFilter?,
+                      keyword: String? = nil,
+                      near center: CLLocationCoordinate2D,
+                      radiusMeters: Int = 1000,
+                      sort: NearbySort = .distance,
+                      limit: Int = 5) async -> [NearbyPlace] {
+        guard let request = GooglePlaces.nearbyRequest(category: category, keyword: keyword, near: center,
+                                                       radiusMeters: radiusMeters, config: config),
+              let data = await GooglePlaces.fetch(request, transport: transport) else { return [] }
+        return GooglePlaces.nearbyResults(from: data, near: center, radiusMeters: radiusMeters,
+                                          sort: sort, limit: limit)
     }
 
     // MARK: - 카카오 로컬 키워드 검색(프록시 경유)
@@ -57,16 +67,16 @@ struct PlaceSearch {
     /// 프록시가 없거나 결과가 없으면 빈 배열(호출부가 빈 상태 UI를 보여준다).
     /// - `keyword`: "일식", "초밥"처럼 구체적인 메뉴·업종.
     /// - `category`: nil이면 업종을 가리지 않고 검색한다(자유 입력 검색용).
-    func nearbyPlaces(category: MealCategoryFilter?,
-                      keyword: String? = nil,
-                      near center: CLLocationCoordinate2D,
-                      radiusMeters: Int = 1000,
-                      sort: NearbySort = .distance,
-                      limit: Int = 5) async -> [NearbyPlace] {
+    private func legacyNearbyPlaces(category: MealCategoryFilter?,
+                                    keyword: String? = nil,
+                                    near center: CLLocationCoordinate2D,
+                                    radiusMeters: Int = 1000,
+                                    sort: NearbySort = .distance,
+                                    limit: Int = 5) async -> [NearbyPlace] {
         guard config.hasProxy else { return [] }
         let term = keyword?.trimmingCharacters(in: .whitespaces)
         // 카카오는 query가 비면 안 된다 — 키워드가 없으면 카테고리 이름으로 대신한다.
-        let query = (term?.isEmpty == false) ? term! : (category?.query ?? "맛집")
+        let query = (term?.isEmpty == false) ? term! : (category?.categoryWord ?? "맛집")
         var items = [
             URLQueryItem(name: "query", value: query),
             URLQueryItem(name: "x", value: String(center.longitude)),
@@ -76,7 +86,7 @@ struct PlaceSearch {
             URLQueryItem(name: "sort", value: sort.rawValue),
             URLQueryItem(name: "size", value: String(min(max(limit, 1), 15)))
         ]
-        if let category { items.append(URLQueryItem(name: "category_group_code", value: category.code)) }
+        if let category { items.append(URLQueryItem(name: "category_group_code", value: category.includedType)) }
         guard let req = config.proxyRequest("/kakao/local/keyword", query: items) else { return [] }
 
         struct Resp: Decodable {
