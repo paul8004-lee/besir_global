@@ -134,8 +134,9 @@ struct AgentChatView: View {
     }
 
     private var composer: some View {
-        HStack(spacing: 12) {
-            TextField("Message", text: $draft)
+        HStack(alignment: .bottom, spacing: 12) {
+            TextField("Message", text: $draft, axis: .vertical)
+                .lineLimit(1...5)
                 .submitLabel(.send)
                 .onSubmit(sendDraft)
                 .disabled(!session.canSend)
