@@ -6,6 +6,10 @@
 	<array>
 		<string>com.iseongmin.besir.sync</string>
 	</array>
+	<key>BesirAppToken</key>
+	<string>$(BESIR_APP_TOKEN)</string>
+	<key>BesirProxyHost</key>
+	<string>$(BESIR_PROXY_HOST)</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
