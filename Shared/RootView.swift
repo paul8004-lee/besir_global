@@ -83,7 +83,7 @@ struct RootView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("설정")
+                .accessibilityLabel("Settings")
             }
             .padding(.top, 52)
             .padding(.bottom, 34)

@@ -123,13 +123,13 @@ struct ActivityDetailView: View {
                         // 반복 회차 안내는 글을 없애고 repeat 글리프만 남긴다(운영자 §10 부연 설명
                         // 문구 없음). 빠진 회차는 번호가 nil이라 이 조건에서 아이콘이 저절로 사라진다.
                         // 보이는 것은 그림뿐이지만 Label의 제목이 접근성 이름 '반복 일정'으로 읽힌다.
-                        Label("반복 일정", systemImage: "repeat").labelStyle(.iconOnly)
+                        Label("Repeating Event", systemImage: "repeat").labelStyle(.iconOnly)
                             .font(.footnote).foregroundStyle(Theme.muted)
                     }
                     if placeCoord != nil {
                         nearbySection
                     }
-                    Button("삭제", role: .destructive) {
+                    Button("Delete", role: .destructive) {
                         if activity?.recurrenceId != nil {
                             showingDeleteMenu = true
                         } else {
@@ -140,35 +140,35 @@ struct ActivityDetailView: View {
                 .padding(24)
             }
             .background(Theme.bg)
-            .navigationTitle("활동 편집")
+            .navigationTitle("Edit Activity")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("닫기") { dismiss() }.disabled(saving)
+                    Button("Close") { dismiss() }.disabled(saving)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("저장") { save() }
+                    Button("Save") { save() }
                         .disabled(!(form?.card.isReady ?? false) || saving)
                 }
             }
-            .confirmationDialog("반복 일정을 어떻게 삭제할까요?", isPresented: $showingDeleteMenu, titleVisibility: .visible) {
-                Button("전체 반복 일정 삭제", role: .destructive) { deleteWholeSeries() }
+            .confirmationDialog("How do you want to delete this repeating event?", isPresented: $showingDeleteMenu, titleVisibility: .visible) {
+                Button("Delete Entire Series", role: .destructive) { deleteWholeSeries() }
                 Button(singleOccurrenceDeleteTitle, role: .destructive) { delete() }
-                Button("취소", role: .cancel) {}
+                Button("Cancel", role: .cancel) {}
             }
             .confirmationDialog(deleteConfirmTitle, isPresented: $showingDeleteConfirm, titleVisibility: .visible) {
-                Button("삭제", role: .destructive) { delete() }
-                Button("취소", role: .cancel) {}
+                Button("Delete", role: .destructive) { delete() }
+                Button("Cancel", role: .cancel) {}
             }
             // "반복 전체 / 이 일정만" 선택창(REQ-016) — 반복 삭제 선택창과 같은 모양이다(렌즈 B.1).
             .confirmationDialog(seriesAskTitle, isPresented: $showingSeriesAddAsk, titleVisibility: .visible) {
                 Button(seriesWholeTitle) { pickSeriesAdd(true) }
-                Button("이 일정만") { pickSeriesAdd(false) }
+                Button("This Event Only") { pickSeriesAdd(false) }
                 // 취소는 아무것도 저장하지 않고 편집 화면으로 돌아간다 — 쓰기는 단추를 골라야
                 // 시작하므로 되돌릴 것도 없다.
-                Button("취소", role: .cancel) {}
+                Button("Cancel", role: .cancel) {}
             }
             // 선택창이 닫힐 때(단추·바깥 탭 모두) 잡아 둔 저장 몸통을 지운다 — 단추 동작이 먼저
             // 실행되고 닫힘이 온다므로 저장은 이미 필요한 값을 복사해 간 뒤다.
@@ -586,9 +586,9 @@ struct ActivityDetailView: View {
                 let unknownTravel = [finalLegs.outbound, finalLegs.return].compactMap { $0 }
                     .contains { $0.travelSeconds == nil }
                 var messages: [String] = []
-                if unknownTravel { messages.append("이동시간을 계산하지 못했어요") }
+                if unknownTravel { messages.append("Couldn't calculate travel time") }
                 if !refusedReasons.isEmpty { messages.append(refusedReasons.sorted().joined(separator: " · ")) }
-                if failed > 0 { messages.append("저장하지 못한 이동이 있어요") }
+                if failed > 0 { messages.append("Some travel couldn't be saved") }
                 saving = false
                 if seriesResults.isEmpty && messages.isEmpty {
                     dismiss()
@@ -631,23 +631,23 @@ struct ActivityDetailView: View {
     private var seriesAskTitle: String {
         let roles = pendingSeriesSave?.asks.map(\.role) ?? []
         let asksOut = roles.contains(.arrival), asksReturn = roles.contains(.departure)
-        if asksOut && asksReturn { return "가는·오는 이동을 어디에 붙일까요?" }
-        return asksReturn ? "오는 이동을 어디에 붙일까요?" : "가는 이동을 어디에 붙일까요?"
+        if asksOut && asksReturn { return "Where should the outbound and return travel go?" }
+        return asksReturn ? "Where should the return travel go?" : "Where should the outbound travel go?"
     }
 
     /// 단추 1의 N — 붙일 회차의 합집합. 두 역할의 수가 다르면 같은 회차를 두 번 세지 않게
     /// 역할별 목록을 합쳐 중복을 뺀다.
     private var seriesWholeTitle: String {
         let n = Set((pendingSeriesSave?.asks ?? []).flatMap { $0.preview.wouldAddIds }).count
-        return "반복 전체 (\(n)개 회차)"
+        return "Entire Series (occurrences: \(n))"
     }
 
     /// 거절 사유의 안내 문구 — 화면이 이유를 사실대로 말한다(REQ-009).
     private static func refusalText(_ reason: Store.LegRefusalReason) -> String {
         switch reason {
-        case .duplicateRole: return "이미 같은 역할의 이동이 있어 만들지 못했어요"
-        case .noPlace: return "장소가 없는 활동에는 이동을 만들 수 없어요"
-        case .activityMissing: return "활동이 이미 지워져 이동을 만들지 못했어요"
+        case .duplicateRole: return "Couldn't create it because the same kind of travel already exists"
+        case .noPlace: return "Can't create travel for an activity with no place"
+        case .activityMissing: return "Couldn't create travel because the activity was already deleted"
         }
     }
 
@@ -655,7 +655,7 @@ struct ActivityDetailView: View {
     /// 그대로 둔다(AC-011 (4)).
     private var deleteConfirmTitle: String {
         let n = store.explicitLegCount(of: activityId)
-        return n >= 1 ? "이 활동과 딸린 이동 \(n)건을 삭제할까요?" : "이 활동을 삭제할까요?"
+        return n >= 1 ? "Delete this activity and its linked travel (\(n))?" : "Delete this activity?"
     }
 
     /// 반복 회차 삭제 단추 글자(REQ-017) — 제목은 그대로 두고 단추에만 딸린 이동 수를 붙인다.
@@ -663,7 +663,7 @@ struct ActivityDetailView: View {
     /// N이 0이면 숫자 없는 옛 글자 그대로다(운영자 J-20·[리드] 정리).
     private var singleOccurrenceDeleteTitle: String {
         let n = store.explicitLegCount(of: activityId)
-        return n >= 1 ? "이 일정만 삭제 (이동 \(n)건 포함)" : "이 일정만 삭제"
+        return n >= 1 ? "Delete This Event Only (with travel: \(n))" : "Delete This Event Only"
     }
 
     private func delete() {
@@ -687,12 +687,12 @@ struct ActivityDetailView: View {
     @ViewBuilder
     private var nearbySection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("주변").font(.headline)
+            Text("Nearby").font(.headline)
             HStack {
-                Label("맛집 추천", systemImage: "fork.knife")
+                Label("Restaurant Suggestions", systemImage: "fork.knife")
                 Spacer()
                 if loadingNearby { ProgressView().controlSize(.small) }
-                Button(nearbyLoaded ? "새로고침" : "추천 보기") {
+                Button(nearbyLoaded ? "Refresh" : "Show Suggestions") {
                     startNearby()
                 }
                 .buttonStyle(.borderless)
@@ -700,7 +700,7 @@ struct ActivityDetailView: View {
             }
 
             if nearbyLoaded {
-                Picker("종류", selection: $nearbyCategory) {
+                Picker("Type", selection: $nearbyCategory) {
                     ForEach(MealCategoryFilter.allCases) { c in
                         Label(c.title, systemImage: c.systemImage).tag(c)
                     }
@@ -709,7 +709,7 @@ struct ActivityDetailView: View {
                 .onChange(of: nearbyCategory) { startNearby() }
 
                 if nearby.isEmpty && !loadingNearby {
-                    Text("주변 1km 안에서 찾지 못했어요.")
+                    Text("Nothing found within 1 km.")
                         .font(.callout).foregroundStyle(Theme.muted)
                 } else {
                     ForEach(nearby) { item in
@@ -747,7 +747,7 @@ struct ActivityDetailView: View {
                     Image(systemName: "arrow.up.forward.square")
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel("지도에서 보기")
+                .accessibilityLabel("View on Map")
             }
         }
         .padding(.vertical, 4)

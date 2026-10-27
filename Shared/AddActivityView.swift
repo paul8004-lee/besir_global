@@ -79,9 +79,9 @@ struct AddActivityView: View {
 
     private var header: some View {
         HStack {
-            Text("새 활동").font(.title2).bold()
+            Text("New Activity").font(.title2).bold()
             Spacer()
-            Button("닫기") { dismiss() }.keyboardShortcut(.cancelAction)
+            Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
         }
         .padding()
     }
@@ -377,16 +377,16 @@ struct AddActivityView: View {
     private var footer: some View {
         HStack {
             Spacer()
-            Button("취소") { dismiss() }
+            Button("Cancel") { dismiss() }
             Button {
                 Task { await save() }
             } label: {
-                if saving { ProgressView().controlSize(.small) } else { Text("추가") }
+                if saving { ProgressView().controlSize(.small) } else { Text("Add") }
             }
             .keyboardShortcut(.defaultAction)
             // 저장 중에는 라벨이 스피너로 접혀 이름이 사라진다 — VoiceOver는 여전히 무슨 버튼인지
             // 알아야 한다(AddEventView와 같은 판단).
-            .accessibilityLabel("추가")
+            .accessibilityLabel("Add")
             // '반복' 줄이 해석 전이라서만 남은 카드도 누를 수 있다(019 m-4) — save가 해석을 먼저 끝내고 다시 판정한다.
             // 꺼 두면 누른 탭이 칸을 마치지 못해 해석이 영영 안 불렸다.
             .disabled(!((form?.card.isReady ?? false) || (form?.card.isReadyAfterRecurrenceCommit ?? false)) || saving)
@@ -465,7 +465,7 @@ struct PlaceField: View {
                         }
                     }
                     Spacer()
-                    Button("변경") { place = nil }.buttonStyle(.borderless)
+                    Button("Change") { place = nil }.buttonStyle(.borderless)
                 }
                 .padding(10)
                 .background(Theme.raised, in: RoundedRectangle(cornerRadius: Theme.radius))
@@ -482,7 +482,7 @@ struct PlaceField: View {
                     }
                 }
                 HStack {
-                    TextField("장소·주소 검색", text: $query)
+                    TextField("Search places or addresses", text: $query)
                         .textFieldStyle(.roundedBorder)
                         .onSubmit { runSearch() }
                     // 아이콘만 있는 버튼은 VoiceOver가 읽을 문구가 없다 — 무엇을 여는지 직접 말해준다.
@@ -490,7 +490,7 @@ struct PlaceField: View {
                         if searching { ProgressView().controlSize(.small) }
                         else { Image(systemName: "magnifyingglass") }
                     }
-                    .accessibilityLabel("장소 검색")
+                    .accessibilityLabel("Search places")
                     // 검색이 돌고 있을 때 다시 누르면 Task가 겹친다 — 다른 돋보기 둘과 같은 잠금.
                     .disabled(searching)
                 }

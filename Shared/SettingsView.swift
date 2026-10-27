@@ -19,11 +19,11 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text("설정").font(.title2).bold()
+            Text("Settings").font(.title2).bold()
 
-            Picker("설정 종류", selection: $tab) {
-                Text("기본 설정").tag(SettingsTab.basic)
-                Text("즐겨찾기").tag(SettingsTab.favorites)
+            Picker("Settings Section", selection: $tab) {
+                Text("General").tag(SettingsTab.basic)
+                Text("Favorites").tag(SettingsTab.favorites)
             }
             .pickerStyle(.segmented)
 
@@ -47,24 +47,24 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 18) {
             // ⚠️ 테스트용 임시 버튼 — 출시 전에 이 블록과 Store.deleteEverythingForTesting을 같이 뺀다.
             VStack(alignment: .leading, spacing: 6) {
-                Text("테스트").font(.headline)
+                Text("Testing").font(.headline)
                 Button(role: .destructive) {
                     showingWipe = true
                 } label: {
-                    Label("일정 모두 삭제", systemImage: "trash")
+                    Label("Delete All Events", systemImage: "trash")
                 }
             }
-            .confirmationDialog("등록된 일정·활동·식사 기록을 모두 지울까요?",
+            .confirmationDialog("Delete all events, activities and meal records?",
                                 isPresented: $showingWipe, titleVisibility: .visible) {
-                Button("모두 삭제", role: .destructive) { store.deleteEverythingForTesting() }
-                Button("취소", role: .cancel) {}
+                Button("Delete All", role: .destructive) { store.deleteEverythingForTesting() }
+                Button("Cancel", role: .cancel) {}
             }
 
             Spacer()
             HStack {
                 Spacer()
-                Button("취소") { dismiss() }
-                Button("저장") {
+                Button("Cancel") { dismiss() }
+                Button("Save") {
                     var c = store.config
                     c.autoAddToCalendar = autoAdd
                     store.updateConfig(c)

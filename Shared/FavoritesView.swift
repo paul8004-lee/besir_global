@@ -7,9 +7,9 @@ struct FavoritesView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("즐겨찾기 장소").font(.title2).bold()
+                Text("Favorite Places").font(.title2).bold()
                 Spacer()
-                Button("닫기") { dismiss() }
+                Button("Close") { dismiss() }
             }
 
             FavoritesList()
@@ -36,7 +36,7 @@ struct FavoritesList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             if store.favorites.isEmpty {
-                Text("아직 즐겨찾기가 없습니다.")
+                Text("No favorites yet.")
                     .font(.callout).foregroundStyle(Theme.muted)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
@@ -53,7 +53,7 @@ struct FavoritesList: View {
                                 Image(systemName: "trash")
                             }
                             .buttonStyle(.borderless)
-                            .accessibilityLabel("삭제")
+                            .accessibilityLabel("Delete")
                         }
                         .padding(.vertical, 6)
                         Divider()
@@ -62,18 +62,18 @@ struct FavoritesList: View {
             }
 
             Divider()
-            Text("추가하기").font(.headline)
-            TextField("이름", text: $newLabel)
+            Text("Add Favorite").font(.headline)
+            TextField("Name", text: $newLabel)
                 .textFieldStyle(.roundedBorder)
             HStack {
-                TextField("장소 검색", text: $query)
+                TextField("Search places", text: $query)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { runSearch() }
                 Button { runSearch() } label: {
                     if searching { ProgressView().controlSize(.small) } else { Image(systemName: "magnifyingglass") }
                 }
                 // 아이콘만 있는 버튼은 VoiceOver가 읽을 문구가 없다 — 무엇을 여는지 직접 말해준다.
-                .accessibilityLabel("장소 검색")
+                .accessibilityLabel("Search places")
                 // 검색이 돌고 있을 때 다시 누르면 Task가 겹친다 — FullSirView 돋보기와 같은 잠금.
                 .disabled(searching)
             }
