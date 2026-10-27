@@ -130,6 +130,7 @@ final class AgentSession: ObservableObject {
         static let unexpected = "The assistant returned an unexpected response."
         static let tooManySteps = "The assistant needed too many steps. Try again with a simpler request."
         static let notSetUp = "The assistant is not set up in this build."
+        static let interrupted = "The chat was closed before the assistant replied."
         static func http(_ status: Int) -> String { "The assistant returned an unexpected response (HTTP \(status))." }
 
         static let stepLimit = #"{"status":"rejected","message":"Not executed. The step limit was reached."}"#
@@ -168,6 +169,29 @@ final class AgentSession: ObservableObject {
     /// Send and the text field are available only when nothing is in flight and no card waits.
     var canSend: Bool { !isWaiting && pendingCard == nil }
 
+    /// The entries the chat draws: tool and result entries are not drawn, and neither is a run of assistant entries
+    /// directly before a tool entry (a preface to a tool call). Hidden entries stay in `entries` and the history.
+    var chatEntries: [AgentLogEntry] {
+        var shown: [AgentLogEntry] = []
+        var run: [AgentLogEntry] = []
+        for entry in entries {
+            switch entry.kind {
+            case .assistant:
+                run.append(entry)
+            case .tool:
+                run = []
+            case .result:
+                shown += run
+                run = []
+            default:
+                shown += run
+                run = []
+                shown.append(entry)
+            }
+        }
+        return shown + run
+    }
+
     // MARK: Entry points
 
     func send(_ text: String) {
@@ -198,10 +222,13 @@ final class AgentSession: ObservableObject {
         if let card { _ = await card.resolve(.dismiss) }
     }
 
-    /// The chat sheet was closed: the conversation stays, an in-flight request is cancelled silently, and a pending
-    /// card is resolved as dismissed with `declined` recorded right after its call and no request.
+    /// The chat sheet was closed: the conversation stays, an in-flight request is cancelled (the chat keeps one status
+    /// notice, the history is unchanged), and a pending card is resolved as dismissed with `declined` recorded right
+    /// after its call and no request.
     func sheetDismissed() async {
+        let wasWaiting = isWaiting
         invalidateRequest()
+        if wasWaiting { entries.append(AgentLogEntry(kind: .notice(Line.interrupted))) }
         guard let card = pendingCard, let calls = pendingCalls else { return }
         if isResolving {
             stopAfterResolve = true

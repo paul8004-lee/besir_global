@@ -47,20 +47,11 @@ struct AgentChatView: View {
         .padding(.vertical, 12)
     }
 
-    private var shown: [AgentLogEntry] {
-        session.entries.filter { entry in
-            switch entry.kind {
-            case .tool, .result: return false
-            default: return true
-            }
-        }
-    }
-
     private var messages: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(shown) { entry in
+                    ForEach(session.chatEntries) { entry in
                         row(entry)
                     }
                     if session.isWaiting || session.isResolving {

@@ -10,6 +10,8 @@ private enum Line {
     static let tooManySteps = "The assistant needed too many steps. Try again with a simpler request."
     static let notSetUp = "The assistant is not set up in this build."
     static func http(_ code: Int) -> String { "The assistant returned an unexpected response (HTTP \(code))." }
+    /// SPEC-AGENT-003 section 3.4.
+    static let interrupted = "The chat was closed before the assistant replied."
 }
 
 private let stepLimitResult = #"{"status":"rejected","message":"Not executed. The step limit was reached."}"#
@@ -36,6 +38,20 @@ extension AgentSession {
     }
     var assistantEntryCount: Int {
         history.filter { if case .assistant = $0 { return true } else { return false } }.count
+    }
+    /// What the chat draws, one tagged line per entry (a card is just `CARD`).
+    var chatLines: [String] {
+        chatEntries.map { entry -> String in
+            switch entry.kind {
+            case .user(let text): return "USER \(text)"
+            case .assistant(let text): return "ASSISTANT \(text)"
+            case .tool(let name, _): return "TOOL \(name)"
+            case .result(let status): return "RESULT \(status)"
+            case .card: return "CARD"
+            case .notice(let line): return "NOTICE \(line)"
+            case .error(let line): return "ERROR \(line)"
+            }
+        }
     }
 }
 
@@ -540,7 +556,8 @@ final class AgentSessionTests: XCTestCase {
                 let dropped = await eventually { rig.session.discardedCount == 1 }
                 XCTAssertTrue(dropped, label)
                 XCTAssertTrue(rig.session.errorLines.isEmpty, label)
-                XCTAssertTrue(rig.session.noticeLines.isEmpty, label)
+                // New chat stays silent; closing the sheet with the request in flight leaves the one status line.
+                XCTAssertEqual(rig.session.noticeLines, cause == .newChat ? [] : [Line.interrupted], label)
                 XCTAssertEqual(rig.session.history, cause == .newChat ? [] : [.user("old question")], label)
                 XCTAssertTrue(rig.session.canSend, label)
 
@@ -607,5 +624,164 @@ final class AgentSessionTests: XCTestCase {
                 rig.store.activities[index].title = "Renamed after the card"
             }
         }
+    }
+
+    // MARK: - SPEC-AGENT-003 PL002: preface bubbles are not drawn (AC-POLISH-004)
+
+    func testPL002_ChatHidesOnePrefaceBeforeAToolCall() async {
+        let rig = SessionRig([
+            .turn(Turns.turn(Turns.message("Looking."), Turns.call("list_activities", Turns.listArguments, id: "c1"))),
+            .turn(Turns.text("Nothing.")),
+        ])
+        await rig.say("What is on?")
+        XCTAssertEqual(rig.session.assistantTexts, ["Looking.", "Nothing."], "the log keeps the preface")
+        XCTAssertEqual(rig.session.chatLines, ["USER What is on?", "ASSISTANT Nothing."])
+    }
+
+    func testPL002_ChatHidesAConsecutiveRunOfPrefaces() async {
+        let rig = SessionRig([
+            .turn(Turns.turn(Turns.message("First."), Turns.message("Second."),
+                             Turns.call("list_activities", Turns.listArguments, id: "c1"))),
+            .turn(Turns.text("Nothing.")),
+        ])
+        await rig.say("What is on?")
+        XCTAssertEqual(rig.session.assistantTexts, ["First.", "Second.", "Nothing."], "both prefaces stay in the log")
+        XCTAssertEqual(rig.session.chatLines, ["USER What is on?", "ASSISTANT Nothing."])
+    }
+
+    func testPL002_ChatKeepsTheFinalAnswerAfterAToolResult() async {
+        let rig = SessionRig([
+            .turn(Turns.turn(Turns.message("Looking A."), Turns.call("list_activities", Turns.listArguments, id: "c1"))),
+            .turn(Turns.text("Answer A.")),
+            .turn(Turns.turn(Turns.message("Looking B."), Turns.call("list_activities", Turns.listArguments, id: "c2"))),
+            .turn(Turns.text("Answer B.")),
+        ])
+        await rig.say("First question")
+        await rig.say("Second question")
+        XCTAssertEqual(rig.session.chatLines, ["USER First question", "ASSISTANT Answer A.",
+                                                "USER Second question", "ASSISTANT Answer B."])
+        XCTAssertEqual(rig.session.assistantTexts.count, 4, "the log keeps all four")
+    }
+
+    func testPL002_ChatKeepsCardNoticeAndErrorNextToAHiddenPreface() async {
+        // A preface and a create call: the card is drawn, the preface is not.
+        let card = SessionRig([.turn(Turns.turn(Turns.message("Adding."), Turns.call("create_activity", Turns.createArguments, id: "c1")))])
+        await card.say("Add it.")
+        XCTAssertNotNil(card.session.pendingCard)
+        XCTAssertEqual(card.session.assistantTexts, ["Adding."])
+        XCTAssertEqual(card.session.chatLines, ["USER Add it.", "CARD"])
+
+        // A preface and a call, then a transport error: the error line is drawn, the preface is not.
+        let failing = SessionRig([.turn(Turns.turn(Turns.message("Looking."), Turns.call("list_activities", Turns.listArguments, id: "c1"))),
+                                  .fail(AgentTransportError.offline)])
+        await failing.say("What is on?")
+        XCTAssertEqual(failing.session.assistantTexts, ["Looking."])
+        XCTAssertEqual(failing.session.chatLines, ["USER What is on?", "ERROR \(Line.unreachable)"])
+
+        // A preface and a delete call whose record went stale: the notice line and the answer after it are drawn.
+        let stale = SessionRig()
+        let seeded = stale.tools.seed("Team sync", "2026-10-28T15:00", "2026-10-28T16:00")
+        stale.fake.enqueue(.turn(Turns.turn(Turns.message("Checking."), Turns.call("delete_activity", "{\"id\":\"\(seeded.id.uuidString)\"}", id: "d1"))),
+                           .turn(Turns.text("Gone.")))
+        await stale.say("Delete Team sync.")
+        stale.store.activities.removeAll()
+        await stale.session.confirmCard()
+        await stale.session.settle()
+        XCTAssertEqual(stale.session.assistantTexts, ["Checking.", "Gone."])
+        XCTAssertEqual(stale.session.chatLines, ["USER Delete Team sync.", "CARD", "NOTICE \(ToolText.notice)", "ASSISTANT Gone."])
+    }
+
+    /// A guard that pins behavior that must not change: an answer with no tool call is always drawn.
+    func testPL002_ChatKeepsAnAnswerThatCallsNoTool() async {
+        let rig = SessionRig([
+            .turn(Turns.text("Hello.")),
+            .turn(Turns.turn(Turns.reasoning(), Turns.message("Again."))),
+        ])
+        await rig.say("Hi")
+        XCTAssertEqual(rig.session.chatLines, ["USER Hi", "ASSISTANT Hello."])
+        await rig.say("Hi again")
+        XCTAssertEqual(rig.session.chatLines, ["USER Hi", "ASSISTANT Hello.", "USER Hi again", "ASSISTANT Again."])
+    }
+
+    // MARK: - SPEC-AGENT-003 PL003: the interrupted-reply line (AC-POLISH-006)
+
+    func testPL003_ClosingTheSheetMidRequestAppendsTheInterruptedNoticeOnce() async {
+        let rig = SessionRig([.hold])
+        rig.session.send("What is on?")
+        let reached = await rig.fake.waitForRequests(1)
+        XCTAssertTrue(reached)
+        XCTAssertTrue(rig.session.isWaiting)
+
+        await rig.session.sheetDismissed()
+        XCTAssertEqual(rig.session.noticeLines, [Line.interrupted])
+        XCTAssertTrue(rig.session.errorLines.isEmpty)
+        XCTAssertFalse(rig.session.isWaiting)
+
+        await rig.session.sheetDismissed()
+        XCTAssertEqual(rig.session.noticeLines, [Line.interrupted], "a second close adds nothing")
+    }
+
+    func testPL003_InterruptedNoticeLeavesHistoryValidAndTheNextMessageWorks() async {
+        let rig = SessionRig([.hold, .hold])
+        rig.session.send("old question")
+        let first = await rig.fake.waitForRequests(1)
+        XCTAssertTrue(first)
+        await rig.session.sheetDismissed()
+        XCTAssertEqual(rig.session.noticeLines, [Line.interrupted], "the line is there before the history is read")
+        XCTAssertEqual(rig.session.history, [.user("old question")])
+        XCTAssertEqual(PairingValidator.problems(in: rig.session.history), [])
+
+        rig.session.send("new question")
+        let second = await rig.fake.waitForRequests(2)
+        XCTAssertTrue(second)
+        XCTAssertEqual(rig.fake.request(2), [.user("old question"), .user("new question")])
+
+        // The cancelled request answers late, during the next request: it is dropped.
+        XCTAssertTrue(rig.fake.release(1, .success(Turns.text("OLD ANSWER"))))
+        let dropped = await eventually { rig.session.discardedCount == 1 }
+        XCTAssertTrue(dropped)
+        XCTAssertTrue(rig.session.isWaiting, "the new request is still the awaited one")
+
+        rig.fake.release(2, .success(Turns.text("NEW ANSWER")))
+        await rig.session.settle()
+        XCTAssertEqual(rig.session.assistantTexts, ["NEW ANSWER"])
+        XCTAssertEqual(rig.session.noticeLines, [Line.interrupted])
+        XCTAssertEqual(PairingValidator.problems(in: rig.session.history), [])
+    }
+
+    func testPL003_NoNoticeWhenIdleOrCardPendingOrNewChat() async {
+        // Positive control: the same close with a request in flight does show the line.
+        let flight = SessionRig([.hold])
+        flight.session.send("What is on?")
+        let reached = await flight.fake.waitForRequests(1)
+        XCTAssertTrue(reached)
+        await flight.session.sheetDismissed()
+        XCTAssertEqual(flight.session.noticeLines, [Line.interrupted])
+
+        // Idle after a completed answer.
+        let idle = SessionRig([.turn(Turns.text("Hi."))])
+        await idle.say("Hello")
+        XCTAssertFalse(idle.session.isWaiting)
+        await idle.session.sheetDismissed()
+        XCTAssertTrue(idle.session.noticeLines.isEmpty)
+        XCTAssertEqual(idle.session.chatLines, ["USER Hello", "ASSISTANT Hi."])
+
+        // Only a card pending: the card shows Cancelled, no line.
+        let pending = SessionRig([.turn(Turns.create(id: "c1"))])
+        await pending.say("Add it.")
+        guard let card = pending.session.pendingCard else { return XCTFail("a card should be pending") }
+        await pending.session.sheetDismissed()
+        XCTAssertEqual(card.mark, .cancelled)
+        XCTAssertTrue(pending.session.noticeLines.isEmpty)
+
+        // New chat with a request in flight stays silent, and a close afterwards adds nothing.
+        let fresh = SessionRig([.hold])
+        fresh.session.send("What is on?")
+        let started = await fresh.fake.waitForRequests(1)
+        XCTAssertTrue(started)
+        await fresh.session.newChat()
+        XCTAssertTrue(fresh.session.entries.isEmpty)
+        await fresh.session.sheetDismissed()
+        XCTAssertTrue(fresh.session.noticeLines.isEmpty)
     }
 }
