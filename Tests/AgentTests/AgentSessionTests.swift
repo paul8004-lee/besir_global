@@ -784,4 +784,26 @@ final class AgentSessionTests: XCTestCase {
         await fresh.session.sheetDismissed()
         XCTAssertTrue(fresh.session.noticeLines.isEmpty)
     }
+
+    // MARK: - SPEC-AGENT-003 D4 (operator 10-27): Return is a newline, Send sends
+
+    /// A guard for existing behavior, exempt from RED: a draft with Return newlines and spaces at its ends is sent trimmed,
+    /// so a newline typed before tapping Send does not reach the history or the request.
+    func testPL004_SendTrimsNewlinesAndSpacesAtTheEnds() async {
+        let rig = SessionRig([.turn(Turns.text("Fine.")), .turn(Turns.text("Fine."))])
+        await rig.say("ok\n")
+        XCTAssertEqual(rig.session.userTexts, ["ok"])
+        XCTAssertEqual(rig.session.history.first, .user("ok"))
+        await rig.say("\n  next question \n\n")
+        XCTAssertEqual(rig.session.userTexts, ["ok", "next question"])
+        // A newline inside the text stays.
+        let inner = SessionRig([.turn(Turns.text("Fine."))])
+        await inner.say("line one\nline two\n")
+        XCTAssertEqual(inner.session.userTexts, ["line one\nline two"])
+        // Positive control: a blank draft is not sent at all.
+        let blank = SessionRig([.turn(Turns.text("never"))])
+        await blank.say(" \n ")
+        XCTAssertTrue(blank.session.userTexts.isEmpty)
+        XCTAssertEqual(blank.fake.requests.count, 0)
+    }
 }

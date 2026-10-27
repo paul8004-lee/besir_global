@@ -137,8 +137,6 @@ struct AgentChatView: View {
         HStack(alignment: .bottom, spacing: 12) {
             TextField("Message", text: $draft, axis: .vertical)
                 .lineLimit(1...5)
-                .submitLabel(.send)
-                .onSubmit(sendDraft)
                 .disabled(!session.canSend)
             Button("Send", action: sendDraft)
                 .disabled(!session.canSend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
