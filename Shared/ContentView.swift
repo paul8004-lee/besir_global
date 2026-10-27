@@ -205,16 +205,16 @@ struct ContentView: View {
     /// DateFormatter는 생성 비용이 큰데(로케일·포맷 파싱) 아래 셀들은 스와이프 중 매 프레임,
     /// 한 페이지당 7~42개씩 다시 그려진다 — 매번 새로 만들면 그게 그대로 프레임 낭비다.
     private static let weekdayFormatter: DateFormatter = {
-        let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR"); f.dateFormat = "E"; return f
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US"); f.dateFormat = "E"; return f
     }()
     private static let monthTitleFormatter: DateFormatter = {
-        let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR"); f.dateFormat = "yyyy년 M월"; return f
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US"); f.dateFormat = "MMMM yyyy"; return f
     }()
     private static let dayTitleFormatter: DateFormatter = {
-        let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR"); f.dateFormat = "M월 d일 (E)"; return f
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US"); f.dateFormat = "EEE, MMM d"; return f
     }()
     private static let todayTitleFormatter: DateFormatter = {
-        let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR"); f.dateFormat = "'오늘' M월 d일 (E)"; return f
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US"); f.dateFormat = "'Today,' EEE MMM d"; return f
     }()
 
     var selectedEvent: ScheduledEvent? {
@@ -506,8 +506,8 @@ struct ContentView: View {
     /// 늘 모자랐다("+2"가 오히려 더 가려짐) — 글꼴 값으로 어림하지 말고 그려진 크기로 잰다.
     private static let monthCellVSpacing: CGFloat = 2      // 칸 VStack 간격(본보기·실제 칸이 같이 읽음)
     private static let monthPillVPadding: CGFloat = 1      // 알약 위아래 여백(dayTitlePill)
-    /// 본보기 글자 — 한글 제목(글꼴 줄높이를 한글이 결정하게)·두 자리 날짜·두 자리 "+N".
-    private static let monthTemplateTitle = "한글 제목"
+    /// Template text: a title, a two-digit date and a two-digit "+N" (the app is English, so the title sets the line height).
+    private static let monthTemplateTitle = "Title"
     private static let monthTemplateDay = 28
     private static let monthTemplateMore = "+9"
 
@@ -543,7 +543,7 @@ struct ContentView: View {
     private var monthGrid: some View {
         VStack(spacing: 8) {
             HStack(spacing: Self.monthColumnSpacing) {
-                ForEach(["일", "월", "화", "수", "목", "금", "토"], id: \.self) { d in
+                ForEach(Self.weekdayFormatter.shortStandaloneWeekdaySymbols, id: \.self) { d in
                     Text(d).font(.caption2).foregroundStyle(Theme.faint).frame(maxWidth: .infinity)
                 }
             }
@@ -1329,7 +1329,7 @@ struct ContentView: View {
     /// 가장자리 넘김 칩의 착지 시각("00:20" 꼴) — DateFormatter 생성 비용이 커서 정적 하나만
     /// 만든다(위 weekdayFormatter와 같은 이유).
     private static let edgeChipTimeFormatter: DateFormatter = {
-        let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR"); f.dateFormat = "HH:mm"; return f
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US"); f.dateFormat = "h:mm a"; return f
     }()
 
     /// 끄는 중 가장자리 표시(D-14 (가)) — 붙음은 그 날에 남는다는 안내 표지, 넘김은 착지 시각을
@@ -1344,7 +1344,7 @@ struct ContentView: View {
         case .inside:
             EmptyView()
         case .held:
-            Text(downward ? "24:00까지" : "00:00부터")
+            Text(downward ? "Until midnight" : "From midnight")
                 .font(.caption2).foregroundStyle(Theme.muted)
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .background(Theme.bg, in: shape)
@@ -1355,7 +1355,7 @@ struct ContentView: View {
             // 쓰므로 칩의 시각이 곧 놓일 시각이다.
             let listingStart = leg.listedSpan?.start ?? leg.departureDate ?? leg.arrivalDate
             let landing = listingStart.addingTimeInterval(TimeInterval(deltaMinutes) * 60)
-            Text("\(downward ? "▾ 다음 날" : "▴ 전날") \(Self.edgeChipTimeFormatter.string(from: landing))")
+            Text("\(downward ? "▾ Next day" : "▴ Previous day") \(Self.edgeChipTimeFormatter.string(from: landing))")
                 .font(.caption2).foregroundStyle(Theme.travel)
                 .padding(.horizontal, 6).padding(.vertical, 2)
                 .background(Theme.bg, in: shape)

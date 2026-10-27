@@ -19,8 +19,8 @@ struct EventDetailView: View {
 
     /// 경로 안내 단계 옆에 붙는 짧은 시각("오후 3:05").
     private static let shortTimeFmt: DateFormatter = {
-        let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "a h:mm"; return f
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "h:mm a"; return f
     }()
 
     @Environment(\.dismiss) private var dismiss

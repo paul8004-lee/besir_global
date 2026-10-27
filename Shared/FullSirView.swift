@@ -302,7 +302,7 @@ struct FullSirView: View {
     }
 
     private static let dayFmt: DateFormatter = {
-        let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR"); f.dateFormat = "M/d(E) a h:mm"; return f
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US"); f.dateFormat = "M/d EEE h:mm a"; return f
     }()
 }
 

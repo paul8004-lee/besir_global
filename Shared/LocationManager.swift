@@ -159,7 +159,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     private func reverseGeocode(_ location: CLLocation) {
-        geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "ko_KR")) { [weak self] placemarks, _ in
+        geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "en_US")) { [weak self] placemarks, _ in
             guard let p = placemarks?.first else { return }
             // 시·구가 중복(예: "서울특별시 서울특별시")되면 제거하고 합친다.
             var parts: [String] = []

@@ -16,8 +16,8 @@ import CoreLocation
 @MainActor enum BesirTime {
     private static let whenFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "M월 d일 (E) a h시 m분"
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEE, MMM d, h:mm a"
         return f
     }()
     static func when(_ d: Date) -> String { whenFormatter.string(from: d) }
@@ -29,8 +29,8 @@ import CoreLocation
     /// 새로 만들어 한 차례 재렌더에 최대 세 번 할당했다.
     static let compact: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "M/d (E) a h시 mm분"
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "M/d EEE h:mm a"
         return f
     }()
 
@@ -39,16 +39,16 @@ import CoreLocation
     /// 그대로이고 한 글자도 다시 쓰지 않는다(SPEC-UIKIT-004 REQ-001).
     static let full: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "M월 d일 (E) a h시 mm분"
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEE, MMM d, h:mm a"
         return f
     }()
 
     /// 하루 안의 시각만("오후 3시 05분") — 출발 시각 큰 숫자가 쓴다. 이사 본체, 패턴 불변.
     static let clock: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "a h시 mm분"
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "h:mm a"
         return f
     }()
 
