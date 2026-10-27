@@ -72,6 +72,23 @@ enum ToolText {
     static let notFound = "That event no longer exists. Tell the user and ask what to do next."
     static let stale = "That event changed after the card was shown. Tell the user and ask what to do next."
     static let notice = "That event changed or no longer exists. Nothing was changed."
+    static let startPassed = "That start time is now out of range. Nothing was added."
+}
+
+/// A clock and time zone a test can move after the toolbox or client was built (audit D5, D8).
+@MainActor
+final class MutableClock {
+    var now: Date
+    var zone: TimeZone
+
+    init(now: Date = TestClock.now, zone: TimeZone = TestClock.zone) {
+        self.now = now
+        self.zone = zone
+    }
+
+    func toolbox(store: Store) -> AgentToolbox {
+        AgentToolbox(store: store, now: { [self] in now }, timeZone: { [self] in zone })
+    }
 }
 
 extension AgentToolOutcome {

@@ -166,6 +166,7 @@ private enum Say {
     static let notFound = "That event no longer exists. Tell the user and ask what to do next."
     static let stale = "That event changed after the card was shown. Tell the user and ask what to do next."
     static let notice = "That event changed or no longer exists. Nothing was changed."
+    static let startPassed = "That start time is now out of range. Nothing was added."
 }
 
 /// What a card showed of a record. At Confirm the record must still equal it, or nothing is applied.
@@ -199,31 +200,57 @@ final class AgentToolbox {
         encode(["status": "declined", "message": Say.declined])
     }
 
+    /// The calendar and the formatters of one time zone.
+    private struct Formats {
+        let zone: TimeZone
+        let calendar: Calendar
+        let local: DateFormatter
+        let day: DateFormatter
+        let time: DateFormatter
+
+        init(zone: TimeZone) {
+            self.zone = zone
+            var cal = Calendar(identifier: .gregorian)
+            cal.timeZone = zone
+            calendar = cal
+            func make(_ locale: String, _ pattern: String) -> DateFormatter {
+                let f = DateFormatter()
+                f.locale = Locale(identifier: locale)
+                f.calendar = cal
+                f.timeZone = zone
+                f.isLenient = false
+                f.dateFormat = pattern
+                return f
+            }
+            local = make("en_US_POSIX", "yyyy-MM-dd'T'HH:mm")
+            day = make("en_US", "EEE, MMM d, h:mm a")
+            time = make("en_US", "h:mm a")
+        }
+    }
+
     private let store: Store
     private let now: () -> Date
-    private let calendar: Calendar
-    private let localFormat: DateFormatter
-    private let dayFormat: DateFormatter
-    private let timeFormat: DateFormatter
+    private let zone: () -> TimeZone
+    private var cachedFormats: Formats?
 
-    init(store: Store, now: @escaping () -> Date, timeZone: TimeZone) {
+    /// `timeZone` is read on every use, so a zone change while the app runs reaches dates, cards and the gate.
+    init(store: Store, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone) {
         self.store = store
         self.now = now
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = timeZone
-        calendar = cal
-        func make(_ locale: String, _ pattern: String) -> DateFormatter {
-            let f = DateFormatter()
-            f.locale = Locale(identifier: locale)
-            f.calendar = cal
-            f.timeZone = timeZone
-            f.isLenient = false
-            f.dateFormat = pattern
-            return f
-        }
-        localFormat = make("en_US_POSIX", "yyyy-MM-dd'T'HH:mm")
-        dayFormat = make("en_US", "EEE, MMM d, h:mm a")
-        timeFormat = make("en_US", "h:mm a")
+        zone = timeZone
+    }
+
+    convenience init(store: Store, now: @escaping () -> Date, timeZone: TimeZone) {
+        self.init(store: store, now: now, timeZone: { timeZone })
+    }
+
+    /// The formatters for the zone as it is now; rebuilt only when the zone differs from the last use.
+    private var formats: Formats {
+        let current = zone()
+        if let cachedFormats, cachedFormats.zone == current { return cachedFormats }
+        let made = Formats(zone: current)
+        cachedFormats = made
+        return made
     }
 
     /// Reads one function call (tool name and the raw arguments string the model sent).
@@ -294,7 +321,8 @@ final class AgentToolbox {
             default: if b < 0x30 || b > 0x39 { return nil }
             }
         }
-        guard let date = localFormat.date(from: text), localFormat.string(from: date) == text else { return nil }
+        let local = formats.local
+        guard let date = local.date(from: text), local.string(from: date) == text else { return nil }
         return date
     }
 
@@ -340,11 +368,12 @@ final class AgentToolbox {
         let hits = store.activities.enumerated()
             .filter { $0.element.startDate < to && $0.element.endDate > from }
             .sorted { ($0.element.startDate, $0.offset) < ($1.element.startDate, $1.offset) }
+        let local = formats.local
         let items: [[String: Any]] = hits.prefix(Self.maxItems).map { hit in
             let a = hit.element
-            var item: [String: Any] = ["id": a.id.uuidString, "title": a.title, "start": localFormat.string(from: a.startDate),
-                                       "end": localFormat.string(from: a.endDate), "recurring": a.recurrenceId != nil]
-            if let place = a.location { item["location"] = place.name }
+            var item: [String: Any] = ["id": a.id.uuidString, "title": Self.sanitized(a.title), "start": local.string(from: a.startDate),
+                                       "end": local.string(from: a.endDate), "recurring": a.recurrenceId != nil]
+            if let place = a.location { item["location"] = Self.sanitized(place.name) }
             return item
         }
         return .result(Self.encode(["items": items, "count": items.count, "truncated": hits.count > Self.maxItems]))
@@ -361,6 +390,11 @@ final class AgentToolbox {
 
         let lines = ["Add event", title, range(start, end)]
         return .card(AgentCard(lines: lines) { [self] in
+            // The card may have waited a long time: the start must still be inside the window the gate allows.
+            do { try checkWindow(start, .create) } catch {
+                let result = Self.encode(["status": "rejected", "message": Say.window(.create)])
+                return (AgentResolution(result: result, notice: Say.startPassed), .notApplied)
+            }
             let made = await store.addActivityWithTravel(
                 title: title, location: nil, startDate: start, endDate: end, travelFrom: nil, returnTo: nil,
                 outboundMode: .walk, returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0,
@@ -399,8 +433,8 @@ final class AgentToolbox {
         let newTitle = values["title"]
         let id = current.id
         let seen = Snapshot(current)
-        var lines = ["Change event", "Was: \(current.title)", range(current.startDate, current.endDate),
-                     "Now: \(newTitle ?? current.title)", range(newStart, newEnd)]
+        var lines = ["Change event", "Was: \(Self.sanitized(current.title))", range(current.startDate, current.endDate),
+                     "Now: \(newTitle ?? Self.sanitized(current.title))", range(newStart, newEnd)]
         lines += extraLines(current)
         return .card(AgentCard(lines: lines) { [self] in
             if let gone = vanishedOrChanged(id, seen) { return gone }
@@ -413,7 +447,7 @@ final class AgentToolbox {
         let current = try record(values, .delete)
         let id = current.id
         let seen = Snapshot(current)
-        let lines = ["Delete event", current.title, range(current.startDate, current.endDate)] + extraLines(current)
+        let lines = ["Delete event", Self.sanitized(current.title), range(current.startDate, current.endDate)] + extraLines(current)
         return .card(AgentCard(lines: lines) { [self] in
             if let gone = vanishedOrChanged(id, seen) { return gone }
             guard let target = store.activities.first(where: { $0.id == id }) else { return (notFound(), .notApplied) }
@@ -427,14 +461,15 @@ final class AgentToolbox {
     /// `At <place>` and the repeating-event line, from the Store record.
     private func extraLines(_ record: ActivityBlock) -> [String] {
         var lines: [String] = []
-        if let place = record.location { lines.append("At \(place.name)") }
+        if let place = record.location { lines.append("At \(Self.sanitized(place.name))") }
         if record.recurrenceId != nil { lines.append("Only this occurrence of a repeating event.") }
         return lines
     }
 
     private func range(_ start: Date, _ end: Date) -> String {
-        let second = calendar.isDate(start, inSameDayAs: end) ? timeFormat : dayFormat
-        return "\(dayFormat.string(from: start)) - \(second.string(from: end))"
+        let f = formats
+        let second = f.calendar.isDate(start, inSameDayAs: end) ? f.time : f.day
+        return "\(f.day.string(from: start)) - \(second.string(from: end))"
     }
 
     private func notFound() -> AgentResolution {
@@ -453,9 +488,10 @@ final class AgentToolbox {
     /// `applied`, with the values read back from the Store.
     private func applied(_ id: UUID) -> (AgentResolution, AgentCardMark) {
         guard let stored = store.activities.first(where: { $0.id == id }) else { return (notFound(), .notApplied) }
-        let result = Self.encode(["status": "applied", "id": stored.id.uuidString, "title": stored.title,
-                                  "start": localFormat.string(from: stored.startDate),
-                                  "end": localFormat.string(from: stored.endDate)])
+        let local = formats.local
+        let result = Self.encode(["status": "applied", "id": stored.id.uuidString, "title": Self.sanitized(stored.title),
+                                  "start": local.string(from: stored.startDate),
+                                  "end": local.string(from: stored.endDate)])
         return (AgentResolution(result: result, notice: nil), .confirmed)
     }
 }

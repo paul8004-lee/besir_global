@@ -96,6 +96,23 @@ final class AgentClientTests: XCTestCase {
         }
     }
 
+    /// Audit D5: the zone is read for every request, so a change after the client was built reaches the instructions.
+    func testT28_D5_RequestInstructionsFollowAZoneChange() throws {
+        var zone = TestClock.zone
+        let client = AgentClient(config: AppConfig(proxyBaseURL: "https://" + sentinelHost, appToken: sentinelToken),
+                                 now: { TestClock.now }, timeZone: { zone })
+        func firstLine() throws -> String? {
+            let request = try XCTUnwrap(client.makeRequest(history: [.user("Hi")]))
+            let body = try json(try XCTUnwrap(request.httpBody))
+            return (body["instructions"] as? String)?.components(separatedBy: "\n").first
+        }
+        XCTAssertEqual(try firstLine(),
+                       "Current local date and time: 2026-10-27T09:00 (Tuesday), time zone America/Los_Angeles.")
+        zone = try XCTUnwrap(TimeZone(identifier: "Asia/Seoul"))
+        XCTAssertEqual(try firstLine(),
+                       "Current local date and time: 2026-10-28T01:00 (Wednesday), time zone Asia/Seoul.")
+    }
+
     func testLP004_InstructionsStateDateTimeWeekdayAndZone() {
         let rendered = AgentWire.instructions(now: TestClock.now, timeZone: TestClock.zone)
         let first = rendered.components(separatedBy: "\n").first

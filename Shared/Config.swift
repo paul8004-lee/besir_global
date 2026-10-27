@@ -121,9 +121,19 @@ struct AppConfig: Codable {
         return merged(saved: saved, bundled: bundled(info: Bundle.main.infoDictionary))
     }
 
+    /// The copy that goes to config.json: a proxy field the bundle supplies is left blank, so the bundled
+    /// host and token are never copied into Application Support. A blank bundled field keeps the saved value.
+    func persistable(bundled: AppConfig) -> AppConfig {
+        var cfg = self
+        if !bundled.proxyBaseURL.trimmingCharacters(in: .whitespaces).isEmpty { cfg.proxyBaseURL = "" }
+        if !bundled.appToken.trimmingCharacters(in: .whitespaces).isEmpty { cfg.appToken = "" }
+        return cfg
+    }
+
     func save() {
         try? FileManager.default.createDirectory(at: Self.supportDirectory, withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(self) {
+        let toWrite = persistable(bundled: Self.bundled(info: Bundle.main.infoDictionary))
+        if let data = try? JSONEncoder().encode(toWrite) {
             try? data.write(to: Self.configURL)
         }
     }

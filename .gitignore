@@ -11,4 +11,5 @@ proxy/node_modules/
 .env
 .env.*
 HACKATHON.md
-Config/Local.xcconfig
+Config/Local.*
+!Config/Local.xcconfig.example
