@@ -59,7 +59,7 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # 자동 서명 + 본인 Apple ID 팀(xcodegen 재생성 시에도 유지).
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: DFEME8ZQT9
+        DEVELOPMENT_TEAM: Y54D2W4F4T
     # `xcodebuild test -scheme besir-iOS` runs the unit tests below.
     scheme:
       testTargets:
@@ -114,7 +114,7 @@ targets:
         PRODUCT_NAME: besirShare
         PRODUCT_BUNDLE_IDENTIFIER: com.iseongmin.besir.global.share
         CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: DFEME8ZQT9
+        DEVELOPMENT_TEAM: Y54D2W4F4T
 
   besir-macOS:
     type: application
