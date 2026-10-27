@@ -4,7 +4,7 @@
 <dict>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.iseongmin.besir</string>
+		<string>group.com.iseongmin.besir.global</string>
 	</array>
 </dict>
 </plist>

@@ -151,7 +151,6 @@ struct ContentView: View {
 
     @EnvironmentObject var store: Store
     @EnvironmentObject var location: LocationManager
-    @EnvironmentObject var assistant: AIAssistant
 
     @State private var selection: ScheduledEvent.ID?
     @State private var selectedActivityId: ActivityBlock.ID?
@@ -163,10 +162,6 @@ struct ContentView: View {
     /// true = 월간 그리드만 표시. false = 주간 스트립 + 일간 시간표 표시.
     @State private var isMonthExpanded = true
     @State private var selectedDate: Date = Date()
-
-    /// 맥 도구모음 동기화 버튼이 읽는 진행 표시 — 클라우드 주기의 상태 하나(`Store.cloudSync`)를
-    /// 계산으로 읽을 뿐 두 번째 저장 상태를 만들지 않는다(계약 5).
-    private var cloudSyncRunning: Bool { store.cloudSync.isRunning }
 
     /// 드래그로 재조정 중인 블록(시간표에서 꾹 눌러 옮기는 동안의 임시 상태).
     @State private var activeDrag: ActiveDrag?
@@ -445,17 +440,6 @@ struct ContentView: View {
             // 원 버튼(M2)이 각각 맡는다.
             #if os(macOS)
             ToolbarItem(placement: .primaryAction) {
-                Button { Task { await CloudSync.runCycle(store, origin: .manualRetry) } } label: {
-                    if cloudSyncRunning {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                    }
-                }
-                .help("클라우드 동기화")
-                .disabled(cloudSyncRunning)
-            }
-            ToolbarItem(placement: .primaryAction) {
                 Button { selectedDate = Date(); isMonthExpanded = false } label: { Image(systemName: "calendar.badge.clock") }
                     .help("오늘로 이동")
             }
@@ -466,12 +450,6 @@ struct ContentView: View {
             ToolbarItem(placement: .primaryAction) {
                 Button { showingFavorites = true } label: { Image(systemName: "star") }
                     .help("즐겨찾기 장소")
-            }
-            if store.config.hasAI {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { assistant.isPresented = true } label: { Image(systemName: "sparkles") }
-                        .help("AI로 일정 추가 · 공유받기")
-                }
             }
             ToolbarItem(placement: .primaryAction) {
                 Menu {

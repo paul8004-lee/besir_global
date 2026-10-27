@@ -35,8 +35,6 @@ struct EventDetailView: View {
     @State private var showingEdit = false
     @State private var showingDeleteMenu = false
     @State private var showingDeleteConfirm = false
-    /// 항목 스위치 저장이 도는 동안 같은 스위치를 다시 눌러 고침이 겹치지 않게 막는다.
-    @State private var savingCalendarSync = false
     /// 지금 떠 있는 경로 조회. 출발지 좌표가 GPS 정밀화로 계속 미세하게 바뀌면 키가 다시
     /// 불리고, 취소 없이 두면 조회가 한 벌씩 쌓여 카카오 할당량이 타며(t11 sync N5),
     /// 취소된 조회는 서비스의 catch가 값 없는 결과로 바꿔 정상 반환처럼 돌아오기 때문에 늦은 옛
@@ -73,8 +71,6 @@ struct EventDetailView: View {
                 departureCard
 
                 transitItinerary
-
-                calendarButton
 
                 detailRows
             }
@@ -115,68 +111,10 @@ struct EventDetailView: View {
         return "\(event.id)-\(event.mode.rawValue)-\(o?.latitude ?? 0),\(o?.longitude ?? 0)-\(destCoord.latitude),\(destCoord.longitude)"
     }
 
-    @ViewBuilder
     private var mapView: some View {
-        if store.config.hasKakaoJs {
-            KakaoMapView(jsKey: store.config.kakaoJsKey,
-                         origin: originCoord,
-                         destination: destCoord,
-                         destinationName: event.destination.name,
-                         mode: event.mode,
-                         segments: routeSegments)
-        } else {
-            RouteMapView(origin: originCoord,
-                         destination: destCoord,
-                         destinationName: event.destination.name)
-        }
-    }
-
-    /// 기기는 구글과 말하지 않고 서버가 대신 반영하므로(D15), 여기 둘 것은 항목 스위치뿐이다 —
-    /// 서버 연결이 `linked`일 때만 보인다(REQ-005). 연결이 없으면 아무것도 그리지 않는다:
-    /// 스위치를 꺼도 효과가 없고, 안내할 기기 쪽 연결 길도 이제 없다. 로그인한 적 없는 기기는
-    /// 걸려 있음 자체가 없으므로 묶음째 `isEngaged` 아래에 둔다.
-    @ViewBuilder
-    private var calendarButton: some View {
-        if CloudSync.isEngaged {
-            // 출발지 없는 옛 일정은 일반 고침 경로가 출발지를 요구해 값을 보존한 채 저장할 수 없다 —
-            // 눌러도 저장되지 않는 스위치를 두느니 편집에서 출발지를 정한 뒤에 보이게 한다.
-            if store.googleLink == .linked, event.origin != nil {
-                Toggle("구글 캘린더에 보이기", isOn: calendarSyncBinding)
-                    .font(.callout)
-                    .disabled(savingCalendarSync)
-                    .accessibilityHint("끄면 구글의 besir 캘린더에서 이 일정이 빠져요.")
-            }
-        }
-    }
-
-    /// 스위치는 저장된 값을 그대로 비춘다 — 화면 상태를 따로 두면 동기화로 값이 바뀌었을 때 둘이 어긋난다.
-    private var calendarSyncBinding: Binding<Bool> {
-        Binding(get: { event.wantsCalendarSync },
-                set: { on in Task { await setCalendarSync(on) } })
-    }
-
-    /// 항목 스위치의 저장. 일반 고침(`updateEvent`) 한 길로 보내 저장·동기화 대기열이 다른 고침과 같게 돈다.
-    /// 나머지 필드는 지금 값 그대로 넘기고, 이동시간은 저장된 값을 힌트로 줘 스위치 하나에 길찾기를 다시
-    /// 부르지 않는다(modifyEvent가 앵커 시각을 고르는 것과 같은 식).
-    private func setCalendarSync(_ on: Bool) async {
-        let id = event.id
-        // 값은 누른 순간 store에서 id로 다시 읽는다 — 화면이 들고 있던 사본이나 배열 위치를 믿지 않는다.
-        guard let current = store.events.first(where: { $0.id == id }),
-              current.wantsCalendarSync != on,
-              let origin = current.origin else { return }
-        savingCalendarSync = true
-        defer { savingCalendarSync = false }
-        await store.updateEvent(id: id,
-                                title: current.title,
-                                origin: origin,
-                                destination: current.destination,
-                                arrivalDate: current.anchorDate,
-                                mode: current.mode,
-                                bufferMinutes: current.bufferMinutes,
-                                notifyLeadMinutes: current.notifyLeadMinutes,
-                                anchor: current.anchor ?? .arrival,
-                                travelSecondsHint: current.travelSeconds,
-                                syncToCalendar: on)
+        RouteMapView(origin: originCoord,
+                     destination: destCoord,
+                     destinationName: event.destination.name)
     }
 
     private func loadTransitPath() async {

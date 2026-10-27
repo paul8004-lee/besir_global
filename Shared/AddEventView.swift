@@ -263,14 +263,7 @@ struct AddEventView: View {
         ]
         // 알림을 끈 채 저장된 일정을 편집할 때는 리드 줄이 없다(켜면 lastNotifyLead로 돌아온다)
         if notifyOn == "true" { rows.append(notifyLeadRow(chosen: lead)) }
-        // 캘린더 줄은 카드 생성 시점의 구글 연결 상태로 정한다(D2). 연결이 없으면 줄을 보여 봐야 효과가 없어
-        // 묻지 않고 기본값(calendarDefault)만 저장한다 — 나중에 연결하면 서버가 그 값을 따른다.
-        if store.googleLink == .linked {
-            rows.append(.init(key: "calendar_sync", kind: .toggle, label: "구글 캘린더에 보이기",
-                              options: [.init(label: "보이기", value: "true"),
-                                        .init(label: "안 함", value: "false")],
-                              allowsCustom: false, chosen: calendar))
-        }
+        // 구글 연결이 없는 빌드라 캘린더 줄은 묻지 않고 기본값(calendarDefault)만 저장에 쓴다.
         return rows
     }
 
@@ -434,7 +427,7 @@ struct AddEventView: View {
         deb.noteDone(field, query)
         placeDebounce = deb
         setLookup(field, found.isEmpty ? .empty
-                  : .results(Array(found.prefix(AIAssistant.maxPlaceSuggestions))))
+                  : .results(Array(found.prefix(PlaceSearch.maxSuggestions))))
     }
 
     /// 검색 상태를 줄에 얹는다. await에서 돌아온 뒤 id로 다시 찾는다 — 줄이 없어졌으면 조용히

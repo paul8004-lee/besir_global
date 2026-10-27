@@ -412,7 +412,7 @@ struct ActivityDetailView: View {
         deb.noteDone(field, query)
         placeDebounce = deb
         setLookup(field, found.isEmpty ? .empty
-                  : .results(Array(found.prefix(AIAssistant.maxPlaceSuggestions))))
+                  : .results(Array(found.prefix(PlaceSearch.maxSuggestions))))
     }
 
     /// 검색 상태를 줄에 얹는다. await에서 돌아온 뒤 id로 다시 찾는다 — 줄이 없어졌으면(장소를

@@ -14,7 +14,6 @@ struct AddActivityView: View {
     @EnvironmentObject var location: LocationManager
     /// '반복' 칸을 마칠 때의 해석(interpretRecurrence)만 빌린다 — 해석은 격리 메서드라 채팅 상태를 읽지도
     /// 바꾸지도 않는다. 새 AI 객체를 만들지 않는 이유는 계약 4다. 시트는 띄우는 화면의 환경을 물려받는다.
-    @EnvironmentObject var assistant: AIAssistant
     @Environment(\.dismiss) private var dismiss
     /// 시작 바퀴가 처음 서는 날 — 생성을 누를 때 보고 있던 날(t50 P3, 운영자 원문 "11/14일 활동일정
     /// 생성을 누르면 시작 바퀴가 11/14일로"). 값이 아니라 위치다: 시작 줄은 확인을 눌러야 정해진다.
@@ -120,7 +119,7 @@ struct AddActivityView: View {
         calendarDefault = store.calendarSyncDefault
         let fields = LegCardForm.manualNewActivityRows(
             favorites: favoriteOptions, defaultDay: defaultDay, now: Date(), presetStart: presetStart,
-            calendarDefaultOn: store.googleLink == .linked ? store.calendarSyncDefault : nil)
+            calendarDefaultOn: nil)
         var f = LegCardForm(card: EditCard(fields: fields), favoriteOptions: favoriteOptions)
         // 즐겨찾기는 줄이 서는 시점에 좌표까지 확정해 둔다(REQ-010) — 라벨로 고르는 옛 길의 씨앗이다.
         for fav in store.favorites { f.favoritePlaces[fav.label] = fav.place }
@@ -342,7 +341,7 @@ struct AddActivityView: View {
         deb.noteDone(field, query)
         placeDebounce = deb
         setLookup(field, found.isEmpty ? .empty
-                  : .results(Array(found.prefix(AIAssistant.maxPlaceSuggestions))))
+                  : .results(Array(found.prefix(PlaceSearch.maxSuggestions))))
     }
 
     /// 검색 상태를 줄에 얹는다. await에서 돌아온 뒤 id로 다시 찾는다 — 줄이 없어졌으면(다리를
@@ -432,14 +431,8 @@ struct AddActivityView: View {
         let request = f.beginRecurrenceCommit()
         form = f
         guard let request else { return }
-        let result = await assistant.interpretRecurrence(request.text, startDate: request.start)
         guard var g = form else { return }
-        switch result {
-        case .interpreted(let arguments, let endDate):
-            g.applyRecurrenceInterpretation(arguments: arguments, endDate: endDate, for: request.text)
-        case .failed:
-            g.applyRecurrenceInterpretation(arguments: nil, endDate: nil, for: request.text)
-        }
+        g.applyRecurrenceInterpretation(arguments: nil, endDate: nil, for: request.text)
         form = g
         // 반복으로 읽히면 종료 줄이 반복 끝 시각으로 옮겨질 수 있다 — 과거 알림 판정의 재료가 바뀐다.
         recomputePastAlarmNotes()

@@ -43,13 +43,13 @@ targets:
       path: Generated/besir-iOS.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.com.iseongmin.besir
+          - group.com.iseongmin.besir.global
     dependencies:
       - target: besirShare
         embed: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.iseongmin.besir
+        PRODUCT_BUNDLE_IDENTIFIER: com.iseongmin.besir.global
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # 자동 서명 + 본인 Apple ID 팀(xcodegen 재생성 시에도 유지).
         CODE_SIGN_STYLE: Automatic
@@ -77,12 +77,12 @@ targets:
       path: Generated/besirShare.entitlements
       properties:
         com.apple.security.application-groups:
-          - group.com.iseongmin.besir
+          - group.com.iseongmin.besir.global
     settings:
       base:
         # 최상위 PRODUCT_NAME(besir)을 그대로 쓰면 메인 앱과 모듈명이 겹쳐 빌드 충돌 발생 → 반드시 재정의.
         PRODUCT_NAME: besirShare
-        PRODUCT_BUNDLE_IDENTIFIER: com.iseongmin.besir.share
+        PRODUCT_BUNDLE_IDENTIFIER: com.iseongmin.besir.global.share
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: DFEME8ZQT9
 
