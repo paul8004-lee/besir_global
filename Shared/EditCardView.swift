@@ -488,6 +488,9 @@ struct EditCardView: View {
                     }
                     placeRowBody(field, row)
                 }
+                if rows.contains(where: { $0.isCandidate }) {
+                    GoogleMapsAttribution()
+                }
                 switch field.lookup {
                 case .idle:
                     EmptyView()

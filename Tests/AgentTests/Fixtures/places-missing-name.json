@@ -1,0 +1,31 @@
+{
+  "places": [
+    {
+      "id": "fixture-place-0021",
+      "displayName": { "text": "First Example Place", "languageCode": "en" },
+      "formattedAddress": "21 Sample Avenue, Exampleton, EX 94100, USA",
+      "location": { "latitude": 37.7801, "longitude": -122.4101 },
+      "googleMapsUri": "https://maps.example.invalid/place/0021"
+    },
+    {
+      "id": "fixture-place-0022",
+      "formattedAddress": "22 Sample Avenue, Exampleton, EX 94100, USA",
+      "location": { "latitude": 37.7712, "longitude": -122.4233 },
+      "googleMapsUri": "https://maps.example.invalid/place/0022"
+    },
+    {
+      "id": "fixture-place-0023",
+      "displayName": { "languageCode": "en" },
+      "formattedAddress": "23 Sample Avenue, Exampleton, EX 94100, USA",
+      "location": { "latitude": 37.7700, "longitude": -122.4200 },
+      "googleMapsUri": "https://maps.example.invalid/place/0023"
+    },
+    {
+      "id": "fixture-place-0024",
+      "displayName": { "text": "Third Example Place", "languageCode": "en" },
+      "formattedAddress": "24 Sample Avenue, Exampleton, EX 94100, USA",
+      "location": { "latitude": 37.7655, "longitude": -122.4312 },
+      "googleMapsUri": "https://maps.example.invalid/place/0024"
+    }
+  ]
+}

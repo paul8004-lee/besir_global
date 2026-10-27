@@ -1,0 +1,280 @@
+import XCTest
+import UIKit
+import CoreLocation
+@testable import besir
+
+/// SPEC-PLACES-001: the thin `PlaceSearch` caller through a stubbed transport (PR client step, FL), the preserved
+/// contract and source scans (SC) and the attribution logo (LG). Nothing here touches the network.
+final class PlaceSearchTests: XCTestCase {
+    private typealias Support = PlacesTestSupport
+
+    private func makeSearch(_ stub: PlacesTransportStub, config: AppConfig = Support.config) -> PlaceSearch {
+        PlaceSearch(config: config, transport: stub.transport)
+    }
+
+    private func threePlacesStub(status: Int = 200) throws -> PlacesTransportStub {
+        PlacesTransportStub.answering(status: status, with: try Support.fixture("places-search-three"))
+    }
+
+    /// The distance the app computes, from the place a result carries.
+    private func distance(of result: NearbyPlace) -> Double {
+        CLLocation(latitude: result.place.latitude, longitude: result.place.longitude)
+            .distance(from: CLLocation(latitude: Support.center.latitude, longitude: Support.center.longitude))
+    }
+
+    // MARK: - PR typed search and client step
+
+    func testPLACES_SearchTrimsAndRequiresTwoCharacters() async throws {
+        let stub = try threePlacesStub()
+        let search = makeSearch(stub)
+        for short in ["a", " a ", "   ", "", "\n"] {
+            let result = await search.search(short, near: Support.center)
+            XCTAssertEqual(result, [], "query: \(short.debugDescription)")
+        }
+        XCTAssertEqual(stub.callCount, 0)
+
+        let trimmed = await search.search("  cafe ", near: Support.center)
+        XCTAssertEqual(trimmed.count, 3)
+        XCTAssertEqual(stub.callCount, 1)
+        XCTAssertEqual(Support.body(of: try XCTUnwrap(stub.requests.first))?["textQuery"] as? String, "cafe")
+
+        let twoCharacters = await search.search("ab", near: nil)
+        XCTAssertEqual(twoCharacters.count, 3)
+        XCTAssertEqual(stub.callCount, 2)
+        XCTAssertEqual(Support.body(of: try XCTUnwrap(stub.requests.last))?["textQuery"] as? String, "ab")
+    }
+
+    func testPLACES_NearbyDistanceFilter() async {
+        let answer = Support.nearbyAnswer([("near", 1000), ("far", 2000), ("inside", 1499.6), ("outside", 1500.4)])
+        let stub = PlacesTransportStub.answering(with: answer)
+        let results = await makeSearch(stub).nearbyPlaces(category: .restaurant, near: Support.center,
+                                                          radiusMeters: 1500, sort: .accuracy, limit: 20)
+        XCTAssertEqual(stub.callCount, 1)
+        // Just inside the radius stays although its rounded distance is 1500; just outside goes.
+        XCTAssertEqual(results.map(\.place.name), ["near", "inside"])
+        for result in results {
+            XCTAssertEqual(result.distanceMeters, Int(distance(of: result).rounded()))
+        }
+        XCTAssertEqual(results.last?.distanceMeters, 1500)
+        XCTAssertEqual(results.first?.distanceMeters, 1000)
+
+        // A requested radius of 50 is clamped to 100.
+        let smallStub = PlacesTransportStub.answering(with: Support.nearbyAnswer([("in80", 80), ("out120", 120)]))
+        let small = await makeSearch(smallStub).nearbyPlaces(category: nil, near: Support.center,
+                                                             radiusMeters: 50, sort: .accuracy, limit: 20)
+        XCTAssertEqual(small.map(\.place.name), ["in80"])
+
+        // A requested radius of 80000 is clamped to 50000.
+        let wideStub = PlacesTransportStub.answering(with: Support.nearbyAnswer([("in49k", 49_000), ("out51k", 51_000)]))
+        let wide = await makeSearch(wideStub).nearbyPlaces(category: nil, near: Support.center,
+                                                           radiusMeters: 80_000, sort: .accuracy, limit: 20)
+        XCTAssertEqual(wide.map(\.place.name), ["in49k"])
+    }
+
+    func testPLACES_NearbySortDistance() async {
+        let stub = PlacesTransportStub.answering(with: Support.nearbyAnswer([("far", 900), ("near", 300), ("mid", 600)]))
+        let results = await makeSearch(stub).nearbyPlaces(category: .cafe, near: Support.center,
+                                                          radiusMeters: 1500, sort: .distance, limit: 5)
+        XCTAssertEqual(results.map(\.place.name), ["near", "mid", "far"])
+    }
+
+    func testPLACES_NearbySortRelevanceKeepsOrder() async {
+        let answer = Support.nearbyAnswer([("far", 900), ("gone", 2000), ("near", 300), ("mid", 600)])
+        let stub = PlacesTransportStub.answering(with: answer)
+        let results = await makeSearch(stub).nearbyPlaces(category: .cafe, near: Support.center,
+                                                          radiusMeters: 1500, sort: .accuracy, limit: 5)
+        XCTAssertEqual(results.map(\.place.name), ["far", "near", "mid"])
+    }
+
+    func testPLACES_NearbyLimitTrims() async {
+        let meters: [Double] = [1100, 300, 900, 100, 1400, 500, 1200, 700, 200, 1000, 400, 800]
+        let items = meters.enumerated().map { (name: "P\($0.offset)", meters: $0.element) }
+        let stub = PlacesTransportStub.answering(with: Support.nearbyAnswer(items))
+        let search = makeSearch(stub)
+        let byDistance = await search.nearbyPlaces(category: .restaurant, near: Support.center,
+                                                   radiusMeters: 1500, sort: .distance, limit: 5)
+        // The five nearest are 100, 200, 300, 400 and 500 metres: P3, P8, P1, P10, P5.
+        XCTAssertEqual(byDistance.map(\.place.name), ["P3", "P8", "P1", "P10", "P5"])
+        let byRelevance = await search.nearbyPlaces(category: .restaurant, near: Support.center,
+                                                    radiusMeters: 1500, sort: .accuracy, limit: 5)
+        XCTAssertEqual(byRelevance.map(\.place.name), ["P0", "P1", "P2", "P3", "P4"])
+    }
+
+    func testPLACES_NearbyLimitClamp() async {
+        // 25 places inside the radius, answered farthest first, so the nearest one is the last in Google's order.
+        let many = (0..<25).reversed().map { (name: "P\($0)", meters: 50.0 + 100.0 * Double($0)) }
+        let search = makeSearch(PlacesTransportStub.answering(with: Support.nearbyAnswer(many)))
+        func count(_ limit: Int, _ sort: NearbySort = .distance) async -> [NearbyPlace] {
+            await search.nearbyPlaces(category: .restaurant, near: Support.center, radiusMeters: 5000,
+                                      sort: sort, limit: limit)
+        }
+        let zero = await count(0)
+        XCTAssertEqual(zero.map(\.place.name), ["P0"])
+        let negative = await count(-3)
+        XCTAssertEqual(negative.count, 1)
+        let twenty = await count(20)
+        XCTAssertEqual(twenty.count, 20)
+        let twentyOne = await count(21)
+        XCTAssertEqual(twentyOne.count, 20)
+        let ninetyNine = await count(99)
+        XCTAssertEqual(ninetyNine.count, 20)
+        XCTAssertEqual(ninetyNine.first?.place.name, "P0")
+
+        let fewSearch = makeSearch(PlacesTransportStub.answering(
+            with: Support.nearbyAnswer([("A", 100), ("B", 200), ("C", 300)])))
+        let few = await fewSearch.nearbyPlaces(category: .cafe, near: Support.center, radiusMeters: 5000,
+                                               sort: .distance, limit: 99)
+        XCTAssertEqual(few.count, 3)
+    }
+
+    // MARK: - FL failure contract (transport half)
+
+    func testPLACES_SearchNon200GivesEmpty() async throws {
+        for status in [400, 401, 403, 429, 500, 502, 503] {
+            let stub = try threePlacesStub(status: status)
+            let result = await makeSearch(stub).search("blue bottle", near: Support.center)
+            XCTAssertEqual(result, [], "status \(status)")
+            XCTAssertEqual(stub.callCount, 1, "status \(status)")
+        }
+        // A response that is not an HTTP response.
+        let body = try Support.fixture("places-search-three")
+        let plain = PlacesTransportStub { request in
+            (body, URLResponse(url: request.url ?? URL(fileURLWithPath: "/"), mimeType: "application/json",
+                               expectedContentLength: body.count, textEncodingName: nil))
+        }
+        let nonHTTP = await makeSearch(plain).search("blue bottle", near: Support.center)
+        XCTAssertEqual(nonHTTP, [])
+        XCTAssertEqual(plain.callCount, 1)
+        // Counterpart: status 200 with the same body returns the three places.
+        let good = await makeSearch(try threePlacesStub()).search("blue bottle", near: Support.center)
+        XCTAssertEqual(good.count, 3)
+    }
+
+    func testPLACES_SearchTransportThrowsGivesEmpty() async throws {
+        let offline = PlacesTransportStub { _ in throw URLError(.notConnectedToInternet) }
+        let offlineResult = await makeSearch(offline).search("blue bottle", near: Support.center)
+        XCTAssertEqual(offlineResult, [])
+        XCTAssertEqual(offline.callCount, 1)
+        let cancelled = PlacesTransportStub { _ in throw CancellationError() }
+        let cancelledResult = await makeSearch(cancelled).search("blue bottle", near: Support.center)
+        XCTAssertEqual(cancelledResult, [])
+        XCTAssertEqual(cancelled.callCount, 1)
+        let good = await makeSearch(try threePlacesStub()).search("blue bottle", near: Support.center)
+        XCTAssertEqual(good.count, 3)
+    }
+
+    func testPLACES_UnconfiguredSendsNothing() async throws {
+        let stub = try threePlacesStub()
+        let unconfigured = makeSearch(stub, config: AppConfig())
+        let typed = await unconfigured.search("blue bottle", near: Support.center)
+        let nearby = await unconfigured.nearbyPlaces(category: .cafe, near: Support.center)
+        XCTAssertEqual(typed, [])
+        XCTAssertEqual(nearby.count, 0)
+        XCTAssertEqual(stub.callCount, 0)
+        // Counterpart: the configured search reaches the transport and returns places.
+        let configured = await makeSearch(stub).search("blue bottle", near: Support.center)
+        XCTAssertEqual(configured.count, 3)
+        XCTAssertEqual(stub.callCount, 1)
+    }
+
+    func testPLACES_NearbyFailureGivesEmpty() async {
+        let answer = Support.nearbyAnswer([("A", 100)])
+        for status in [401, 429, 503] {
+            let stub = PlacesTransportStub.answering(status: status, with: answer)
+            let result = await makeSearch(stub).nearbyPlaces(category: .cafe, near: Support.center)
+            XCTAssertEqual(result.count, 0, "status \(status)")
+            XCTAssertEqual(stub.callCount, 1, "status \(status)")
+        }
+        let thrown = PlacesTransportStub { _ in throw URLError(.timedOut) }
+        let thrownResult = await makeSearch(thrown).nearbyPlaces(category: .cafe, near: Support.center)
+        XCTAssertEqual(thrownResult.count, 0)
+        XCTAssertEqual(thrown.callCount, 1)
+        let garbage = PlacesTransportStub.answering(with: Data("<html>Bad gateway</html>".utf8))
+        let garbageResult = await makeSearch(garbage).nearbyPlaces(category: .cafe, near: Support.center)
+        XCTAssertEqual(garbageResult.count, 0)
+        XCTAssertEqual(garbage.callCount, 1)
+        // Counterpart: a good answer returns the place.
+        let good = PlacesTransportStub.answering(with: answer)
+        let goodResult = await makeSearch(good).nearbyPlaces(category: .cafe, near: Support.center)
+        XCTAssertEqual(goodResult.count, 1)
+    }
+
+    // MARK: - SC preserved contract and scans
+
+    func testPLACES_PlaceCodableShapeUnchanged() throws {
+        let place = Place(name: "Example Cafe", address: "100 Sample Avenue", latitude: 37.78, longitude: -122.41)
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(place))
+        let object = try XCTUnwrap(encoded as? [String: Any])
+        XCTAssertEqual(Set(object.keys), ["address", "latitude", "longitude", "name"])
+        // A value saved before this change still decodes.
+        let old = "{\"name\":\"Old Place\",\"address\":\"1 Old Road\",\"latitude\":37.5,\"longitude\":127.0}"
+        let decoded = try JSONDecoder().decode(Place.self, from: Data(old.utf8))
+        XCTAssertEqual(decoded, Place(name: "Old Place", address: "1 Old Road", latitude: 37.5, longitude: 127.0))
+    }
+
+    /// The needles of `needles` that appear in `text`.
+    private static func scan(_ text: String, for needles: [String]) -> [String] {
+        needles.filter { text.contains($0) }
+    }
+
+    func testPLACES_SourceScanFindsNoOldPaths() {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let needles = ["/kakao", "MKLocalSearch", "category_group_code"]
+        for name in ["PlaceSearch", "GooglePlaces"] {
+            let url = root.appendingPathComponent("Shared/\(name).swift")
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+                XCTFail("cannot read the source file Shared/\(name).swift")
+                continue
+            }
+            // Control: the text read is the real file, not an empty string.
+            XCTAssertTrue(text.contains(name), "Shared/\(name).swift read, but it does not mention \(name)")
+            XCTAssertEqual(Self.scan(text, for: needles), [], "old path left in Shared/\(name).swift")
+        }
+    }
+
+    func testPLACES_SourceScanHelperFindsPlantedString() {
+        let needles = ["/kakao", "MKLocalSearch", "category_group_code"]
+        XCTAssertEqual(Self.scan("let path = \"/kakao/local\"", for: needles), ["/kakao"])
+        XCTAssertEqual(Self.scan("request = MKLocalSearch.Request()\nitems.append(\"category_group_code\")", for: needles),
+                       ["MKLocalSearch", "category_group_code"])
+        XCTAssertEqual(Self.scan("let path = \"/places\"", for: needles), [])
+    }
+
+    func testPLACES_SortAndCategoryTitlesUnchanged() {
+        XCTAssertEqual(NearbySort.distance.title, "Distance")
+        XCTAssertEqual(NearbySort.accuracy.title, "Relevance")
+        XCTAssertEqual(NearbySort.distance.rawValue, "distance")
+        XCTAssertEqual(NearbySort.accuracy.rawValue, "accuracy")
+        XCTAssertEqual(MealCategoryFilter.restaurant.title, "Restaurants")
+        XCTAssertEqual(MealCategoryFilter.cafe.title, "Cafes")
+        XCTAssertEqual(MealCategoryFilter.restaurant.rawValue, "restaurant")
+        XCTAssertEqual(MealCategoryFilter.cafe.rawValue, "cafe")
+        XCTAssertEqual(PlaceSearch.maxSuggestions, 5)
+    }
+
+    // MARK: - LG logo
+
+    func testPLACES_LogoAssetResolvesInLightAndDark() throws {
+        let bundle = Bundle(for: LocationManager.self)
+        let light = try XCTUnwrap(UIImage(named: "GoogleMapsLogo", in: bundle,
+                                          compatibleWith: UITraitCollection(userInterfaceStyle: .light)))
+        let dark = try XCTUnwrap(UIImage(named: "GoogleMapsLogo", in: bundle,
+                                         compatibleWith: UITraitCollection(userInterfaceStyle: .dark)))
+        let expectedRatio = 98.0 / 18.0
+        for image in [light, dark] {
+            XCTAssertGreaterThan(image.size.height, 0)
+            XCTAssertEqual(image.size.width / image.size.height, expectedRatio, accuracy: expectedRatio * 0.02)
+        }
+        func rendering(_ image: UIImage) -> Data? {
+            let size = CGSize(width: 98, height: 18)
+            return UIGraphicsImageRenderer(size: size).pngData { _ in
+                image.draw(in: CGRect(origin: .zero, size: size))
+            }
+        }
+        let lightData = try XCTUnwrap(rendering(light))
+        let darkData = try XCTUnwrap(rendering(dark))
+        XCTAssertFalse(lightData.isEmpty)
+        XCTAssertNotEqual(lightData, darkData, "the light and dark renderings must differ")
+    }
+}
