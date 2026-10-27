@@ -464,6 +464,60 @@ final class GoogleRoutesTests: XCTestCase {
         XCTAssertEqual(result.steps.last?.minutes, 2)
     }
 
+    func testROUTES_StepsConsecutiveWalksMergedIntoOneRow() throws {
+        let route = try parsedRoute("routes-transit-many-walks")
+        XCTAssertEqual(route.steps.count, 14)
+        let result = GoogleRoutes.transitSteps(from: route)
+        XCTAssertEqual(result.steps.map(\.kind), [.walk, .bus, .walk])
+        guard result.steps.count == 3 else { return }
+        XCTAssertEqual(result.steps.map(\.minutes), [9, 37, 7])
+        XCTAssertEqual(result.steps[0].headline, "Walk 9 min")
+        XCTAssertEqual(result.steps[0].detail, "Walk to Example Stop A")
+        XCTAssertEqual(result.steps[1].headline, "Take bus 38R")
+        XCTAssertEqual(result.steps[1].detail, "Example Stop A \u{2192} Example Stop B \u{b7} 20 stop(s) \u{b7} 37 min")
+        XCTAssertEqual(result.steps[2].headline, "Walk 7 min")
+        XCTAssertEqual(result.steps[2].detail, "Walk to Destination")
+        XCTAssertNil(result.extraMinutes)
+    }
+
+    func testROUTES_StepsMergedWalkRoundsOnce() {
+        let tiny = GoogleRoutes.Route(duration: 600, steps: [
+            Support.step("WALK", seconds: 20), Support.step("WALK", seconds: 20), Support.step("WALK", seconds: 20),
+            Support.step("TRANSIT", seconds: 300, from: "A", to: "B", short: "X", vehicle: "BUS")
+        ])
+        let tinyResult = GoogleRoutes.transitSteps(from: tiny)
+        XCTAssertEqual(tinyResult.steps.map(\.kind), [.walk, .bus])
+        XCTAssertEqual(tinyResult.steps.first?.minutes, 1)
+        XCTAssertEqual(tinyResult.extraMinutes, 4)
+        let halves = GoogleRoutes.Route(duration: 600, steps: [
+            Support.step("WALK", seconds: 40), Support.step("WALK", seconds: 40),
+            Support.step("TRANSIT", seconds: 300, from: "A", to: "B", short: "X", vehicle: "BUS")
+        ])
+        XCTAssertEqual(GoogleRoutes.transitSteps(from: halves).steps.first?.minutes, 1)
+        let dust = GoogleRoutes.Route(duration: 600, steps: [
+            Support.step("WALK", seconds: 12), Support.step("WALK", seconds: 5),
+            Support.step("TRANSIT", seconds: 300, from: "A", to: "B", short: "X", vehicle: "BUS")
+        ])
+        XCTAssertEqual(GoogleRoutes.transitSteps(from: dust).steps.map(\.kind), [.bus])
+    }
+
+    func testROUTES_StepsWalkRunsStayApartAcrossTransit() {
+        let route = GoogleRoutes.Route(duration: 2400, steps: [
+            Support.step("WALK", seconds: 120), Support.step("WALK", seconds: 60),
+            Support.step("TRANSIT", seconds: 600, from: "A", to: "B", short: "X", vehicle: "BUS"),
+            Support.step("WALK", seconds: 90), Support.step("WALK"), Support.step("WALK", seconds: 90),
+            Support.step("TRANSIT", seconds: 600, from: "C", to: "D", short: "Y", vehicle: "SUBWAY"),
+            Support.step("WALK", seconds: 60), Support.step("WALK", seconds: 60)
+        ])
+        let result = GoogleRoutes.transitSteps(from: route)
+        XCTAssertEqual(result.steps.map(\.kind), [.walk, .bus, .walk, .subway, .walk])
+        XCTAssertEqual(result.steps.map(\.minutes), [3, 10, 3, 10, 2])
+        XCTAssertEqual(result.steps.map(\.to), ["A", "B", "C", "D", "Destination"])
+        XCTAssertEqual(result.steps.map(\.from), ["Start", "A", "B", "C", "D"])
+        let sum = result.steps.reduce(0) { $0 + $1.minutes }
+        XCTAssertEqual(sum + (result.extraMinutes ?? 0), roundedMinutes(fromSeconds: 2400))
+    }
+
     func testROUTES_StepsMissingDurationCountsZero() throws {
         let result = GoogleRoutes.transitSteps(from: try parsedRoute("routes-transit-no-duration"))
         XCTAssertEqual(result.steps.map(\.kind), [.bus])

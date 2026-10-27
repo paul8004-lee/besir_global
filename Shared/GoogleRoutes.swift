@@ -225,21 +225,30 @@ enum GoogleRoutes {
     /// Walk and transit steps in English from the first route, plus the minutes the steps do not explain.
     /// A step minute is the rounded `staticDuration` (a missing one counts 0, never invented); the extra minutes are the
     /// rounded total minus the sum of the step minutes, present only when at least 1, so that the steps plus the extra
-    /// always equal the total.
+    /// always equal the total. Google splits a walk into many small steps, so consecutive WALK steps are summed in seconds
+    /// and rounded once into one walk step (omitted when that is 0 minutes); a TRANSIT step ends a run of walking.
     static func transitSteps(from route: Route) -> (steps: [TransitStep], extraMinutes: Int?) {
         var steps: [TransitStep] = []
         var lastEnd = "Start"
-        for (index, raw) in route.steps.enumerated() {
+        var walkSeconds: TimeInterval = 0
+        var isWalking = false
+        func flushWalk(to: String) {
+            defer { walkSeconds = 0; isWalking = false }
+            guard isWalking else { return }
+            let minutes = roundedMinutes(fromSeconds: walkSeconds)
+            if minutes <= 0 { return }
+            steps.append(TransitStep(kind: .walk, line: "", from: lastEnd, to: to,
+                                     minutes: minutes, stationCount: nil, color: walkColor))
+        }
+        for raw in route.steps {
             let minutes = roundedMinutes(fromSeconds: raw.staticDuration ?? 0)
             switch raw.travelMode {
             case "WALK":
-                if minutes <= 0 { continue }
-                // The end of a walk is the next boarding stop, not the stop this walk passes.
-                let next = route.steps[(index + 1)...].first { $0.travelMode == "TRANSIT" }
-                let to = text(next?.departureStop) ?? "Destination"
-                steps.append(TransitStep(kind: .walk, line: "", from: lastEnd, to: to,
-                                         minutes: minutes, stationCount: nil, color: walkColor))
+                walkSeconds += raw.staticDuration ?? 0
+                isWalking = true
             case "TRANSIT":
+                // The end of a walk is the next boarding stop, not the stop the walk passes.
+                flushWalk(to: text(raw.departureStop) ?? "Destination")
                 let isBus = raw.vehicleType.map(busVehicleTypes.contains) ?? false
                 let from = text(raw.departureStop) ?? lastEnd
                 let to = text(raw.arrivalStop) ?? "Get off"
@@ -252,6 +261,7 @@ enum GoogleRoutes {
                 continue
             }
         }
+        flushWalk(to: "Destination")
         let extra = roundedMinutes(fromSeconds: route.duration) - steps.reduce(0) { $0 + $1.minutes }
         return (steps, extra >= 1 ? extra : nil)
     }
