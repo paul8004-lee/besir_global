@@ -194,6 +194,9 @@ struct FullSirView: View {
                         resultRow(item)
                         Divider().overlay(Theme.line)
                     }
+                    if !results.isEmpty {
+                        GoogleMapsAttribution()
+                    }
                 }
             }
         }

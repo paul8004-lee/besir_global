@@ -514,6 +514,9 @@ struct PlaceField: View {
                     .padding(.vertical, 4)
                     Divider()
                 }
+                if !results.isEmpty {
+                    GoogleMapsAttribution()
+                }
             }
         }
     }

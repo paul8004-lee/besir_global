@@ -715,6 +715,9 @@ struct ActivityDetailView: View {
                     ForEach(nearby) { item in
                         nearbyRow(item)
                     }
+                    if !nearby.isEmpty {
+                        GoogleMapsAttribution()
+                    }
                 }
             }
             // 펼치기 전 캡션은 지웠다 — 무엇을 찾아줄지 예고하는 부연 설명이다(REQ-011 G6).

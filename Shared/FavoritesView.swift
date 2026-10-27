@@ -95,6 +95,9 @@ struct FavoritesList: View {
                 .disabled(newLabel.trimmingCharacters(in: .whitespaces).isEmpty)
                 Divider()
             }
+            if !results.isEmpty {
+                GoogleMapsAttribution()
+            }
         }
     }
 
