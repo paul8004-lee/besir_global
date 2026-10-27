@@ -47,20 +47,11 @@ struct AgentChatView: View {
         .padding(.vertical, 12)
     }
 
-    private var shown: [AgentLogEntry] {
-        session.entries.filter { entry in
-            switch entry.kind {
-            case .tool, .result: return false
-            default: return true
-            }
-        }
-    }
-
     private var messages: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(shown) { entry in
+                    ForEach(session.chatEntries) { entry in
                         row(entry)
                     }
                     if session.isWaiting || session.isResolving {
@@ -143,10 +134,9 @@ struct AgentChatView: View {
     }
 
     private var composer: some View {
-        HStack(spacing: 12) {
-            TextField("Message", text: $draft)
-                .submitLabel(.send)
-                .onSubmit(sendDraft)
+        HStack(alignment: .bottom, spacing: 12) {
+            TextField("Message", text: $draft, axis: .vertical)
+                .lineLimit(1...5)
                 .disabled(!session.canSend)
             Button("Send", action: sendDraft)
                 .disabled(!session.canSend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)

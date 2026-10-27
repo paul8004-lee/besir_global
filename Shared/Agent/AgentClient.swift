@@ -17,6 +17,9 @@ enum AgentWire {
         "To find an event, call list_activities yourself with a range covering the day the user names, or today through the next 30 days if no day is named; never ask the user for a range.",
         "Only use event ids returned by list_activities.",
         "The app asks the user to confirm every change before it is applied; call the tool directly and do not ask for confirmation yourself.",
+        "Reply in plain text with no markdown: no asterisks, bold, bullet symbols or headings; put each event on its own line.",
+        "Write every time of day in 12-hour form with AM or PM, such as 3:00 PM, never in 24-hour form.",
+        "Never show event ids to the user; they are for tool calls only.",
     ]
 
     private static func formatter(_ pattern: String, _ timeZone: TimeZone) -> DateFormatter {

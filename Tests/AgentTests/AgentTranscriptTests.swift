@@ -69,6 +69,38 @@ final class AgentTranscriptTests: XCTestCase {
         XCTAssertNotNil(declined)
     }
 
+    /// SPEC-AGENT-003 AC-POLISH-004: a hidden preface is only undrawn; the log, the history and the transcript keep it.
+    func testPL002_HiddenPrefaceStaysInEntriesHistoryAndTranscript() async {
+        let preface = Turns.message("Looking.")
+        let call = Turns.call("list_activities", Turns.listArguments, id: "c1")
+        let rig = SessionRig([.turn(Turns.turn(preface, call)), .turn(Turns.text("Nothing."))])
+        await rig.say("What is on?")
+
+        XCTAssertEqual(rig.session.chatLines, ["USER What is on?", "ASSISTANT Nothing."], "the chat does not draw the preface")
+        XCTAssertEqual(rig.session.assistantTexts, ["Looking.", "Nothing."], "the log keeps it")
+        XCTAssertTrue(rig.fake.request(2).contains(.assistant([preface, call], responseID: nil)), "the history sent to the model keeps it")
+        XCTAssertEqual(PairingValidator.problems(in: rig.session.history), [])
+        XCTAssertEqual(lines(rig.session), ["USER What is on?", "ASSISTANT Looking.", "TOOL list_activities \(Turns.listArguments)",
+                                            "RESULT ok", "ASSISTANT Nothing."])
+    }
+
+    /// SPEC-AGENT-003 AC-POLISH-006: the interrupted line is a notice, never an error, and it shows in the transcript.
+    func testPL003_InterruptedNoticeIsANoticeNotAnErrorAndShowsInTheTranscript() async {
+        let rig = SessionRig([.hold])
+        rig.session.send("What is on?")
+        let reached = await rig.fake.waitForRequests(1)
+        XCTAssertTrue(reached)
+        await rig.session.sheetDismissed()
+
+        guard let last = rig.session.entries.last else { return XCTFail("the close should leave an entry") }
+        guard case .notice(let line) = last.kind else { return XCTFail("the entry is not a notice") }
+        XCTAssertEqual(line, "The chat was closed before the assistant replied.")
+        XCTAssertTrue(rig.session.errorLines.isEmpty)
+        XCTAssertEqual(lines(rig.session), ["USER What is on?", "NOTICE The chat was closed before the assistant replied."])
+        XCTAssertFalse(lines(rig.session).contains { $0.hasPrefix("ERROR") })
+        XCTAssertEqual(rig.session.chatLines, ["USER What is on?", "NOTICE The chat was closed before the assistant replied."])
+    }
+
     func testLP003_TranscriptNeverContainsURLOrToken() async {
         // The configuration holds a sentinel host and token, and the request builder puts the host in its URL.
         let config = AppConfig(kakaoJsKey: "", proxyBaseURL: "https://\(FakeTransport.host)", appToken: FakeTransport.token)
