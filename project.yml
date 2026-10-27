@@ -26,7 +26,7 @@ targets:
       path: Generated/Info-iOS.plist
       properties:
         CFBundleDisplayName: besir
-        NSLocationWhenInUseUsageDescription: "현재 위치를 기준으로 출발 시각을 계산하기 위해 위치 정보를 사용합니다."
+        NSLocationWhenInUseUsageDescription: "besir uses your current location to calculate your departure time."
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
