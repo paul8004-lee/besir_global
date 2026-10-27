@@ -55,7 +55,7 @@ struct FullSirView: View {
             .navigationTitle("be full sir")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button { onBack() } label: { Label("홈", systemImage: "chevron.left") }
+                    Button { onBack() } label: { Label("Home", systemImage: "chevron.left") }
                 }
                 // AI는 우하단 besir 로고 버튼(RootView) 하나로 통일됐다(REQ-008) — 툴바에는 두지 않는다.
             }
@@ -82,26 +82,26 @@ struct FullSirView: View {
 
     private var basisSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("기준 위치").font(.caption).foregroundStyle(Theme.faint)
-            Picker("기준 위치", selection: $basis) {
-                Text(location.currentPlaceName ?? "현재 위치").tag(Basis.current)
+            Text("Base Location").font(.caption).foregroundStyle(Theme.faint)
+            Picker("Base Location", selection: $basis) {
+                Text(location.currentPlaceName ?? "Current Location").tag(Basis.current)
                 ForEach(upcomingEvents) { e in
                     Text("\(e.destination.name) · \(Self.dayFmt.string(from: e.arrivalDate))")
                         .tag(Basis.event(e.id))
                 }
-                Text("직접 검색").tag(Basis.custom)
+                Text("Search Place").tag(Basis.custom)
             }
             #if os(iOS)
             .pickerStyle(.menu)
             #endif
             if case .current = basis, location.currentLocation == nil {
-                Text("위치 권한이 필요해요")
+                Text("Location permission is needed")
                     .font(.caption).foregroundStyle(Theme.warn)
             }
             // 현재 위치·오늘 일정 목적지 둘 다 기준으로 삼기 어려운 경우(외곽 지역 등)를 위한
             // 자유 검색 — 실기기 테스트에서 이 방법이 없다는 피드백을 받아 추가함.
             if case .custom = basis {
-                PlaceField(title: "검색할 위치", systemImage: "mappin.and.ellipse", place: $customPlace)
+                PlaceField(title: "Search Location", systemImage: "mappin.and.ellipse", place: $customPlace)
             }
         }
     }
@@ -121,21 +121,21 @@ struct FullSirView: View {
 
     private var basisName: String {
         switch basis {
-        case .current: return location.currentPlaceName ?? "현재 위치"
-        case .event(let id): return store.events.first(where: { $0.id == id })?.destination.name ?? "목적지"
-        case .custom: return customPlace?.name ?? "직접 검색"
+        case .current: return location.currentPlaceName ?? "Current Location"
+        case .event(let id): return store.events.first(where: { $0.id == id })?.destination.name ?? "Destination"
+        case .custom: return customPlace?.name ?? "Search Place"
         }
     }
 
     // MARK: - 검색
 
     /// 빠른 검색 목록. 카페도 여기 들어간다(예전엔 맛집/카페를 위에서 따로 골라야 했다).
-    private static let quickPicks = ["카페", "한식", "일식", "초밥", "중식", "양식", "분식", "고기", "국밥"]
+    private static let quickPicks = ["Cafe", "Korean", "Japanese", "Sushi", "Chinese", "Western", "Snacks", "Meat", "Rice Soup"]
 
     private var searchSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                TextField("메뉴·업종", text: $keyword)
+                TextField("Menu or type of place", text: $keyword)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { selectedQuick = nil; Task { await runSearch() } }
                 Button { selectedQuick = nil; Task { await runSearch() } } label: {
@@ -143,7 +143,7 @@ struct FullSirView: View {
                     else { Image(systemName: "magnifyingglass") }
                 }
                 .disabled(searching || basisCoordinate == nil)
-                .accessibilityLabel("검색")
+                .accessibilityLabel("Search")
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -172,7 +172,7 @@ struct FullSirView: View {
 
             // 정렬은 검색 결과가 있을 때만 의미가 있다.
             if searched {
-                Picker("정렬", selection: $sort) {
+                Picker("Sort", selection: $sort) {
                     ForEach(NearbySort.allCases) { s in Text(s.title).tag(s) }
                 }
                 .pickerStyle(.segmented)
@@ -185,9 +185,9 @@ struct FullSirView: View {
     private var resultsSection: some View {
         if searched {
             VStack(alignment: .leading, spacing: 8) {
-                Text("\(basisName) 주변").font(.caption).foregroundStyle(Theme.faint)
+                Text("Near \(basisName)").font(.caption).foregroundStyle(Theme.faint)
                 if results.isEmpty && !searching {
-                    Text("결과 없음")
+                    Text("No results")
                         .font(.caption).foregroundStyle(Theme.faint)
                 } else {
                     ForEach(results) { item in
@@ -220,16 +220,16 @@ struct FullSirView: View {
                 if let urlString = item.url, let url = URL(string: urlString) {
                     Link(destination: url) { Image(systemName: "arrow.up.forward.square") }
                         .buttonStyle(.borderless)
-                        .accessibilityLabel("지도에서 보기")
+                        .accessibilityLabel("View on Map")
                 }
             }
             HStack(spacing: 8) {
                 Button {
                     // 먹은 것으로 바로 남긴다(일정 없이 기록만).
                     store.addMeal(category: .diningOut, title: item.place.name, place: item.place)
-                    status = "기록됨"
+                    status = "Logged"
                 } label: {
-                    Label("먹었어요", systemImage: "checkmark.circle")
+                    Label("I Ate Here", systemImage: "checkmark.circle")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -237,7 +237,7 @@ struct FullSirView: View {
                 Button {
                     scheduling = item
                 } label: {
-                    Label("식사 일정 추가", systemImage: "calendar.badge.plus")
+                    Label("Add Meal Event", systemImage: "calendar.badge.plus")
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -253,7 +253,7 @@ struct FullSirView: View {
     /// 자유 입력이면 업종을 가리지 않아(nil) 카페·식당이 섞여 나온다.
     private var searchCategory: MealCategoryFilter? {
         guard let selectedQuick else { return nil }
-        return selectedQuick == "카페" ? .cafe : .restaurant
+        return selectedQuick == "Cafe" ? .cafe : .restaurant
     }
 
     private func runSearch() async {
@@ -277,7 +277,7 @@ struct FullSirView: View {
         let meals = store.recentMeals(limit: 10)
         if !meals.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("최근 먹은 것").font(.caption).foregroundStyle(Theme.faint)
+                Text("Recently Eaten").font(.caption).foregroundStyle(Theme.faint)
                 ForEach(meals) { meal in
                     HStack {
                         Image(systemName: meal.category.systemImage).foregroundStyle(Theme.activity)
@@ -293,7 +293,7 @@ struct FullSirView: View {
                             Image(systemName: "trash").foregroundStyle(Theme.muted)
                         }
                         .buttonStyle(.borderless)
-                        .accessibilityLabel("삭제")
+                        .accessibilityLabel("Delete")
                     }
                     .padding(.vertical, 2)
                 }
@@ -302,7 +302,7 @@ struct FullSirView: View {
     }
 
     private static let dayFmt: DateFormatter = {
-        let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR"); f.dateFormat = "M/d(E) a h:mm"; return f
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US"); f.dateFormat = "M/d EEE h:mm a"; return f
     }()
 }
 
@@ -341,7 +341,7 @@ private struct MealScheduleSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("식당") {
+                Section("Restaurant") {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(target.place.name).bold()
                         if !target.place.address.isEmpty {
@@ -349,30 +349,30 @@ private struct MealScheduleSheet: View {
                         }
                     }
                 }
-                Section("식사 시간") {
-                    DatePicker("시작", selection: $start, displayedComponents: [.date, .hourAndMinute])
-                    Picker("소요", selection: $durationMinutes) {
-                        ForEach([30, 45, 60, 90, 120], id: \.self) { m in Text("\(m)분").tag(m) }
+                Section("Meal Time") {
+                    DatePicker("Start", selection: $start, displayedComponents: [.date, .hourAndMinute])
+                    Picker("Duration", selection: $durationMinutes) {
+                        ForEach([30, 45, 60, 90, 120], id: \.self) { m in Text("\(m) min").tag(m) }
                     }
 
                 }
-                Section("가는 길") {
-                    Toggle("식당까지 이동 만들기", isOn: $addOutbound)
+                Section("Getting There") {
+                    Toggle("Add Travel to the Restaurant", isOn: $addOutbound)
                     if addOutbound {
                         // 제안값을 그대로 쓰는 경우가 대부분이지만, 바꿀 수 있어야 한다
                         // (제안은 앞뒤 일정에서 추정한 것이라 늘 맞지는 않는다).
-                        PlaceField(title: "출발지", systemImage: "figure.walk.departure", place: $origin)
-                        Picker("이동수단", selection: $outboundMode) {
+                        PlaceField(title: "Origin", systemImage: "figure.walk.departure", place: $origin)
+                        Picker("Travel Mode", selection: $outboundMode) {
                             ForEach(TransportMode.allCases) { m in Text(m.title).tag(m) }
                         }
                         .pickerStyle(.segmented)
                     }
                 }
-                Section("먹고 나서") {
-                    Toggle("돌아가는 이동 만들기", isOn: $addReturn)
+                Section("After the Meal") {
+                    Toggle("Add Return Travel", isOn: $addReturn)
                     if addReturn {
-                        PlaceField(title: "도착지", systemImage: "house", place: $destination)
-                        Picker("이동수단", selection: $returnMode) {
+                        PlaceField(title: "Destination", systemImage: "house", place: $destination)
+                        Picker("Travel Mode", selection: $returnMode) {
                             ForEach(TransportMode.allCases) { m in Text(m.title).tag(m) }
                         }
                         .pickerStyle(.segmented)
@@ -381,16 +381,16 @@ private struct MealScheduleSheet: View {
             }
             .scrollContentBackground(.hidden)
             .background(Theme.bg)
-            .navigationTitle("식사 일정으로 추가")
+            .navigationTitle("Add as Meal Event")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("취소") { dismiss(); onDone() }
+                    Button("Cancel") { dismiss(); onDone() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
                         Task { await save() }
                     } label: {
-                        if saving { ProgressView().controlSize(.small) } else { Text("추가") }
+                        if saving { ProgressView().controlSize(.small) } else { Text("Add") }
                     }
                     .disabled(saving)
                 }
@@ -427,7 +427,7 @@ private struct MealScheduleSheet: View {
         if let b = before {
             origin = b.place
         } else if let c = location.currentLocation {
-            origin = Place(name: location.currentPlaceName ?? "현재 위치", address: "",
+            origin = Place(name: location.currentPlaceName ?? "Current Location", address: "",
                            latitude: c.latitude, longitude: c.longitude)
         } else {
             origin = nil

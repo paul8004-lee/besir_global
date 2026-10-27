@@ -16,8 +16,8 @@ import CoreLocation
 @MainActor enum BesirTime {
     private static let whenFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "M월 d일 (E) a h시 m분"
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEE, MMM d, h:mm a"
         return f
     }()
     static func when(_ d: Date) -> String { whenFormatter.string(from: d) }
@@ -29,8 +29,8 @@ import CoreLocation
     /// 새로 만들어 한 차례 재렌더에 최대 세 번 할당했다.
     static let compact: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "M/d (E) a h시 mm분"
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "M/d EEE h:mm a"
         return f
     }()
 
@@ -39,16 +39,16 @@ import CoreLocation
     /// 그대로이고 한 글자도 다시 쓰지 않는다(SPEC-UIKIT-004 REQ-001).
     static let full: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "M월 d일 (E) a h시 mm분"
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "EEE, MMM d, h:mm a"
         return f
     }()
 
     /// 하루 안의 시각만("오후 3시 05분") — 출발 시각 큰 숫자가 쓴다. 이사 본체, 패턴 불변.
     static let clock: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "a h시 mm분"
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "h:mm a"
         return f
     }()
 
@@ -130,7 +130,7 @@ struct EndWheelSpec {
 
     /// 거절 문구의 단일 출처 — 모델(choosePlainTime·AIAssistant.chooseTimePlain)과 바퀴 뷰가 같은 글자를
     /// 말해야 한다(계약 5). 유효 범위를 나열하지 않는 것은 프로젝트 규칙이다.
-    static let notAfterBaseMessage = "종료는 시작보다 뒤여야 해요"
+    static let notAfterBaseMessage = "End must be after start"
     // 24시간 상한 거절 문구(overCapMessage)는 그것을 쓰던 폼 밖 끝 쪽 줄 확정 갈래가 018 M4에서 지워져 참조가
     // 0이 되어 018 M6에서 지웠다 — 반복 카드의 상한은 바퀴 뷰(accepts)와 실행부 가드가 맡는다.
 
@@ -184,7 +184,7 @@ extension EndWheelSpec {
     static var manualEnd: EndWheelSpec {
         EndWheelSpec(baseKey: "start_iso", capsAt24Hours: false, baseHint: manualEndHint)
     }
-    static let manualEndHint = "시작을 먼저 골라 주세요"
+    static let manualEndHint = "Pick the start first"
 
     /// 반복 활동의 종료 줄 — 시각만 고르는 반복 끝 바퀴(시작 뒤 24시간 안, 018 REQ-018). AI 카드의 첫 모양과 반복 글을
     /// 넣어 반복으로 바뀐 카드(수동·AI)가 같은 명세를 쓴다(019 L-28 — 두 곳에 적으면 한쪽만 늙는다).
@@ -205,15 +205,15 @@ enum SeriesLegAddReport {
     }
 
     static func lines(role: ScheduleAnchor, added: Int, skippedExisting: Int, skippedNoPlace: Int) -> [Line] {
-        let word = role == .arrival ? "가는" : "오는"
-        var lines = [Line(text: "\(added)개 회차에 \(word) 이동을 붙였어요.", done: true)]
+        let word = role == .arrival ? "outbound" : "return"
+        var lines = [Line(text: "Occurrences with \(word) travel added: \(added)", done: true)]
         if skippedExisting > 0 {
-            lines.append(.init(text: "\(skippedExisting)개 회차는 이미 \(word) 이동이 있어 건너뛰었어요.", done: false))
+            lines.append(.init(text: "Skipped because \(word) travel already exists: \(skippedExisting)", done: false))
         }
         if skippedNoPlace > 0 {
             // 방향 낱말을 넣는 이유: 장소 없음은 회차의 장소가 비었는지로 세므로 가는 편과 오는 편의 수가 같다 —
             // 낱말이 없으면 두 방향을 한 저장에 붙일 때 똑같은 줄이 두 번 나온다(ui-design 판정).
-            lines.append(.init(text: "\(skippedNoPlace)개 회차는 장소가 없어 \(word) 이동을 건너뛰었어요.", done: false))
+            lines.append(.init(text: "Skipped because there is no place (\(word) travel): \(skippedNoPlace)", done: false))
         }
         return lines
     }
@@ -230,12 +230,12 @@ extension EditCard {
     /// 두 줄 모두 기준 없는 시각(REQ-001)이라 확정은 chooseTimePlain 한 길이다.
     static func manualActivityTimeRows(defaultDay: Date, now: Date, presetStart: Date? = nil) -> [EditField] {
         [
-            .init(key: "start_iso", kind: .datetime, label: "시작", options: [], allowsCustom: false,
+            .init(key: "start_iso", kind: .datetime, label: "Start", options: [], allowsCustom: false,
                   chosen: presetStart.map { BesirTime.isoFormatter.string(from: $0) },
                   anchored: false, endWheel: .manualStart(day: defaultDay, now: now)),
             // 종료 줄은 시작 날짜에서 출발하는 종료 바퀴다(REQ-020 (a)) — 상한 없음(바퀴 다음 날
             // 너머는 날짜 표시의 달력, REQ-021).
-            .init(key: "end_iso", kind: .datetime, label: "종료", options: [], allowsCustom: false,
+            .init(key: "end_iso", kind: .datetime, label: "End", options: [], allowsCustom: false,
                   anchored: false, endWheel: .manualEnd),
         ]
     }
@@ -287,9 +287,9 @@ enum PlaceTokens {
     /// 있어(AIAssistant.displayText 머리말) 매퍼도 이곳 하나로 모은다.
     static func displayText(_ value: String) -> String {
         switch value {
-        case currentLocation: return "현재 위치"
-        case noOutboundLeg: return "가는 편 없음"
-        case noPlace: return "장소 없음"
+        case currentLocation: return "Current Location"
+        case noOutboundLeg: return "No outbound leg"
+        case noPlace: return "No place"
         default: return value
         }
     }
@@ -374,7 +374,7 @@ enum PlaceLine {
 
     /// 0건 안내 문구의 단일 출처(경계 ①) — 뒤에 원인을 덧붙이지 않는 이유: 검색 실패와 인터넷 끊김은
     /// 화면에서 가를 수 없어 "다른 이름으로 적어보세요" 같은 처방이 틀린 안내가 되는 날이 있다.
-    static let noResultNote = "후보를 찾지 못했어요."
+    static let noResultNote = "Couldn't find any matches."
 
     /// "후보를 찾지 못했어요" 문구를 띄울지의 단일 판정(REQ-004, 보완 F2) — 검색 0건이어도 맞는
     /// 즐겨찾기가 하나라도 있으면 목록이 비어 있지 않으므로 띄우지 않는다. 목록 구성(rows)과 빈
@@ -401,12 +401,12 @@ enum PlaceLine {
     /// 권한 거부 안내(출발지 줄) — AddEventView.syncFieldExtras의 문구 원문(O-B3: 새 문구를 만들지
     /// 않는다). 그 화면은 이 단계의 대상 밖(O-B1)이라 글자가 두 벌로 살 수밖에 없고 018이 한 벌로 모은다.
     static let locationPermissionNote =
-        "위치 권한이 꺼져 있어요. 시스템 설정에서 허용하거나 출발지를 직접 검색해 골라 주세요."
+        "Location permission is off. Allow it in Settings, or search for an origin yourself."
 
     /// 권한 거부 안내(장소 줄) — 리드 결정 O-S1-4: 장소 줄에는 '출발지'라는 낱말이 맞지 않아
     /// 출발지 줄 문구에서 그 낱말 하나만 '장소를'로 바꿨다. 그 밖은 같은 문장이다(O-B3의 정신).
     static let locationPermissionNoteForPlace =
-        "위치 권한이 꺼져 있어요. 시스템 설정에서 허용하거나 장소를 직접 검색해 골라 주세요."
+        "Location permission is off. Allow it in Settings, or search for a place yourself."
 
     /// 대기 끝에 도착한 위치를 줄에 받아들일지의 단일 판정(R1, AC-015) — 기준은 "비어 있었나"가
     /// 아니라 "대기를 시작한 뒤 줄 값이 그대로인가"다. 옛 가드(`chosen == nil`)는 수정 카드처럼
@@ -421,7 +421,7 @@ enum PlaceLine {
     /// 이미 잡혀 있는 좌표로 Place를 만든다(없으면 nil) — 대기 없이 확정되는 길.
     static func availablePlace(_ location: LocationManager) -> Place? {
         guard let c = location.currentLocation else { return nil }
-        return Place(name: location.currentPlaceName ?? "현재 위치",
+        return Place(name: location.currentPlaceName ?? "Current Location",
                      address: "", latitude: c.latitude, longitude: c.longitude)
     }
 
@@ -553,7 +553,7 @@ enum PlaceLine {
     }
     static func customLabel(_ kind: Kind, _ value: String) -> String {
         switch kind {
-        case .buffer, .notify: return "\(value)분"
+        case .buffer, .notify: return "\(value) min"
         // .toggle 가지는 컴파일 강제일 뿐 실행 중 오지 않는다 — 토글 줄은 allowsCustom이
         // false라 칩 밖에서 온 값(customLabel의 유일한 호출 경로)이 생기지 않는다.
         // 장소 줄의 값이 토큰이면 표시 문구로 푼다 — 옵션 배열에 칩이 없는 생성부(시드의 빈
@@ -567,8 +567,8 @@ enum PlaceLine {
             // 없는 시각)이 "출발"로 박혀 나간다.
             return BesirTime.parseDatetime(value).map { parsed in
                 switch BesirTime.anchor(ofPrefix: parsed.prefix) {
-                case .arrival: return "도착 " + BesirTime.when(parsed.date)
-                case .departure: return "출발 " + BesirTime.when(parsed.date)
+                case .arrival: return "Arrival " + BesirTime.when(parsed.date)
+                case .departure: return "Departure " + BesirTime.when(parsed.date)
                 case nil: return BesirTime.when(parsed.date)
                 }
             } ?? value
@@ -618,7 +618,7 @@ enum PlaceLine {
     /// 읽는다. 리터럴이 모델에 사는 이유는 두 가지다: 칩 글자의 단일 출처(계약 5)이고, 제목 줄이
     /// 칩 문법을 잃으며(S1, REQ-001) 이 글자를 쓰는 줄이 숫자 줄로 좁혀진 사실을 AC-001 grep이
     /// 뷰 파일에서 잰다 — 글자가 뷰에 남으면 제목 줄이 다시 칩으로 돌아갔는지와 구분되지 않는다.
-    static let customEntryChipLabel = "직접입력"
+    static let customEntryChipLabel = "Custom"
 
     /// 직접 넣은 값을 다른 칩 탭에도 남겨 두는 줄 — 여유·알림뿐이다(옛 반복 기간 줄은 019에서 없어졌다). 장소는 choose가 좌표
     /// 사전과 줄 구성을 함께 바꾸고, 나머지는 덮어쓸 다른 칩이 없거나 직접입력 자체가 없다.
@@ -701,11 +701,11 @@ enum PlaceLine {
     /// 화면의 줄 제목과 다른 문자열로 이름을 재조립하면 짝을 맞추기 어려워지기 때문이다.
     var remainingVariants: [String] {
         let labels = unchosenLabels
-        if labels.isEmpty { return ["다 골랐어요"] }
-        if labels.count == 1 { return ["남은 것: \(labels[0])", "남은 것 1개"] }
-        return ["남은 것: " + labels.joined(separator: " · "),
-                "남은 것: \(labels[0]) 외 \(labels.count - 1)개",
-                "남은 것 \(labels.count)개"]
+        if labels.isEmpty { return ["All set"] }
+        if labels.count == 1 { return ["Remaining: \(labels[0])", "1 remaining"] }
+        return ["Remaining: " + labels.joined(separator: " · "),
+                "Remaining: \(labels[0]) and \(labels.count - 1) more",
+                "\(labels.count) remaining"]
     }
     /// 판정의 단일 출처는 unchosenLabels다(REQ-001) — allSatisfy 식을 옆에 두면 같은 계산이
     /// 두 곳에 살아 어긋날 여지가 생긴다(계약 5).
@@ -934,8 +934,8 @@ extension EndWheelSpec {
                     // 괄호 설명을 뗀 이유(REQ-008): 줄 이름이 곧 문장이라 설명은 같은 말을 두 번
                     // 하는 군더더기였다 — 방향(가는/오는)만으로 뜻이 닫힌다.
                     card.fields.insert(contentsOf: [
-                        legToggleRow(key: LegRowKeys.outboundEnabled, label: "가는 이동"),
-                        legToggleRow(key: LegRowKeys.returnEnabled, label: "오는 이동"),
+                        legToggleRow(key: LegRowKeys.outboundEnabled, label: "Outbound Travel"),
+                        legToggleRow(key: LegRowKeys.returnEnabled, label: "Return Travel"),
                     ], at: at)
                     // 말한 편은 태어나는 순간 켠다 — 켜는 전이를 그대로 타서 기억값(출발지·좌표·수단·여유)이 되살아나고,
                     // 기억값이 없으면(못 푼 낱말 — AIAssistant의 rememberable) 그 줄이 미선택으로 남은 것에 든다.
@@ -1312,8 +1312,8 @@ extension EndWheelSpec {
     static func manualNewActivityRows(favorites: [EditField.Option], defaultDay: Date, now: Date,
                                       presetStart: Date?, calendarDefaultOn: Bool?) -> [EditField] {
         var fields: [EditField] = [
-            .init(key: "title", kind: .title, label: "활동 제목", options: [], allowsCustom: true),
-            manualPlaceRow(label: "장소", favorites: favorites),
+            .init(key: "title", kind: .title, label: "Activity Title", options: [], allowsCustom: true),
+            manualPlaceRow(label: "Place", favorites: favorites),
         ]
         fields += EditCard.manualActivityTimeRows(defaultDay: defaultDay, now: now, presetStart: presetStart)
         if let calendarDefaultOn { fields.append(calendarSyncRow(defaultOn: calendarDefaultOn)) }
@@ -1325,7 +1325,7 @@ extension EndWheelSpec {
 
     private func legToggleRow(key: String, label: String) -> EditField {
         .init(key: key, kind: .toggle, label: label,
-              options: [.init(label: "만들기", value: "true"), .init(label: "안 만들기", value: "false")],
+              options: [.init(label: "Create", value: "true"), .init(label: "Don't Create", value: "false")],
               allowsCustom: false, chosen: "false")
     }
 
@@ -1334,44 +1334,44 @@ extension EndWheelSpec {
         // 따로 적으면 한쪽만 고쳐지는 날 chosenLabel의 라벨과 목록의 행이 어긋난다.
         let specials = PlaceLineSpecials.currentLocation
         return [
-            .init(key: LegRowKeys.originQuery, kind: .place, label: "출발지",
+            .init(key: LegRowKeys.originQuery, kind: .place, label: "Origin",
                   options: favoriteOptions + specials.map { PlaceTokens.chip($0) },
                   allowsCustom: true, chosen: origin, placeSpecials: specials),
-            .init(key: LegRowKeys.outboundMode, kind: .mode, label: "가는 편 이동수단",
+            .init(key: LegRowKeys.outboundMode, kind: .mode, label: "Outbound Travel Mode",
                   options: TransportMode.allCases.map { .init(label: $0.title, value: $0.rawValue) },
                   allowsCustom: false, chosen: mode),
             // 이름에 "가는 편"이 붙는 이유: 복귀 구간의 여유는 Store가 0으로 박아 둔다
             // (addActivityWithTravel). "도착 여유"라고만 쓰면 이 줄이 오는 편에도 적용된다고
             // 말하는 셈이 된다(REQ-014).
-            .init(key: LegRowKeys.bufferMinutes, kind: .buffer, label: "가는 편 도착 여유",
-                  options: [.init(label: "0분", value: "0"), .init(label: "10분", value: "10"),
-                            .init(label: "20분", value: "20"), .init(label: "30분", value: "30")],
+            .init(key: LegRowKeys.bufferMinutes, kind: .buffer, label: "Outbound Buffer",
+                  options: [.init(label: "0 min", value: "0"), .init(label: "10 min", value: "10"),
+                            .init(label: "20 min", value: "20"), .init(label: "30 min", value: "30")],
                   allowsCustom: true, chosen: buffer),
         ]
     }
 
     private func returnRows(to: String?, mode: String) -> [EditField] {
         [
-            .init(key: LegRowKeys.returnQuery, kind: .place, label: "도착지", options: favoriteOptions,
+            .init(key: LegRowKeys.returnQuery, kind: .place, label: "Destination", options: favoriteOptions,
                   allowsCustom: true, chosen: to),
-            .init(key: LegRowKeys.returnMode, kind: .mode, label: "오는 편 이동수단",
+            .init(key: LegRowKeys.returnMode, kind: .mode, label: "Return Travel Mode",
                   options: TransportMode.allCases.map { .init(label: $0.title, value: $0.rawValue) },
                   allowsCustom: false, chosen: mode),
         ]
     }
 
     private func notifyToggleRow(chosen: String) -> EditField {
-        .init(key: LegRowKeys.notifyEnabled, kind: .toggle, label: "이동 알림 받기",
-              options: [.init(label: "받기", value: "true"), .init(label: "안 받기", value: "false")],
+        .init(key: LegRowKeys.notifyEnabled, kind: .toggle, label: "Travel Alert",
+              options: [.init(label: "On", value: "true"), .init(label: "Off", value: "false")],
               allowsCustom: false, chosen: chosen)
     }
 
     /// 알림 옵션은 AddEventView.notifyLeadRow와 같은 넷이다 — 두 폼이 다른 보기를 내면 같은
     /// 값을 두 문법으로 배우게 된다(REQ-012).
     private func notifyLeadRow(chosen: String) -> EditField {
-        .init(key: LegRowKeys.notifyLeadMinutes, kind: .notify, label: "알림",
-              options: [.init(label: "출발 시각", value: "0"), .init(label: "10분 전", value: "10"),
-                        .init(label: "30분 전", value: "30"), .init(label: "1시간 전", value: "60")],
+        .init(key: LegRowKeys.notifyLeadMinutes, kind: .notify, label: "Alert",
+              options: [.init(label: "Departure Time", value: "0"), .init(label: "10 min before", value: "10"),
+                        .init(label: "30 min before", value: "30"), .init(label: "1 hr before", value: "60")],
               allowsCustom: true, chosen: chosen)
     }
 
@@ -1390,8 +1390,8 @@ extension EndWheelSpec {
     /// 구글 캘린더 줄(018 REQ-004·O-E4) — AI 활동 카드와 수동 새 활동 카드가 같은 이 공장을 쓴다(수동 카드는
     /// 019부터 manualNewActivityRows를 거친다). 두 카드의 (kind, label) 순서는 AC-005가 잰다.
     static func calendarSyncRow(defaultOn: Bool) -> EditField {
-        .init(key: "calendar_sync", kind: .toggle, label: "구글 캘린더에 보이기",
-              options: [.init(label: "보이기", value: "true"), .init(label: "안 함", value: "false")],
+        .init(key: "calendar_sync", kind: .toggle, label: "Show in Google Calendar",
+              options: [.init(label: "Show", value: "true"), .init(label: "Don't Show", value: "false")],
               allowsCustom: false, chosen: String(defaultOn))
     }
 
@@ -1406,18 +1406,18 @@ extension EndWheelSpec {
 /// 안내 글은 plan §4 표의 글자 그대로다(운영자 §10 — 이 밖의 설명 문구는 두지 않는다).
 @MainActor enum RecurrenceLine {
     static let key = "recurrence_text"
-    static let label = "반복"
+    static let label = "Repeat"
     /// 입력칸 빈 글자(plan §4 행 8) — 예시는 넣지 않는다(§10 "장소 검색(예...) 대신 장소 검색 한 글자로").
-    static let placeholder = "반복"
+    static let placeholder = "Repeat"
 
-    static let missingWeekdays = "요일 입력"
-    static let missingMonthDays = "매월 며칠 입력"
-    static let missingLunarDate = "음력 날짜 입력"
-    static let missingDate = "날짜 입력"
-    static let missingEndDate = "종료 날짜 입력"
-    static let interpretFailed = "반복을 해석하지 못했어요"
-    static let tooFar = "종료 날짜가 너무 멀어요"
-    static let noOccurrence = "해당하는 날짜가 없어요"
+    static let missingWeekdays = "Enter weekdays"
+    static let missingMonthDays = "Enter days of the month"
+    static let missingLunarDate = "Enter lunar date"
+    static let missingDate = "Enter date"
+    static let missingEndDate = "Enter end date"
+    static let interpretFailed = "Couldn't interpret the repeat"
+    static let tooFar = "End date is too far away"
+    static let noOccurrence = "No matching dates"
     /// 빠진 항목이 여럿일 때의 이음표(L-9).
     static let joiner = " · "
 
@@ -1561,14 +1561,14 @@ extension LegCardForm {
         // 장소 줄 모양은 모델 쪽 공장이 지은다(줄 만들기의 manualPlaceRow 머리말) — chosen은 아래
         // 시드 문법이 얹는다. noPlaceValue는 PlaceTokens.noPlace여야 한다(장소 없음 행의 값과 같은
         // 토큰이어야 chosenLabel과 목록의 행이 어긋나지 않는다).
-        let locationRow = LegCardForm.manualPlaceRow(label: "장소", favorites: placeOptions)
+        let locationRow = LegCardForm.manualPlaceRow(label: "Place", favorites: placeOptions)
         var f = LegCardForm(card: EditCard(fields: [
-            .init(key: "title", kind: .title, label: "제목", options: [], allowsCustom: true,
+            .init(key: "title", kind: .title, label: "Title", options: [], allowsCustom: true,
                   chosen: activity.title),
             locationRow,
-            .init(key: "start_iso", kind: .datetime, label: "시작", options: [], allowsCustom: false,
+            .init(key: "start_iso", kind: .datetime, label: "Start", options: [], allowsCustom: false,
                   chosen: BesirTime.isoFormatter.string(from: activity.startDate), anchored: false),
-            .init(key: "end_iso", kind: .datetime, label: "종료", options: [], allowsCustom: false,
+            .init(key: "end_iso", kind: .datetime, label: "End", options: [], allowsCustom: false,
                   chosen: BesirTime.isoFormatter.string(from: activity.endDate), anchored: false,
                   endWheel: .init(baseKey: "start_iso", capsAt24Hours: false)),
         ]), favoriteOptions: favoriteOptions)

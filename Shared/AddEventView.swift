@@ -76,7 +76,7 @@ struct AddEventView: View {
                         Button {
                             restartEstimates()
                         } label: {
-                            Label("소요시간 다시 계산", systemImage: "arrow.clockwise")
+                            Label("Recalculate Travel Time", systemImage: "arrow.clockwise")
                         }
                         .buttonStyle(.borderless)
                         .font(.caption)
@@ -113,9 +113,9 @@ struct AddEventView: View {
 
     private var header: some View {
         HStack {
-            Text(editing == nil ? "새 일정" : "일정 편집").font(.title2).bold()
+            Text(editing == nil ? "New Event" : "Edit Event").font(.title2).bold()
             Spacer()
-            Button("닫기") { dismiss() }.keyboardShortcut(.cancelAction)
+            Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
         }
         .padding()
     }
@@ -123,17 +123,17 @@ struct AddEventView: View {
     private var footer: some View {
         HStack {
             Spacer()
-            Button("취소") { dismiss() }
+            Button("Cancel") { dismiss() }
             Button {
                 Task { await save() }
             } label: {
                 if saving { ProgressView().controlSize(.small) }
-                else { Text(editing == nil ? "추가" : "저장") }
+                else { Text(editing == nil ? "Add" : "Save") }
             }
             .keyboardShortcut(.defaultAction)
             // 저장 중에는 라벨이 스피너로 접혀 이름이 사라진다 — VoiceOver는 여전히 무슨 버튼인지
             // 알아야 한다.
-            .accessibilityLabel(editing == nil ? "추가" : "저장")
+            .accessibilityLabel(editing == nil ? "Add" : "Save")
             .disabled(!(card?.isReady ?? false) || saving)
         }
         .padding()
@@ -179,20 +179,20 @@ struct AddEventView: View {
         // 즐겨찾기는 칩을 만드는 시점에 좌표까지 확정해 둔다(REQ-020) — 탭 순간에 되찾기만 한다.
         for fav in store.favorites { favoritePlaces[fav.label] = fav.place }
         var originOptions = store.favorites.map { EditField.Option(label: $0.label, value: $0.label) }
-        originOptions.append(.init(label: "현재 위치", value: Self.hereMarker))
+        originOptions.append(.init(label: "Current Location", value: Self.hereMarker))
         // 편집 모드는 값이 이미 있으니 에디터를 열어두지 않는다 — startsOpen은 "새 일정마다
         // 반드시 새로 치는 값"(REQ-003)을 위한 깃발이다.
         let fresh = editing == nil
         var fields: [EditField] = [
-            .init(key: "title", kind: .title, label: "일정 제목", options: [], allowsCustom: true,
+            .init(key: "title", kind: .title, label: "Event Title", options: [], allowsCustom: true,
                   chosen: editing?.title, startsOpen: fresh),
             // 장소 줄이 검색창+목록 문법(S1)으로 바뀌며 옵션 배열의 토큰 칩은 목록에서 걸러진다
             // (PlaceLine.rows) — 같은 칩이 행으로 서야 기존 동작이 유지된다(REQ-003 "동작 무변경",
             // spec.md §2.1). 어댑터·저장 경로는 그대로다(O-B1).
-            .init(key: "origin_query", kind: .place, label: "출발지", options: originOptions,
+            .init(key: "origin_query", kind: .place, label: "Origin", options: originOptions,
                   allowsCustom: true, chosen: editing?.origin?.name,
                   placeSpecials: PlaceLineSpecials.currentLocation),
-            .init(key: "destination_query", kind: .place, label: "목적지",
+            .init(key: "destination_query", kind: .place, label: "Destination",
                   options: store.favorites.map { .init(label: $0.label, value: $0.label) },
                   allowsCustom: true, chosen: editing?.destination.name, startsOpen: fresh),
         ]
@@ -246,19 +246,19 @@ struct AddEventView: View {
     private func gatedRows(datetime: String?, mode: String, buffer: String, notifyOn: String,
                            lead: String, calendar: String) -> [EditField] {
         var rows: [EditField] = [
-            .init(key: "arrival_iso", kind: .datetime, label: "시각", options: [],
+            .init(key: "arrival_iso", kind: .datetime, label: "Time", options: [],
                   allowsCustom: false, chosen: datetime),
-            .init(key: "mode", kind: .mode, label: "이동수단",
+            .init(key: "mode", kind: .mode, label: "Travel Mode",
                   options: TransportMode.allCases.map { .init(label: $0.title, value: $0.rawValue) },
                   allowsCustom: false, chosen: mode, busy: estimating),
-            .init(key: "buffer_minutes", kind: .buffer, label: "도착 여유",
-                  options: [.init(label: "0분", value: "0"), .init(label: "10분", value: "10"),
-                            .init(label: "20분", value: "20"), .init(label: "30분", value: "30")],
+            .init(key: "buffer_minutes", kind: .buffer, label: "Buffer",
+                  options: [.init(label: "0 min", value: "0"), .init(label: "10 min", value: "10"),
+                            .init(label: "20 min", value: "20"), .init(label: "30 min", value: "30")],
                   allowsCustom: true, chosen: buffer),
             // 토글 줄은 생성 시 chosen을 seed한다 — 안 하면 isReady가 영원히 풀리지 않는다(REQ-001)
-            .init(key: "notify_enabled", kind: .toggle, label: "출발 알림 받기",
-                  options: [.init(label: "받기", value: "true"),
-                            .init(label: "안 받기", value: "false")],
+            .init(key: "notify_enabled", kind: .toggle, label: "Departure Alert",
+                  options: [.init(label: "On", value: "true"),
+                            .init(label: "Off", value: "false")],
                   allowsCustom: false, chosen: notifyOn),
         ]
         // 알림을 끈 채 저장된 일정을 편집할 때는 리드 줄이 없다(켜면 lastNotifyLead로 돌아온다)
@@ -276,9 +276,9 @@ struct AddEventView: View {
     }
 
     private func notifyLeadRow(chosen: String) -> EditField {
-        .init(key: "notify_lead_minutes", kind: .notify, label: "알림",
-              options: [.init(label: "출발 시각", value: "0"), .init(label: "10분 전", value: "10"),
-                        .init(label: "30분 전", value: "30"), .init(label: "1시간 전", value: "60")],
+        .init(key: "notify_lead_minutes", kind: .notify, label: "Alert",
+              options: [.init(label: "Departure Time", value: "0"), .init(label: "10 min before", value: "10"),
+                        .init(label: "30 min before", value: "30"), .init(label: "1 hr before", value: "60")],
               allowsCustom: true, chosen: chosen)
     }
 
@@ -492,14 +492,14 @@ struct AddEventView: View {
             // 좌표를 chosen과 같은 블록에서 줄 신원으로 쓴다 — 밖에서 먼저 쓰면 카드가 없을 때
             // 좌표만 있고 chosen 없는 반쪽 확정이 생긴다. 실측상 두 호출 경로 모두 카드가 있어
             // 관측 변화는 없지만, 반쪽 상태를 만들지 않는 쪽이 fail-closed 읽기와 같은 길이다.
-            confirmedPlaces[c2.fields[i].id] = Place(name: location.currentPlaceName ?? "현재 위치",
+            confirmedPlaces[c2.fields[i].id] = Place(name: location.currentPlaceName ?? "Current Location",
                                                      address: "", latitude: c.latitude, longitude: c.longitude)
             c2.fields[i].chosen = Self.hereMarker
             // GPS가 내가 생각한 곳으로 풀렸는지 보는 유일한 확인 수단이다 — 원본 확정 카드가 지명을
             // 보여줬던 것의 계승. 칩 글자에 지명을 얹고, 못 얻었으면 "현재 위치" 그대로 둔다.
             if let town = location.currentPlaceName, !town.isEmpty,
                let oi = c2.fields[i].options.firstIndex(where: { $0.value == Self.hereMarker }) {
-                c2.fields[i].options[oi].label = "현재 위치(\(town))"
+                c2.fields[i].options[oi].label = "Current Location (\(town))"
             }
             card = c2
         }
@@ -575,7 +575,7 @@ struct AddEventView: View {
                 // 이유를 알면 그 문장(Models 한 곳에서 만든 것)으로 말한다 — 같은 실패가 칩과 노트에서
                 // 다르게 들리지 않게. 이유 모르는 빈 값만 기존 문장을 쓴다.
                 modeNote = estimates[currentMode]?.failure?.sentence
-                    ?? "선택한 이동수단은 소요시간을 계산하지 못했어요."
+                    ?? "Couldn't calculate travel time for the selected travel mode."
             }
             c.fields[mi].note = modeNote
         }
@@ -589,9 +589,9 @@ struct AddEventView: View {
                 let buffer = c.fields.first(where: { $0.key == "buffer_minutes" })?.chosen
                     .flatMap { Int($0) } ?? 0
                 if departureAnchored {
-                    note += "예상 도착 " + BesirTime.compact.string(from: parsed.date.addingTimeInterval(secs))
+                    note += "Est. arrival " + BesirTime.compact.string(from: parsed.date.addingTimeInterval(secs))
                 } else {
-                    note += "예상 출발 "
+                    note += "Est. departure "
                         + BesirTime.compact.string(from: Store.departureTime(arrival: parsed.date, travelSeconds: secs, bufferMinutes: buffer))
                 }
             }
@@ -614,7 +614,7 @@ struct AddEventView: View {
                 if NotificationManager.alarmTime(departure: depGuess, leadMinutes: lead) <= Date() {
                     // 예상 시각 없이 경고만 붙는 창이 있어(이동시간 모르는 창) 이어붙임을 가린다.
                     note += note.isEmpty ? "" : " "
-                    note += "알림 시각이 이미 지나 출발 알림이 예약되지 않아요."
+                    note += "The alert time has already passed, so no departure alert will be scheduled."
                 }
             }
             c.fields[ti].note = note.isEmpty ? nil : note
@@ -627,7 +627,7 @@ struct AddEventView: View {
             let blocked = location.authorizationStatus == .denied
                 || location.authorizationStatus == .restricted
             c.fields[oi].note = blocked && c.fields[oi].chosen == nil
-                ? "위치 권한이 꺼져 있어요. 시스템 설정에서 허용하거나 출발지를 직접 검색해 골라 주세요."
+                ? "Location permission is off. Allow it in Settings, or search for an origin yourself."
                 : nil
         }
         card = c

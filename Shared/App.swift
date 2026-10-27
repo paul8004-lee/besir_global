@@ -75,8 +75,8 @@ struct BesirApp: App {
                 // 기본 컨트롤(버튼·토글·피커·링크)이 시스템 파랑/초록 대신 앱 색을 쓰게 한다 —
                 // 화면마다 파랑 링크와 초록 토글이 섞여 톤이 제각각으로 보이던 원인.
                 .tint(Theme.travel)
-                // DatePicker가 "Sep 11, 2026"처럼 영문으로 나오던 것을 한국어로 맞춘다.
-                .environment(\.locale, Locale(identifier: "ko_KR"))
+                // Keep DatePicker and other locale-aware controls in English whatever the device language is.
+                .environment(\.locale, Locale(identifier: "en_US"))
                 // 글자 크기는 besir가 고정한다(기기 설정을 따르지 않음) — 레이아웃 여백을 일정하게 유지.
                 .environment(\.dynamicTypeSize, .xLarge)
                 .onAppear {

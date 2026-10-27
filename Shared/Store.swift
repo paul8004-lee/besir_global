@@ -416,7 +416,7 @@ final class Store: ObservableObject {
     /// 구간 제목의 한 자리 — 오는 편에만 " (복귀)"가 붙는다는 규칙이 추가·따라오기에서 같은
     /// 문장을 내게 한다(addActivityWithTravel이 내던 문구와 글자 하나까지 같다).
     private func legTitle(role: ScheduleAnchor, activity: ActivityBlock) -> String {
-        role == .departure ? "\(activity.title) (복귀)" : activity.title
+        role == .departure ? "\(activity.title) (return)" : activity.title
     }
 
     /// await(updateEvent의 추정) 사이 활동이 다른 경로로 바뀌었는지 — 바뀌었으면 현재값,
@@ -847,7 +847,7 @@ final class Store: ObservableObject {
                                                        after: (place: Place, label: String)?) {
         ScheduleLogic.surroundingPlaces(start: start, end: end,
                                         activities: activities, events: events,
-                                        home: favorites.first { $0.label == "집" }?.place)
+                                        home: favorites.first { $0.label == "Home" }?.place)
     }
 
     /// 모든 수단(`TransportMode.allCases`)의 이동시간을 한 번에 구한다(조회 전용).
@@ -902,9 +902,9 @@ final class Store: ObservableObject {
         // 호출부가 충돌 검사를 위해 이미 이동시간을 조회했다면 그 값을 쓴다(외부 API 중복 호출 방지).
         switch (anchor, travelSecondsHint) {
         case (.arrival, let hint?):
-            applyCachedArrivalEstimate(to: &event, travelSeconds: hint, source: "조회됨")
+            applyCachedArrivalEstimate(to: &event, travelSeconds: hint, source: "Looked up")
         case (.departure, let hint?):
-            applyCachedDepartureEstimate(to: &event, departureDate: arrivalDate, travelSeconds: hint, source: "조회됨")
+            applyCachedDepartureEstimate(to: &event, departureDate: arrivalDate, travelSeconds: hint, source: "Looked up")
         case (.arrival, nil): await applyEstimate(to: &event)
         case (.departure, nil): await applyDepartureAnchoredEstimate(to: &event, departureDate: arrivalDate)
         }
@@ -1049,7 +1049,7 @@ final class Store: ObservableObject {
             }
             if let to = returnTo {
                 // 오는 편 여유는 0이다 — addActivityWithTravel이 복귀 구간에 박는 값과 같다.
-                newEvents.append(await makeLeg(retCache, "\(title) (복귀)", from: place, to: to, mode: returnMode,
+                newEvents.append(await makeLeg(retCache, "\(title) (return)", from: place, to: to, mode: returnMode,
                                                anchor: .departure(hour: end.hour, minute: end.minute),
                                                anchorDate: stop, buffer: 0, linked: activity.id))
                 returnCount += 1
@@ -1389,9 +1389,9 @@ final class Store: ObservableObject {
         // 이유 — 외부 API 중복 호출 방지). 힌트가 없을 때만 다시 조회한다.
         switch (anchor, travelSecondsHint) {
         case (.arrival, let hint?):
-            applyCachedArrivalEstimate(to: &event, travelSeconds: hint, source: "조회됨")
+            applyCachedArrivalEstimate(to: &event, travelSeconds: hint, source: "Looked up")
         case (.departure, let hint?):
-            applyCachedDepartureEstimate(to: &event, departureDate: arrivalDate, travelSeconds: hint, source: "조회됨")
+            applyCachedDepartureEstimate(to: &event, departureDate: arrivalDate, travelSeconds: hint, source: "Looked up")
         case (.arrival, nil): await applyEstimate(to: &event)
         case (.departure, nil): await applyDepartureAnchoredEstimate(to: &event, departureDate: arrivalDate)
         }
@@ -1436,7 +1436,7 @@ final class Store: ObservableObject {
         -> (seconds: TimeInterval, source: String)? {
         drvTravelLookupCount += 1
         if let drvTravelLookupOverride {
-            return drvTravelLookupOverride(mode, origin, destination).map { (seconds: $0, source: "드라이버 대역") }
+            return drvTravelLookupOverride(mode, origin, destination).map { (seconds: $0, source: "Test driver") }
         }
         let estimate = await directions.estimate(
             mode,
@@ -1557,17 +1557,17 @@ final class Store: ObservableObject {
         guard event.wantsNotification else { return nil }
         let estimate = TravelEstimate(mode: event.mode, duration: travelSeconds, distance: nil, source: source)
         return notifications.schedule(
-            title: "🚶 \(event.title) — 출발 준비",
+            title: "🚶 \(event.title) — time to get ready",
             body: notificationBody(for: event, estimate: estimate),
             at: NotificationManager.alarmTime(departure: departure, leadMinutes: event.notifyLeadMinutes))
     }
 
     func notificationBody(for event: ScheduledEvent, estimate: TravelEstimate) -> String {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "a h시 m분"
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "h:mm a"
         let dep = event.departureDate.map { f.string(from: $0) } ?? "-"
-        return "\(event.destination.name)까지 \(event.mode.title) \(estimate.durationText). \(dep)에 출발하세요."
+        return "\(event.mode.title) to \(event.destination.name): \(estimate.durationText). Leave at \(dep)."
     }
 
     // MARK: - 드래그로 시간 재조정(일간 시간표)
@@ -2106,13 +2106,13 @@ final class Store: ObservableObject {
         event.notificationId = nil
         guard let dep = event.departureDate, let travel = event.travelSeconds else { events[idx] = event; return }
         event.notificationId = scheduleDepartureNotification(
-            for: event, departure: dep, travelSeconds: travel, source: "조정됨")
+            for: event, departure: dep, travelSeconds: travel, source: "Adjusted")
         events[idx] = event
     }
 
     /// 네트워크 호출 없이, 이미 구한 이동시간(같은 반복 그룹의 첫 회차 값)을 그대로 적용한다.
     private func applyCachedArrivalEstimate(to event: inout ScheduledEvent, travelSeconds: TimeInterval,
-                                            source: String = "동일 반복 일정 기준 추정") {
+                                            source: String = "Estimated from the same repeating event") {
         event.anchor = .arrival
         if let nid = event.notificationId { notifications.cancel(id: nid) }
         event.travelSeconds = travelSeconds
@@ -2125,7 +2125,7 @@ final class Store: ObservableObject {
     /// 네트워크 호출 없이, 이미 구한 이동시간을 출발-고정형(복귀 등) 회차에 적용한다.
     private func applyCachedDepartureEstimate(to event: inout ScheduledEvent, departureDate: Date,
                                               travelSeconds: TimeInterval,
-                                              source: String = "동일 반복 일정 기준 추정") {
+                                              source: String = "Estimated from the same repeating event") {
         event.anchor = .departure
         if let nid = event.notificationId { notifications.cancel(id: nid) }
         event.travelSeconds = travelSeconds
@@ -2164,7 +2164,7 @@ final class Store: ObservableObject {
             guard let travel = updated[item.idx].travelSeconds,
                   let dep = updated[item.idx].departureDate else { continue }
             updated[item.idx].notificationId = scheduleDepartureNotification(
-                for: updated[item.idx], departure: dep, travelSeconds: travel, source: "예약 갱신")
+                for: updated[item.idx], departure: dep, travelSeconds: travel, source: "Schedule refresh")
         }
         events = updated
         save()
@@ -2181,8 +2181,8 @@ final class Store: ObservableObject {
         guard !pendingCatchUpIDs.isEmpty else { return }
         let now = Date()
         let f = DateFormatter()
-        f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "a h시 m분"
+        f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "h:mm a"
         for id in pendingCatchUpIDs {
             guard let record = events.first(where: { $0.id == id }) else { continue }   // W3 — 지워짐
             let verdict = Store.catchUpDrainDecision(exists: true, wants: record.wantsNotification,
@@ -2190,16 +2190,16 @@ final class Store: ObservableObject {
                                                      leadMinutes: record.notifyLeadMinutes, now: now)
             guard verdict != .drop, let dep = record.departureDate, let travel = record.travelSeconds else { continue }
             // 이동시간이 비면 본문에 쓸 게 없어 보내지 않는다(다른 경로가 비운 드문 경우).
-            let estimate = TravelEstimate(mode: record.mode, duration: travel, distance: nil, source: "재조회")
+            let estimate = TravelEstimate(mode: record.mode, duration: travel, distance: nil, source: "Re-lookup")
             let depText = f.string(from: dep)
             switch verdict {
             case .catchUp:
-                notifications.deliverNow(title: "🚶 \(record.title) — 출발이 당겨졌어요",
-                                         body: "\(record.destination.name)까지 \(record.mode.title) \(estimate.durationText). \(depText)까지 출발하면 맞아요.",
+                notifications.deliverNow(title: "🚶 \(record.title) — leave earlier than planned",
+                                         body: "\(record.mode.title) to \(record.destination.name): \(estimate.durationText). Leave by \(depText) to make it.",
                                          id: "catchup-" + record.id.uuidString)
             case .late:
-                notifications.deliverNow(title: "🚶 \(record.title) — 출발 시각이 지났어요",
-                                         body: "\(record.destination.name)까지 \(record.mode.title) \(estimate.durationText). 출발 시각(\(depText))이 지났어요.",
+                notifications.deliverNow(title: "🚶 \(record.title) — the departure time has passed",
+                                         body: "\(record.mode.title) to \(record.destination.name): \(estimate.durationText). The departure time (\(depText)) has passed.",
                                          id: "catchup-" + record.id.uuidString)
             case .drop: break
             }
@@ -2457,7 +2457,7 @@ final class Store: ObservableObject {
             // 보호 등급)이 같아 함께 일어날 수 있고, 그러면 파일에 아직 자전거가 없으니 다음 저장이
             // 다시 사본을 시도해야 한다. 쓰기가 성공했다면 다음 저장의 위 검사(디스크에 자전거 있음)가
             // 걸러 내 사본 없음으로 판정이 끝난다(자전거가 섞인 파일을 "이전" 사본으로 만들지 않는다).
-            print("[Store] 자전거 이전 백업 실패: \(error)")
+            print("[Store] Failed to back up the earlier bicycle data: \(error)")
         }
     }
 

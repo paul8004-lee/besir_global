@@ -9,7 +9,7 @@ final class ShareViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .clear
         let label = UILabel()
-        label.text = "besir로 전달 중…"
+        label.text = "Sending to besir…"
         label.textColor = .label
         label.textAlignment = .center
         label.font = .preferredFont(forTextStyle: .headline)

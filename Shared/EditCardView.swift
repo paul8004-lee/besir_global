@@ -13,7 +13,7 @@ struct EditCardView: View {
     let actions: EditCardActions
     // 카드 크롬의 뷰 쪽 기본값 — 확인 문구만 기본값을 갖는다. 머리글 기본값은 S1에서 빠졌다
     // (REQ-008): 줄 이름이 곧 물어보는 문장이라 머리글은 같은 말을 두 번 하는 군더더기였다.
-    var chrome: EditCardChrome = EditCardChrome(header: nil, confirmTitle: "등록하기")
+    var chrome: EditCardChrome = EditCardChrome(header: nil, confirmTitle: "Add")
 
     // 직접입력 상태는 카드와 수명을 같이 한다. 채팅 뷰에 두면 카드가 요약으로 바뀐 뒤에도
     // 열린 입력창과 거절 표시가 남아 다음 카드로 흘러간다.
@@ -130,7 +130,7 @@ struct EditCardView: View {
                     // 이름 없는 스피너는 VoiceOver에서 소리만 나고 무엇이 진행 중인지 안 들린다 —
                     // 줄 컨테이너(.contain)가 줄 이름 뒤에 이 문구를 이어 읽는다.
                     ProgressView().controlSize(.small)
-                        .accessibilityLabel("진행 중")
+                        .accessibilityLabel("In progress")
                 }
             }
             .font(.caption)
@@ -215,7 +215,7 @@ struct EditCardView: View {
 
                 // 거절 사유에 범위를 적지 않는 이유: 상한이 Store 상수라 문구에 박으면 두 곳이 된다.
                 if rejected.contains(field.id) {
-                    Text("그 값은 쓸 수 없어요")
+                    Text("That value can't be used")
                         .font(.caption)
                         .foregroundStyle(Theme.warn)
                 }
@@ -275,7 +275,7 @@ struct EditCardView: View {
                 ChipFlow(spacing: 6, lineSpacing: 6) {
                     // 출발 기준 → 도착 기준 순서는 사용자 확인 요청 ③(2026-09-20)이다.
                     ForEach([ScheduleAnchor.departure, .arrival], id: \.self) { basis in
-                        chip(basis == .arrival ? "도착 기준" : "출발 기준",
+                        chip(basis == .arrival ? "By Arrival" : "By Departure",
                              selected: currentBasis(field) == basis) {
                             tapBasis(field, basis)
                         }
@@ -300,7 +300,7 @@ struct EditCardView: View {
             openCustom(field)
         } label: {
             HStack {
-                Text(field.chosenLabel ?? "날짜·시각 고르기")
+                Text(field.chosenLabel ?? "Pick date and time")
                     .font(.callout)
                     .foregroundStyle(field.chosenLabel == nil ? Theme.muted : Theme.ink)
                 Spacer()
@@ -343,7 +343,7 @@ struct EditCardView: View {
                 }
             } else if field.anchored {
                 // 기준 있는 줄은 기준 없이는 확정 경로가 안 돈다 — 다이얼 대신 안내만(baseHint 문법).
-                Text("기준을 먼저 골라 주세요").font(.caption).foregroundStyle(Theme.muted)
+                Text("Pick a basis first").font(.caption).foregroundStyle(Theme.muted)
             } else {
                 // 기준도 바퀴 규칙도 없는 줄(활동 편집의 시작) — 같은 다이얼, 확정은 chooseTimePlain.
                 if let seed = card.dialSeed(for: field, base: nil, now: dialNow(field)) {
@@ -442,10 +442,10 @@ struct EditCardView: View {
         // '반복' 줄은 제목 줄과 같은 .title 칸이라 Kind로는 갈리지 않는다 — 열쇠로 먼저 가른다(새 Kind 없음, L-33).
         if field.key == RecurrenceLine.key { return RecurrenceLine.placeholder }
         switch field.kind {
-        case .place: return "장소 검색"
-        case .title: return "제목"
-        case .datetime: return "날짜·시각"
-        case .mode, .buffer, .notify: return "숫자만"
+        case .place: return "Search places"
+        case .title: return "Title"
+        case .datetime: return "Date and time"
+        case .mode, .buffer, .notify: return "Numbers only"
         // 토글·읽기 전용 줄은 allowsCustom이 false라 에디터가 열리지 않아 실행 중 도달하지
         // 않는다 — "숫자만"과 묶으면 뜻도 없는 안내문이 붙으므로 따로 둔다(전수 switch 유지).
         case .toggle, .readonly: return ""
@@ -495,7 +495,7 @@ struct EditCardView: View {
                     // 검색이 도는 동안에도 맞는 즐겨찾기는 위에 남고, 카드를 막지 않는다.
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
-                        Text("찾는 중…").font(.caption).foregroundStyle(Theme.muted)
+                        Text("Searching…").font(.caption).foregroundStyle(Theme.muted)
                     }
                 case .empty:
                     // 빈 상태 문구는 목록이 통째로 빌 때만 보인다(REQ-004 F2) — 맞는 즐겨찾기가
@@ -577,8 +577,8 @@ struct EditCardView: View {
                                            after previous: PlaceLine.Row?) -> String? {
         switch row {
         case .special: return nil
-        case .favorite: return previous?.isFavorite == true ? nil : "즐겨찾기"
-        case .candidate: return previous?.isCandidate == true ? nil : "검색 결과"
+        case .favorite: return previous?.isFavorite == true ? nil : "Favorites"
+        case .candidate: return previous?.isCandidate == true ? nil : "Search results"
         }
     }
 
@@ -675,7 +675,7 @@ struct EditCardView: View {
                 .onSubmit { submitCustom(field) }
                 // 제목 칸과 같은 까닭 — TextField가 탭을 삼켜 카드 전체 탭이 안 울리므로 같은 닫기 길로 보낸다.
                 .simultaneousGesture(TapGesture().onEnded { collapseOtherEditorsAfterTap(except: field.id) })
-            Button("확인") { submitCustom(field) }
+            Button("OK") { submitCustom(field) }
                 .buttonStyle(.plain)
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(Theme.travelInk)
@@ -789,7 +789,7 @@ struct EditCardView: View {
                 .disabled(!canConfirm)
                 // 해석 전만 남은 카드는 이미 누를 수 있어 "고르면 누를 수 있어요"가 거짓이 된다 — 그때는 힌트를 비운다.
                 .accessibilityHint(card.isReady || card.isReadyAfterRecurrenceCommit
-                                   ? "" : "빠진 값을 모두 고르면 누를 수 있어요")
+                                   ? "" : "Available once every missing value is chosen")
 
                 // 남은 것 한 줄(SPEC-UIKIT-015) — 남은 줄이 없어도 "다 골랐어요"로 자리를 지킨다.
                 // 줄이 생겼다 사라지면 확인 버튼이 상태마다 움직여 보인다(REQ-006). ViewThatFits이
@@ -811,7 +811,7 @@ struct EditCardView: View {
                 }
                 .foregroundStyle(card.isReady ? Theme.muted : Theme.ink)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(card.remainingVariants.first ?? "다 골랐어요")
+                .accessibilityLabel(card.remainingVariants.first ?? "All set")
             }
         }
     }
@@ -873,7 +873,7 @@ private struct BufferDimValue: ViewModifier {
     let dimmed: Bool
     func body(content: Content) -> some View {
         if dimmed {
-            content.accessibilityValue(Text("출발 기준 일정이라 이 여유는 쓰지 않아요"))
+            content.accessibilityValue(Text("This buffer isn't used for a departure-based event"))
         } else {
             content
         }

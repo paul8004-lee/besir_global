@@ -23,7 +23,7 @@ struct RouteMapView: View {
     var body: some View {
         Map(initialPosition: .region(region)) {
             if let o = origin {
-                Marker("출발", systemImage: "location.fill", coordinate: o)
+                Marker("Origin", systemImage: "location.fill", coordinate: o)
                     // 출발점도 이동의 일부다 — 시스템 파랑 대신 전역 틴트(App.swift)와 같은 세이지를 쓴다.
                     .tint(Theme.travel)
             }

@@ -19,8 +19,8 @@ struct EventDetailView: View {
 
     /// 경로 안내 단계 옆에 붙는 짧은 시각("오후 3:05").
     private static let shortTimeFmt: DateFormatter = {
-        let f = DateFormatter(); f.locale = Locale(identifier: "ko_KR")
-        f.dateFormat = "a h:mm"; return f
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US")
+        f.dateFormat = "h:mm a"; return f
     }()
 
     @Environment(\.dismiss) private var dismiss
@@ -66,7 +66,7 @@ struct EventDetailView: View {
                     // 지도 클립은 크롬이 아니라 콘텐츠 경계다 — Theme.radius(3)를 얹으면 280pt
                     // 이미지가 사각형과 구분되지 않는다(D-4 2번 유지 판정).
                     .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .accessibilityLabel("\(event.destination.name) 지도")
+                    .accessibilityLabel("\(event.destination.name) map")
 
                 departureCard
 
@@ -90,7 +90,7 @@ struct EventDetailView: View {
         .onDisappear { transitTask?.cancel() }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { showingEdit = true } label: { Label("편집", systemImage: "pencil") }
+                Button { showingEdit = true } label: { Label("Edit", systemImage: "pencil") }
             }
         }
         .sheet(isPresented: $showingEdit) {
@@ -157,7 +157,7 @@ struct EventDetailView: View {
             if !event.destination.address.isEmpty {
                 Text(event.destination.address).foregroundStyle(Theme.muted)
             }
-            Label("도착 \(BesirTime.full.string(from: event.arrivalDate))", systemImage: "clock")
+            Label("Arrival \(BesirTime.full.string(from: event.arrivalDate))", systemImage: "clock")
                 .font(.callout).foregroundStyle(Theme.muted)
         }
     }
@@ -171,14 +171,14 @@ struct EventDetailView: View {
                 HStack {
                     Image(systemName: event.mode.systemImage)
                     // "대중교통로"가 되지 않게 조사 붙은 이름을 쓴다(D14) — 캘린더 설명과 같은 출처.
-                    Text("\(event.mode.titleWithParticle) 약 \(minutes)분")
+                    Text("\(event.mode.titleWithParticle) · about \(minutes) min")
                         .font(.headline)
                     Spacer()
                 }
                 Divider()
                 Group {
                     HStack(alignment: .firstTextBaseline) {
-                        Text("출발 시각")
+                        Text("Departure Time")
                             .foregroundStyle(Theme.muted)
                         Spacer()
                         Text(BesirTime.clock.string(from: dep))
@@ -186,13 +186,13 @@ struct EventDetailView: View {
                             .foregroundStyle(isPast ? Theme.nowLine : Theme.travel)
                     }
                     if isPast {
-                        Text("⚠️ 이미 출발 시각이 지났습니다.")
+                        Text("⚠️ The departure time has already passed.")
                             .font(.caption).foregroundStyle(Theme.warn)
                     } else {
                         // 알림 상태는 사실대로 — 꺼졌거나, 예약돼 있거나, 아니라면 그 이유까지
                         // (판정식은 alarmStatus에). "예약됨"이라고만 쓰면 울리지 않을 약속을
                         // 화면이 한다(D-3).
-                        Text("출발까지 \(relativeText(to: dep)) 남음 · \(alarmStatus(for: event, departure: dep))")
+                        Text("\(relativeText(to: dep)) until departure · \(alarmStatus(for: event, departure: dep))")
                             .font(.caption).foregroundStyle(Theme.muted)
                     }
                 }
@@ -208,7 +208,7 @@ struct EventDetailView: View {
             // 않고, 이 화면의 환승 조회가 방금 실패했을 때만 그 이유를 빌린다. 그 밖에는 수단을
             // 말하지 않는 고정 문장(예전엔 도보·자동차에도 "대중교통"이라고 했다). 색은 실패의 뜻인
             // warn — activity(브라스)는 활동 블록의 색이라 뜻이 틀렸다(렌즈 F-1).
-            Label(transitFailure?.sentence ?? "이동시간을 계산하지 못했어요. 출발지와 도착지를 확인해 주세요.",
+            Label(transitFailure?.sentence ?? "Couldn't calculate travel time. Check the origin and destination.",
                   systemImage: "exclamationmark.triangle")
                 .foregroundStyle(Theme.warn)
                 .padding()
@@ -221,11 +221,11 @@ struct EventDetailView: View {
         if event.mode == .transit, !transitSteps.isEmpty {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    Label("이동 경로", systemImage: "arrow.triangle.turn.up.right.diamond")
+                    Label("Route", systemImage: "arrow.triangle.turn.up.right.diamond")
                         .font(.headline)
                     Spacer()
                     if event.departureDate != nil {
-                        Text("예상 시각")
+                        Text("Estimated Time")
                             .font(.caption).foregroundStyle(Theme.muted)
                     }
                 }
@@ -238,7 +238,7 @@ struct EventDetailView: View {
                 // 남는 시간은 맨 아래에 둔다(D7, 운영자 #10) — 맨 위에 두면 모든 탑승 시각이 N분 늦게
                 // 찍혀 열차를 놓치는 쪽으로 틀린다. 시각은 마지막 단계가 끝나는 때(앞선 단계 분 합).
                 if let extra = transitExtraMinutes {
-                    tailRow("그 외 약 \(extra)분", at: stepStartTime(transitSteps.count)) {
+                    tailRow("Other, about \(extra) min", at: stepStartTime(transitSteps.count)) {
                         Rectangle()
                             .fill(Theme.line)
                             .frame(width: 2)
@@ -247,7 +247,7 @@ struct EventDetailView: View {
                 }
                 // 도착은 계산값이 아니라 일정에 적힌 도착 시각이다 — 단계 시각이 어긋나도 약속 시각은
                 // 여기서 그대로 보인다.
-                tailRow("도착", at: event.arrivalDate) {
+                tailRow("Arrival", at: event.arrivalDate) {
                     Image(systemName: "flag.fill")
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundStyle(Theme.muted)
@@ -269,7 +269,7 @@ struct EventDetailView: View {
             // C-5). 이유 문장이 아니라 캡션을 쓰는 이유: 문장은 "이동시간을 계산하지 못했어요"로
             // 끝나는데 바로 위 카드에는 저장된 이동시간이 보여 서로 어긋난다. 출발 카드가 대체
             // 라벨일 때(조건은 departureCard와 같다)는 그 라벨이 이미 이유 문장을 말하므로 되풀이하지 않는다.
-            Label("경로 안내를 불러오지 못했어요 · \(failure.caption)", systemImage: "info.circle")
+            Label("Couldn't load route directions · \(failure.caption)", systemImage: "info.circle")
                 .font(.caption).foregroundStyle(Theme.muted)
         }
     }
@@ -363,13 +363,13 @@ struct EventDetailView: View {
             // 값 행(+반복 배지)만 카드로 감싼다 — 삭제 단추는 카드 밖에 그대로 둔다(AC-006
             // 8·9행의 분할이 규범 — REQ-020의 :302-348 인용이 잘못 넓었고 0.1.3으로 정정).
             VStack(alignment: .leading, spacing: 10) {
-                row("이동수단", "\(event.mode.title)")
-                row("도착 여유(버퍼)", "\(event.bufferMinutes)분")
+                row("Travel Mode", "\(event.mode.title)")
+                row("Arrival Buffer", "\(event.bufferMinutes) min")
                 // 위 캡션(alarmStatus)은 알림 상태를 사실대로 말하는데 이 행은 무조건 "출발 N분 전"을
                 // 그려 "알림 꺼짐" 캡션과 모순됐다 — 끈 일정에는 받지 않음을 보인다.
-                row("알림", event.wantsNotification ? "출발 \(event.notifyLeadMinutes)분 전" : "받지 않음")
+                row("Alert", event.wantsNotification ? "\(event.notifyLeadMinutes) min before departure" : "Off")
                 if event.recurrenceId != nil {
-                    Label("반복 일정", systemImage: "repeat")
+                    Label("Repeating Event", systemImage: "repeat")
                         .font(.caption).foregroundStyle(Theme.muted)
                 }
             }
@@ -385,13 +385,13 @@ struct EventDetailView: View {
                         showingDeleteConfirm = true
                     }
                 } label: {
-                    Label("일정 삭제", systemImage: "trash")
+                    Label("Delete Event", systemImage: "trash")
                 }
             }
             .padding(.top, 8)
         }
-        .confirmationDialog("반복 일정을 어떻게 삭제할까요?", isPresented: $showingDeleteMenu, titleVisibility: .visible) {
-            Button(event.recurrenceId != nil ? "전체 반복 일정 삭제" : "같은 제목 일정 모두 삭제(\(sameTitleEvents.count)건)",
+        .confirmationDialog("How do you want to delete this repeating event?", isPresented: $showingDeleteMenu, titleVisibility: .visible) {
+            Button(event.recurrenceId != nil ? "Delete Entire Series" : "Delete All Events with the Same Title (\(sameTitleEvents.count))",
                    role: .destructive) {
                 if let rid = event.recurrenceId {
                     store.deleteRecurringSeries(rid)
@@ -400,18 +400,18 @@ struct EventDetailView: View {
                 }
                 dismiss()
             }
-            Button("이 일정만 삭제", role: .destructive) {
+            Button("Delete This Event Only", role: .destructive) {
                 store.deleteEvent(event)
                 dismiss()
             }
-            Button("취소", role: .cancel) {}
+            Button("Cancel", role: .cancel) {}
         }
-        .confirmationDialog("이 일정을 삭제할까요?", isPresented: $showingDeleteConfirm, titleVisibility: .visible) {
-            Button("삭제", role: .destructive) {
+        .confirmationDialog("Delete this event?", isPresented: $showingDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete", role: .destructive) {
                 store.deleteEvent(event)
                 dismiss()
             }
-            Button("취소", role: .cancel) {}
+            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -444,8 +444,8 @@ struct EventDetailView: View {
     private func relativeText(to date: Date) -> String {
         let secs = Int(date.timeIntervalSinceNow)
         let m = secs / 60
-        if m < 60 { return "\(m)분" }
-        return "\(m / 60)시간 \(m % 60)분"
+        if m < 60 { return "\(m) min" }
+        return "\(m / 60) hr \(m % 60) min"
     }
 }
 
