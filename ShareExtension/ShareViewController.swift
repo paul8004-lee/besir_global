@@ -70,7 +70,10 @@ final class ShareViewController: UIViewController {
                 }
             }
         }
-        SharedInbox.enqueue(text: text, imageData: imageData, mimeType: mimeType)
+        // The image is shrunk to a small JPEG here, once, so the queue never holds a large one.
+        if let queued = SharedInbox.prepare(text: text, imageData: imageData, mime: mimeType) {
+            SharedInbox.standard.enqueue(queued)
+        }
 #if DEBUG
         label.text = "Found: \(writeObservation(itemCount: items.count))"
         try? await Task.sleep(nanoseconds: 2_500_000_000)
@@ -116,7 +119,7 @@ final class ShareViewController: UIViewController {
         try await withCheckedThrowingContinuation { cont in
             provider.loadItem(forTypeIdentifier: UTType.image.identifier, options: nil) { item, error in
                 if let error { cont.resume(throwing: error); return }
-                if let url = item as? URL, let data = try? Data(contentsOf: url) {
+                if let url = item as? URL, let data = try? Data(contentsOf: url, options: .mappedIfSafe) {
                     let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "image/jpeg"
                     cont.resume(returning: (data, mime))
                 } else if let image = item as? UIImage, let data = image.jpegData(compressionQuality: 0.85) {
