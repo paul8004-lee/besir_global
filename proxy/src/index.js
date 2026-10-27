@@ -2,6 +2,8 @@
 //   POST /ai      -> Meta Model API Responses API (muse-spark-1.3)
 //   POST /places  -> Google Places API (New) Text Search
 //   POST /routes  -> Google Routes API computeRoutes
+//   POST /vision  -> Baseten Muse Spark Open: one image in, {title, time, place, confidence} out
+import { handleVision } from "./vision.js";
 
 const META_RESPONSES_URL = "https://api.meta.ai/v1/responses";
 const PLACES_URL = "https://places.googleapis.com/v1/places:searchText";
@@ -99,6 +101,7 @@ export default {
         return handleGoogle(request, env, PLACES_URL);
       case "/routes":
         return handleGoogle(request, env, ROUTES_URL);
+      case "/vision": return handleVision(request, env, { json });
       default:
         return json(404, { error: "not_found" });
     }
