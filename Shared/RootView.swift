@@ -36,6 +36,9 @@ struct RootView: View {
     @EnvironmentObject var store: Store
     @State private var service: Service?
     @State private var showingSettings = false
+    // The session lives here, not in the sheet, so the conversation survives closing the sheet.
+    @State private var chat: AgentSession?
+    @State private var showingChat = false
 
     /// 로비 맨 위 줄의 besir 로고와 설정 톱니는 한 줄에 나란히 서지만 틀 크기는 따로 잡는다 — 로고(BesirMark)는 틀의 가로 약
     /// 88%·세로 약 85%만 칠하고 톱니는 틀을 거의 다 채워서, 같은 틀이면 톱니 잉크가 5~6pt 커 보인다. 틀 34·30이면 잉크가 둘 다 30pt 안팎으로
@@ -52,6 +55,27 @@ struct RootView: View {
                 ContentView(onBack: { service = nil })
             case .full:
                 FullSirView(onBack: { service = nil })
+            }
+        }
+        .sheet(isPresented: $showingChat, onDismiss: { Task { await chat?.sheetDismissed() } }) {
+            if let chat { AgentChatView(session: chat) }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if store.config.hasAI {
+                Button {
+                    if chat == nil {
+                        chat = AgentSession(toolbox: AgentToolbox(store: store, now: { Date() }, timeZone: .current),
+                                            transport: AgentPendingTransport())
+                    }
+                    showingChat = true
+                } label: {
+                    BesirMark(size: 28)
+                        .floatingCircle()
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("besir AI")
+                .padding(.trailing, FloatingCircle.inset)
+                .padding(.bottom, FloatingCircle.inset)
             }
         }
     }
