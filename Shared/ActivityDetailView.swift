@@ -383,7 +383,8 @@ struct ActivityDetailView: View {
 
     /// 카드 검색 에디터의 입력. 묶음 정책(350ms 지연·취소·같은 질의 스킵)은 공용 디바운서가
     /// 단독으로 소유한다 — 이 화면이 지연 시간을 들면 카카오 할당량 정책이 두 벌이 된다.
-    /// 검색 기준점은 없다 — 이 화면이 장소 후보를 우선할 근거 지점이 없다.
+    /// The search centre is the device's current location (nil until a fix arrives), so the Google
+    /// search favours places near the user.
     private func searchPlaces(field: UUID, text: String) {
         var deb = placeDebounce
         switch deb.gate(field, text) {
@@ -397,7 +398,7 @@ struct ActivityDetailView: View {
             setLookup(field, .searching)
             var armed = placeDebounce
             armed.arm(field, q) {
-                let found = await store.placeSearch.search(q, near: nil)
+                let found = await store.placeSearch.search(q, near: location.currentLocation)
                 guard !Task.isCancelled else { return }
                 self.finishPlaceSearch(field: field, query: q, found: found)
             }

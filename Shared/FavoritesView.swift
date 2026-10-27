@@ -77,7 +77,7 @@ struct FavoritesList: View {
                 // 검색이 돌고 있을 때 다시 누르면 Task가 겹친다 — FullSirView 돋보기와 같은 잠금.
                 .disabled(searching)
             }
-            ForEach(results, id: \.name) { place in
+            ForEach(results, id: \.self) { place in
                 Button {
                     addFavorite(place)
                 } label: {
