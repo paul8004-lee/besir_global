@@ -73,5 +73,104 @@ final class ShareObservationTests: XCTestCase {
         XCTAssertEqual(ShareObservation.kind(forTypes: ["com.example.not-a-real-type"]), .other)
         XCTAssertEqual(ShareObservation.kind(forTypes: []), .other)
     }
+
+    // SPEC-SHAREDIAG-001: the Debug card says what failed and nothing else.
+    private typealias Outcome = ShareObservation.Outcome
+
+    private func outcome(
+        hasContainer: Bool = true,
+        record: Outcome.RecordResult = .written,
+        queue: Outcome.QueueResult = .stored,
+        inbox: Outcome.InboxState = .count(1)
+    ) -> Outcome {
+        Outcome(hasContainer: hasContainer, record: record, queue: queue, inbox: inbox)
+    }
+
+    func testAC_DIAG_001_allSuccessGivesNoLine() {
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome()), [])
+    }
+
+    func testAC_DIAG_001_anyInboxCountGivesNoLine() {
+        for count in [0, 1, 10] {
+            XCTAssertEqual(ShareObservation.failureLines(for: outcome(inbox: .count(count))), [], "count \(count)")
+        }
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome(record: .written)), [])
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome(queue: .stored)), [])
+    }
+
+    func testAC_DIAG_002_eachFailureAloneGivesItsOneLine() {
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome(inbox: .noFolder)), ["Inbox: no folder"])
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome(inbox: .notReadable)), ["Inbox: folder not readable"])
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome(queue: .writeFailed)), ["Queue: write failed"])
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome(queue: .nothingToStore)), ["Queue: nothing to store"])
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome(hasContainer: false)), ["App Group: no container"])
+    }
+
+    func testAC_DIAG_002_recordFailuresKeepTheirWording() {
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome(record: .fileMissing)), ["Record: written, file missing"])
+        let text = ShareObservation.describe(NSError(domain: NSCocoaErrorDomain, code: 513))
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome(record: .failed(text))), ["Record: failed NSCocoaErrorDomain 513"])
+    }
+
+    func testAC_DIAG_002_failuresComeInTheFixedOrderAndNoContainerHidesTheRecord() {
+        XCTAssertEqual(
+            ShareObservation.failureLines(for: outcome(hasContainer: false, record: .written, queue: .writeFailed, inbox: .notReadable)),
+            ["App Group: no container", "Queue: write failed", "Inbox: folder not readable"])
+        XCTAssertEqual(
+            ShareObservation.failureLines(for: outcome(hasContainer: false, record: .failed("x"), queue: .writeFailed, inbox: .notReadable)),
+            ["App Group: no container", "Queue: write failed", "Inbox: folder not readable"])
+        XCTAssertEqual(
+            ShareObservation.failureLines(for: outcome(record: .failed("x"), queue: .nothingToStore, inbox: .noFolder)),
+            ["Record: failed x", "Queue: nothing to store", "Inbox: no folder"])
+    }
+
+    func testAC_DIAG_002_everyCombinationShowsOnlyItsFailures() {
+        let containers: [Bool] = [true, false]
+        let records: [Outcome.RecordResult] = [.written, .fileMissing, .failed("x")]
+        let queues: [Outcome.QueueResult] = [.stored, .writeFailed, .nothingToStore]
+        let inboxes: [Outcome.InboxState] = [.count(7), .noFolder, .notReadable]
+        let removed = ["Found", "container found", "file present", "stored", "file(s)"]
+        var seen = 0
+        for container in containers {
+            for record in records {
+                for queue in queues {
+                    for inbox in inboxes {
+                        // The expected lines come from this table, not from the function under test.
+                        var expected: [String] = []
+                        if !container {
+                            expected.append("App Group: no container")
+                        } else {
+                            switch record {
+                            case .written: break
+                            case .fileMissing: expected.append("Record: written, file missing")
+                            case .failed: expected.append("Record: failed x")
+                            }
+                        }
+                        switch queue {
+                        case .stored: break
+                        case .writeFailed: expected.append("Queue: write failed")
+                        case .nothingToStore: expected.append("Queue: nothing to store")
+                        }
+                        switch inbox {
+                        case .count: break
+                        case .noFolder: expected.append("Inbox: no folder")
+                        case .notReadable: expected.append("Inbox: folder not readable")
+                        }
+                        let given = outcome(hasContainer: container, record: record, queue: queue, inbox: inbox)
+                        let lines = ShareObservation.failureLines(for: given)
+                        XCTAssertEqual(lines, expected, "\(given)")
+                        for line in lines {
+                            for word in removed {
+                                XCTAssertFalse(line.contains(word), "\(line) holds \(word)")
+                            }
+                        }
+                        seen += 1
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(seen, 54)
+        XCTAssertEqual(ShareObservation.failureLines(for: outcome(inbox: .count(7))), [])
+    }
 }
 #endif
