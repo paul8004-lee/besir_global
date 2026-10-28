@@ -251,6 +251,115 @@ final class ReplanTests: XCTestCase {
         XCTAssertNil(Replan.displayLines(for: late, event: lateEvent, now: checked.addingTimeInterval(15 * 60), timeZone: zone))
     }
 
+    // MARK: T50-T53 after the alert (SPEC-REPLAN-002)
+
+    /// The fixture event as the store holds it after the alert: stored plan 18 min, stored departure 8:07 PM.
+    private func storedEvent(arrival: String = "2026-10-27T20:30", departure: String = "2026-10-27T20:07") -> ScheduledEvent {
+        var e = event(arrival: arrival)
+        e.travelSeconds = 18 * 60
+        e.departureDate = at(departure)
+        return e
+    }
+
+    func testREPLAN_AfterAlertOutcomeShape() throws {
+        let stored = at("2026-10-27T20:07")
+        let made = classify(live: 10 * 60, now: "2026-10-27T20:10", free: 9 * 60)
+        XCTAssertFalse(made.afterAlert)
+        let outcome = try XCTUnwrap(Replan.afterAlert(made, storedDeparture: stored, storedTravel: 18 * 60))
+        XCTAssertEqual(outcome.kind, .later)
+        XCTAssertEqual(outcome.minutes, 8)
+        XCTAssertEqual(outcome.newDeparture, at("2026-10-27T20:15"))
+        XCTAssertEqual(outcome.referenceDeparture, stored)
+        XCTAssertEqual(outcome.referenceTravel, 18 * 60)
+        XCTAssertEqual(outcome.liveTravel, 10 * 60)
+        XCTAssertEqual(outcome.noTrafficTravel, 9 * 60)
+        XCTAssertNil(outcome.arrivalEstimate)
+        XCTAssertNil(outcome.draft)
+        XCTAssertTrue(outcome.afterAlert)
+        XCTAssertEqual(outcome.trigger, made.trigger)
+        XCTAssertEqual(outcome.checkedAt, made.checkedAt)
+
+        // The kind the input outcome carried does not matter: a check that compared with a later reference said `earlier`.
+        let compared = classify(live: 10 * 60, now: "2026-10-27T20:10",
+                                reference: (at("2026-10-27T20:20"), 18 * 60))
+        XCTAssertEqual(compared.kind, .earlier)
+        let again = try XCTUnwrap(Replan.afterAlert(compared, storedDeparture: stored, storedTravel: 18 * 60))
+        XCTAssertEqual(again.kind, .later)
+        XCTAssertEqual(again.minutes, 8)
+        XCTAssertEqual(again.referenceDeparture, stored)
+    }
+
+    func testREPLAN_AfterAlertThresholdAndLate() {
+        let stored = at("2026-10-27T20:07")
+        func shown(_ live: TimeInterval, now: String = "2026-10-27T19:30") -> ReplanOutcome? {
+            Replan.afterAlert(classify(live: live, now: now), storedDeparture: stored, storedTravel: 18 * 60)
+        }
+        XCTAssertEqual(shown(16 * 60)?.minutes, 2, "exactly 120 seconds later")
+        XCTAssertNil(shown(16 * 60 + 1), "119 seconds later")
+        XCTAssertNil(shown(18 * 60), "equal")
+        XCTAssertNil(shown(31 * 60), "earlier")
+        XCTAssertNotNil(shown(10 * 60))
+        // A late outcome gives nothing even though its new departure is later than the stored one.
+        let late = classify(live: 31 * 60, now: "2026-10-27T20:20")
+        XCTAssertEqual(late.kind, .late)
+        XCTAssertNil(Replan.afterAlert(late, storedDeparture: at("2026-10-27T19:30"), storedTravel: 18 * 60))
+    }
+
+    func testREPLAN_DisplayLinesAfterAlert() throws {
+        let e = storedEvent()
+        let outcome = try XCTUnwrap(Replan.afterAlert(classify(live: 10 * 60, now: "2026-10-27T20:10", event: e),
+                                                      storedDeparture: at("2026-10-27T20:07"), storedTravel: 18 * 60))
+        // The stored departure (8:07 PM) has passed, yet the line shows while the live departure (8:15 PM) is ahead.
+        let lines = Replan.displayLines(for: outcome, event: e, now: at("2026-10-27T20:11"), timeZone: zone)
+        XCTAssertEqual(lines?.headline, "Leave by 8:15 PM, 8 min later")
+        XCTAssertEqual(lines?.reason, "Travel time is now 10 min, was 18 min.")
+        XCTAssertNil(lines?.draft)
+        XCTAssertEqual(lines?.kind, .later)
+        XCTAssertEqual(lines?.afterAlert, true)
+        XCTAssertNotNil(Replan.displayLines(for: outcome, event: e, now: at("2026-10-27T20:14:59"), timeZone: zone))
+        XCTAssertNil(Replan.displayLines(for: outcome, event: e, now: at("2026-10-27T20:15"), timeZone: zone),
+                     "not before the live departure")
+        let now = at("2026-10-27T20:11")
+        var moved = e
+        moved.departureDate = at("2026-10-27T20:08")
+        XCTAssertNil(Replan.displayLines(for: outcome, event: moved, now: now, timeZone: zone), "stored departure moved")
+        var nearly = e
+        nearly.departureDate = at("2026-10-27T20:07").addingTimeInterval(0.5)
+        XCTAssertNotNil(Replan.displayLines(for: outcome, event: nearly, now: now, timeZone: zone))
+        var arrival = e
+        arrival.arrivalDate = arrival.arrivalDate.addingTimeInterval(3600)
+        XCTAssertNil(Replan.displayLines(for: outcome, event: arrival, now: now, timeZone: zone), "arrival moved")
+        var mode = e
+        mode.mode = .walk
+        XCTAssertNil(Replan.displayLines(for: outcome, event: mode, now: now, timeZone: zone), "mode changed")
+        XCTAssertNil(Replan.displayLines(for: outcome, event: e, now: at("2026-10-27T20:31"), timeZone: zone), "arrival passed")
+        // An outcome of the ordinary kinds reports `afterAlert` false.
+        let earlier = classify(live: 31 * 60, event: e)
+        var shown = e
+        shown.departureDate = earlier.newDeparture
+        XCTAssertEqual(Replan.displayLines(for: earlier, event: shown, now: at("2026-10-27T19:31"), timeZone: zone)?.afterAlert,
+                       false)
+
+        // Lifetime: 15 minutes after the check, even while the live departure is still ahead.
+        let long = storedEvent(arrival: "2026-10-27T21:30", departure: "2026-10-27T21:07")
+        let later = try XCTUnwrap(Replan.afterAlert(classify(live: 10 * 60, now: "2026-10-27T20:10", event: long),
+                                                    storedDeparture: at("2026-10-27T21:07"), storedTravel: 18 * 60))
+        XCTAssertEqual(later.newDeparture, at("2026-10-27T21:15"))
+        XCTAssertNotNil(Replan.displayLines(for: later, event: long, now: at("2026-10-27T20:24:59"), timeZone: zone))
+        XCTAssertNil(Replan.displayLines(for: later, event: long, now: at("2026-10-27T20:25:00"), timeZone: zone))
+    }
+
+    func testREPLAN_ShowsPassedTable() {
+        let departure = at("2026-10-27T20:07")
+        let before = at("2026-10-27T20:06")
+        let after = at("2026-10-27T20:08")
+        XCTAssertTrue(Replan.showsPassed(departure: departure, now: after, afterAlertLine: false))
+        XCTAssertFalse(Replan.showsPassed(departure: departure, now: after, afterAlertLine: true))
+        XCTAssertFalse(Replan.showsPassed(departure: departure, now: before, afterAlertLine: false))
+        XCTAssertFalse(Replan.showsPassed(departure: departure, now: before, afterAlertLine: true))
+        XCTAssertFalse(Replan.showsPassed(departure: departure, now: departure, afterAlertLine: false))
+    }
+
     // MARK: T21-T25 alert payload, tap, catch-up text, navigation
 
     func testREPLAN_ContentCarriesEventID() {

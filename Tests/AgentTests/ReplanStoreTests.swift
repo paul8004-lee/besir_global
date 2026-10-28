@@ -222,7 +222,7 @@ final class ReplanStoreTests: XCTestCase {
         XCTAssertEqual(outcome.trigger, .alertTap)
     }
 
-    func testREPLAN_PostAlertLaterSkipsEntirely() async throws {
+    func testREPLAN_PostAlertLaterNeverStores() async throws {
         let clock = MutableClock(now: Date())
         let event = F.firedEvent(now: clock.now)
         let store = setUpStore(clock: clock, events: [event])
@@ -234,7 +234,11 @@ final class ReplanStoreTests: XCTestCase {
 
         XCTAssertEqual(store.events.first?.travelSeconds, 18 * 60)
         XCTAssertEqual(store.events.first?.departureDate, event.departureDate)
-        XCTAssertNil(store.replanOutcomes[event.id])
+        // The later departure is shown (SPEC-REPLAN-002) and never stored.
+        let shown = try XCTUnwrap(store.replanOutcomes[event.id])
+        XCTAssertEqual(shown.kind, .later)
+        XCTAssertTrue(shown.afterAlert)
+        XCTAssertEqual(shown.minutes, 8)
         XCTAssertEqual(store.notifications.requestCount, requests)
         XCTAssertEqual(store.drvSaveCount, saves)
 
@@ -350,18 +354,27 @@ final class ReplanStoreTests: XCTestCase {
         XCTAssertEqual(Replan.headline(for: second), Replan.headline(for: first))
         XCTAssertEqual(Replan.reason(for: second), Replan.reason(for: first))
 
-        // Traffic clears after the alert fired: a later departure than the stored one changes nothing, the lines stay.
+        // Traffic clears after the alert fired: a later departure than the stored one is shown and not stored, and it
+        // compares with the stored pair (31 min), not with the first plan.
         clock.now = clock.now.addingTimeInterval(30)
         store.drvLiveLookupOverride = F.answering(19 * 60)
         await store.replanAfterAlert(id: event.id, trigger: .alertTap)
-        XCTAssertEqual(store.replanOutcomes[event.id], second)
+        let third = try XCTUnwrap(store.replanOutcomes[event.id])
+        XCTAssertEqual(third.kind, .later)
+        XCTAssertTrue(third.afterAlert)
+        XCTAssertEqual(third.minutes, 12)
+        XCTAssertEqual(third.referenceTravel, 31 * 60)
         XCTAssertEqual(store.events.first?.travelSeconds, 31 * 60)
 
-        // The same answer on an app-open pass of an event whose alert has not fired: stored pair back, lines gone.
+        // The same answer on an app-open pass of an event whose alert has not fired: the stored pair is the new live pair
+        // and the carried reference is the stored pair of the step before.
         clock.now = clock.now.addingTimeInterval(400)
         await store.refreshUpcomingEstimates()
         XCTAssertEqual(store.events.first?.travelSeconds, 19 * 60)
-        XCTAssertNil(store.replanOutcomes[event.id])
+        let fourth = try XCTUnwrap(store.replanOutcomes[event.id])
+        XCTAssertEqual(fourth.kind, .later)
+        XCTAssertEqual(fourth.minutes, 12)
+        XCTAssertFalse(fourth.afterAlert)
     }
 
     func testREPLAN_StaleResultDiscarded() async throws {
@@ -401,6 +414,126 @@ final class ReplanStoreTests: XCTestCase {
         let outcome = try XCTUnwrap(ordered.replanOutcomes[other.id])
         XCTAssertEqual(outcome.liveTravel, 31 * 60)
         XCTAssertEqual(outcome.checkedAt, newerStart)
+    }
+
+    // MARK: T54-T58 after the alert, a later departure (SPEC-REPLAN-002)
+
+    func testREPLAN_PostAlertLaterKeepsOutcomeStoresNothing() async throws {
+        let clock = MutableClock(now: Date())
+        let event = F.firedEvent(now: clock.now)
+        let store = setUpStore(clock: clock, events: [event], ai: true)
+        store.drvLiveLookupOverride = F.answering(10 * 60)
+        let requests = store.notifications.requestCount
+        let saves = store.drvSaveCount
+        let reschedules = store.drvRescheduleCount
+
+        await store.replanAfterAlert(id: event.id, trigger: .alertTap)
+
+        let outcome = try XCTUnwrap(store.replanOutcomes[event.id])
+        XCTAssertEqual(outcome.kind, .later)
+        XCTAssertTrue(outcome.afterAlert)
+        XCTAssertEqual(outcome.minutes, 8)
+        XCTAssertEqual(outcome.trigger, .alertTap)
+        XCTAssertEqual(outcome.referenceDeparture, event.departureDate)
+        XCTAssertEqual(outcome.referenceTravel, 18 * 60)
+        XCTAssertEqual(outcome.newDeparture,
+                       Store.departureTime(arrival: event.arrivalDate, travelSeconds: 10 * 60, bufferMinutes: 5))
+        let stored = try XCTUnwrap(store.events.first)
+        XCTAssertEqual(stored.travelSeconds, 18 * 60)
+        XCTAssertEqual(stored.departureDate, event.departureDate)
+        XCTAssertEqual(stored.notificationId, event.notificationId)
+        XCTAssertEqual(store.notifications.requestCount, requests)
+        XCTAssertEqual(store.drvSaveCount, saves)
+        XCTAssertEqual(store.drvRescheduleCount, reschedules)
+        XCTAssertNil(store.replanDraftTask)
+
+        let lines = Replan.displayLines(for: outcome, event: stored, now: clock.now)
+        XCTAssertEqual(lines?.afterAlert, true)
+        // The reading is younger than the live departure only up to 15 minutes.
+        XCTAssertNil(Replan.displayLines(for: outcome, event: stored, now: clock.now.addingTimeInterval(16 * 60)))
+    }
+
+    func testREPLAN_PostAlertSmallLaterRemovesOnlyAfterAlert() async throws {
+        let clock = MutableClock(now: Date())
+        let event = F.firedEvent(now: clock.now)
+        let store = setUpStore(clock: clock, events: [event])
+        store.drvLiveLookupOverride = F.answering(10 * 60)
+        await store.replanAfterAlert(id: event.id, trigger: .alertTap)
+        XCTAssertEqual(store.replanOutcomes[event.id]?.afterAlert, true)
+
+        // (a) A reading one minute later than the stored departure removes the after-alert outcome.
+        clock.now = clock.now.addingTimeInterval(30)
+        store.drvLiveLookupOverride = F.answering(17 * 60)
+        await store.replanAfterAlert(id: event.id, trigger: .alertTap)
+        XCTAssertNil(store.replanOutcomes[event.id])
+        XCTAssertEqual(store.events.first?.travelSeconds, 18 * 60)
+        XCTAssertEqual(store.events.first?.departureDate, event.departureDate)
+
+        // (b) An outcome of another kind is left alone by the same small reading.
+        let other = F.firedEvent(now: clock.now)
+        let second = setUpStore(clock: clock, events: [other])
+        second.drvLiveLookupOverride = F.answering(31 * 60)
+        await second.replanAfterAlert(id: other.id, trigger: .alertTap)
+        let earlier = try XCTUnwrap(second.replanOutcomes[other.id])
+        XCTAssertEqual(earlier.kind, .earlier)
+        clock.now = clock.now.addingTimeInterval(30)
+        second.drvLiveLookupOverride = F.answering(30 * 60)
+        await second.replanAfterAlert(id: other.id, trigger: .alertTap)
+        XCTAssertEqual(second.replanOutcomes[other.id], earlier)
+        XCTAssertEqual(second.events.first?.travelSeconds, 31 * 60)
+    }
+
+    func testREPLAN_PostAlertLaterThenEarlierUsesBasePath() async throws {
+        let clock = MutableClock(now: Date())
+        let event = F.firedEvent(now: clock.now)
+        let store = setUpStore(clock: clock, events: [event])
+        store.drvLiveLookupOverride = F.answering(10 * 60)
+        await store.replanAfterAlert(id: event.id, trigger: .alertTap)
+        XCTAssertEqual(store.replanOutcomes[event.id]?.afterAlert, true)
+        let requests = store.notifications.requestCount
+
+        clock.now = clock.now.addingTimeInterval(30)
+        store.drvLiveLookupOverride = F.answering(31 * 60)
+        await store.replanAfterAlert(id: event.id, trigger: .alertTap)
+
+        XCTAssertEqual(store.events.first?.travelSeconds, 31 * 60)
+        let outcome = try XCTUnwrap(store.replanOutcomes[event.id])
+        XCTAssertEqual(outcome.kind, .earlier)
+        XCTAssertEqual(outcome.minutes, 13)
+        XCTAssertFalse(outcome.afterAlert)
+        XCTAssertEqual(store.notifications.requestCount, requests)
+    }
+
+    func testREPLAN_AppOpenPassShowsLaterForFiredEvent() async throws {
+        let clock = MutableClock(now: Date())
+        let event = F.firedEvent(now: clock.now)
+        let store = setUpStore(clock: clock, events: [event])
+        store.drvLiveLookupOverride = F.answering(10 * 60)
+
+        await store.refreshUpcomingEstimates()
+
+        let outcome = try XCTUnwrap(store.replanOutcomes[event.id])
+        XCTAssertEqual(outcome.kind, .later)
+        XCTAssertTrue(outcome.afterAlert)
+        XCTAssertEqual(outcome.trigger, .appOpen)
+        XCTAssertEqual(store.events.first?.travelSeconds, 18 * 60)
+        XCTAssertEqual(store.events.first?.departureDate, event.departureDate)
+        XCTAssertEqual(store.drvLiveLookupCount, 1)
+    }
+
+    func testREPLAN_RescheduleAfterLaterOutcomeAddsNoRequest() async throws {
+        let clock = MutableClock(now: Date())
+        let event = F.firedEvent(now: clock.now)
+        let store = setUpStore(clock: clock, events: [event])
+        store.drvLiveLookupOverride = F.answering(10 * 60)
+        await store.replanAfterAlert(id: event.id, trigger: .alertTap)
+        XCTAssertEqual(store.replanOutcomes[event.id]?.afterAlert, true)
+        let requests = store.notifications.requestCount
+
+        store.rescheduleNearestNotifications()
+
+        XCTAssertEqual(store.notifications.requestCount, requests)
+        XCTAssertNil(store.events.first?.notificationId)
     }
 
     // MARK: T47-T49 reschedule, background, anchored

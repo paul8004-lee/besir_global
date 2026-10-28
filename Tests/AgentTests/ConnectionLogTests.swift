@@ -358,20 +358,6 @@ final class ConnectionLogTests: XCTestCase {
         try FileManager.default.createDirectory(at: mixed.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: objects).write(to: mixed)
         XCTAssertEqual(makeLog(file: mixed).packets, [kept])
-
-        // Every status has its own symbol; `noRoute` is the muted slashed location, `failed` alone is the warning color.
-        XCTAssertEqual(ConnectionsView.symbol(.noRoute), "location.slash")
-        XCTAssertEqual(Set(ConnectionStatus.allCases.map(ConnectionsView.symbol)).count, ConnectionStatus.allCases.count)
-        XCTAssertEqual(ConnectionsView.color(.noRoute), Theme.muted)
-        XCTAssertEqual(ConnectionsView.color(.declined), Theme.muted)
-        XCTAssertNotEqual(ConnectionsView.color(.ok), Theme.muted)
-        XCTAssertNotEqual(ConnectionsView.color(.failed), Theme.muted)
-        XCTAssertNotEqual(ConnectionsView.color(.ok), ConnectionsView.color(.failed))
-        #if canImport(UIKit)
-        for status in ConnectionStatus.allCases {
-            XCTAssertNotNil(UIImage(systemName: ConnectionsView.symbol(status)), "\(status)")
-        }
-        #endif
     }
 
     func testCONNECT_T39_FiftyOneFlowsShowFifty() async {

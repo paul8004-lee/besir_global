@@ -2480,7 +2480,8 @@ final class Store: ObservableObject {
 
     /// The live check of one event whose alert has fired (a tap on its alert, or an app-open pass over an event the window
     /// skips). It sends no notification, stores the new travel time and departure only when the new departure is not later
-    /// than the stored one, and keeps the outcome (REQ-REPLAN-006, 007, 008).
+    /// than the stored one, and keeps the outcome (REQ-REPLAN-006, 007, 008). A later departure of at least two minutes is
+    /// kept as an after-alert outcome without storing anything (SPEC-REPLAN-002).
     func replanAfterAlert(id: UUID, trigger: ReplanTrigger) async {
         guard let startIndex = events.firstIndex(where: { $0.id == id }) else { return }
         let copy = events[startIndex]
@@ -2509,9 +2510,16 @@ final class Store: ObservableObject {
         let outcome = Replan.classify(eventID: id, trigger: trigger, checkedAt: started, inputs: inputs,
                                       referenceDeparture: reference.departure, referenceTravel: reference.travel,
                                       liveTravel: found.seconds, noTrafficTravel: found.noTrafficSeconds, now: finished)
-        // A new departure later than the stored one would schedule a second alert: nothing changes, except that the
-        // late warning does not depend on the stored value (L4).
-        if outcome.newDeparture > storedDeparture, outcome.kind != .late { return }
+        // A new departure later than the stored one would schedule a second alert, so it is shown and never stored (L4).
+        // @MX:NOTE: the stored departure stays; `rescheduleNearestNotifications` adds a request for any alarm time still ahead.
+        if outcome.newDeparture > storedDeparture, outcome.kind != .late {
+            if let shown = Replan.afterAlert(outcome, storedDeparture: storedDeparture, storedTravel: storedTravel) {
+                keep(shown, title: events[current].title)
+            } else if replanOutcomes[id]?.afterAlert == true {
+                replanOutcomes[id] = nil
+            }
+            return
+        }
         if outcome.newDeparture <= storedDeparture {
             let currentCopy = events[current]
             var after = currentCopy
