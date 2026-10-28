@@ -48,9 +48,11 @@ final class FakeVisionReader: VisionReading, @unchecked Sendable {
 /// Stands in for the agent session: remembers each message and accepts or refuses it.
 final class FakeHandOff {
     private(set) var messages: [String] = []
+    private(set) var shownLines: [String] = []
     var accepts = true
-    func hand(_ message: String) -> Bool {
+    func hand(_ message: String, _ shown: String) -> Bool {
         messages.append(message)
+        shownLines.append(shown)
         return accepts
     }
 }
@@ -249,5 +251,91 @@ final class ShareImportTests: XCTestCase {
         XCTAssertEqual(rig.reader.calls, 0)
         XCTAssertTrue(rig.handOff.messages.isEmpty)
         XCTAssertTrue(rig.inbox.pending().isEmpty)
+    }
+
+    // MARK: - SPEC-SHAREBUBBLE-001: the hand-off carries the message and the shown line together
+
+    private let readFields = VisionFields(title: "JAZZ NIGHT", time: "2026-11-07T19:00", place: "Blue Note", confidence: 0.9)
+
+    private func composed(_ fields: VisionFields?, text: String?) -> String {
+        guard case .message(let message) = SharedMessage.compose(fields: fields, text: text) else {
+            XCTFail("the message did not compose")
+            return ""
+        }
+        return message
+    }
+
+    func testAC_BUBBLE_001_anImageShareHandsOverTheMessageAndTheImageLine() async throws {
+        let rig = try makeRig()
+        enqueue(rig, image: imageBase64)
+        await pass(rig)
+        XCTAssertEqual(rig.handOff.shownLines, ["I shared an image. Read with 90% confidence."])
+        XCTAssertEqual(rig.handOff.messages, [composed(readFields, text: nil)])
+        XCTAssertEqual(rig.reader.calls, 1)
+        XCTAssertEqual(visionCallLines(rig), 1)
+    }
+
+    func testAC_BUBBLE_001_aTextShareAndACaptionedImageShowOnlyTheirFixedLines() async throws {
+        let textRig = try makeRig()
+        enqueue(textRig, text: "Dinner with Sam at 7pm tomorrow")
+        await pass(textRig)
+        XCTAssertEqual(textRig.handOff.shownLines, ["I shared some text."])
+        XCTAssertEqual(textRig.handOff.messages, [composed(nil, text: "Dinner with Sam at 7pm tomorrow")])
+
+        let captioned = try makeRig()
+        enqueue(captioned, text: "Concert on Friday", image: imageBase64)
+        await pass(captioned)
+        XCTAssertEqual(captioned.handOff.shownLines, ["I shared an image. Read with 90% confidence."])
+        XCTAssertTrue(captioned.handOff.messages[0].contains("Concert on Friday"), "positive control: the caption is in the message")
+        XCTAssertFalse(captioned.handOff.shownLines[0].contains("Concert"))
+    }
+
+    func testAC_BUBBLE_004_aRefusedHandOffKeepsBothStringsForTheRetry() async throws {
+        let rig = try makeRig()
+        enqueue(rig, image: imageBase64)
+        rig.handOff.accepts = false
+        await pass(rig)
+        XCTAssertEqual(rig.inbox.pending().count, 1)
+        rig.handOff.accepts = true
+        await pass(rig)
+        XCTAssertEqual(rig.reader.calls, 1, "no second paid call")
+        XCTAssertEqual(rig.handOff.shownLines.count, 2)
+        XCTAssertEqual(rig.handOff.shownLines[0], rig.handOff.shownLines[1])
+        XCTAssertEqual(rig.handOff.messages[0], rig.handOff.messages[1])
+        XCTAssertEqual(rig.handOff.shownLines[1], "I shared an image. Read with 90% confidence.")
+        XCTAssertTrue(rig.inbox.pending().isEmpty)
+    }
+
+    func testAC_BUBBLE_004_aRealSessionDrawsTheLineAndKeepsTheMessageForTheModel() async throws {
+        let rig = try makeRig()
+        enqueue(rig, image: imageBase64)
+        let session = AgentSession(toolbox: ToolHarness.make().tools, transport: FakeTransport([.turn(Turns.text("Noted."))]))
+        await rig.importer.pass(vision: rig.reader, canHand: { session.canSend }, hand: { message, shown in
+            SharedImport.give(message: message, shown: shown, to: session)
+        })
+        await session.settle()
+        XCTAssertEqual(session.userTexts, ["I shared an image. Read with 90% confidence."])
+        XCTAssertEqual(session.history.first, .user(composed(readFields, text: nil)))
+        XCTAssertTrue(rig.inbox.pending().isEmpty)
+    }
+
+    func testAC_BUBBLE_004_giveSendsNothingWithoutASessionOrWhileTheAgentIsBusy() async {
+        XCTAssertFalse(SharedImport.give(message: "m", shown: "s", to: nil))
+
+        let busy = SessionRig([.hold])
+        busy.session.send("What is on?")
+        let reached = await busy.fake.waitForRequests(1)
+        XCTAssertTrue(reached)
+        let before = busy.session.entries.count
+        XCTAssertFalse(SharedImport.give(message: "m", shown: "s", to: busy.session))
+        XCTAssertEqual(busy.session.entries.count, before)
+        XCTAssertEqual(busy.fake.requests.count, 1)
+        await busy.session.newChat()
+
+        let free = SessionRig([.turn(Turns.text("Noted."))])
+        XCTAssertTrue(SharedImport.give(message: "the message", shown: "The line", to: free.session))
+        await free.session.settle()
+        XCTAssertEqual(free.session.userTexts, ["The line"])
+        XCTAssertEqual(free.session.history.first, .user("the message"))
     }
 }
