@@ -3,3 +3,4 @@
 // Use one space around the equals sign and no quotes.
 BESIR_PROXY_HOST = your-worker-host-here
 BESIR_APP_TOKEN = your-app-token-here
+BESIR_MAPS_IOS_KEY = your-ios-maps-key-here
