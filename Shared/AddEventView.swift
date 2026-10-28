@@ -70,6 +70,13 @@ struct AddEventView: View {
                         EditCardView(card: card, busy: saving, actions: actions,
                                      chrome: EditCardChrome(header: nil, confirmTitle: nil))
                     }
+                    ForEach(Array(routeWarnings.enumerated()), id: \.offset) { _, text in
+                        Label(text, systemImage: "exclamationmark.triangle")
+                            .font(.caption).foregroundStyle(Theme.warn)
+                    }
+                    if showsGoogleMark {
+                        GoogleMapsAttribution()
+                    }
                     // 카드 아래 화면 소유 재계산 — 아이콘 + .help만으로는 iOS VoiceOver에서 이름이
                     // 없는 버튼이어서 글자 라벨을 얻었다(REQ-022(d)).
                     if hasTimeRow {
@@ -214,6 +221,23 @@ struct AddEventView: View {
     /// `if selectedPlace != nil && originPlace != nil` 조건부 섹션이 줄 멤버십으로 사는 자리다.
     private var hasTimeRow: Bool {
         card?.fields.contains { $0.key == "arrival_iso" } ?? false
+    }
+
+    /// The mode chosen on the card (transit until one is picked), read the same way `syncFieldExtras` reads it.
+    private var chosenMode: TransportMode {
+        card?.fields.first(where: { $0.key == "mode" })?.chosen.flatMap(TransportMode.init(rawValue:)) ?? .transit
+    }
+
+    /// The strings Google returned with the chosen walking or bicycling route, exactly as returned.
+    /// No other mode shows any, and the screen adds no wording of its own.
+    private var routeWarnings: [String] {
+        guard chosenMode == .walk || chosenMode == .bicycle else { return [] }
+        return estimates[chosenMode]?.warnings ?? []
+    }
+
+    /// Google requires its mark under results shown without a Google map; shown while any estimate holds a time.
+    private var showsGoogleMark: Bool {
+        estimates.values.contains { $0.isAvailable }
     }
 
     private func ensureGatedRows() {
