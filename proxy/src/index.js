@@ -3,7 +3,9 @@
 //   POST /places  -> Google Places API (New) Text Search
 //   POST /routes  -> Google Routes API computeRoutes
 //   POST /vision  -> Baseten Muse Spark Open: one image in, {title, time, place, confidence} out
+//   POST /booking -> simulated table-booking partner (no upstream, no storage)
 import { handleVision } from "./vision.js";
+import { handleBooking } from "./booking.js";
 
 const META_RESPONSES_URL = "https://api.meta.ai/v1/responses";
 const PLACES_URL = "https://places.googleapis.com/v1/places:searchText";
@@ -102,6 +104,7 @@ export default {
       case "/routes":
         return handleGoogle(request, env, ROUTES_URL);
       case "/vision": return handleVision(request, env, { json });
+      case "/booking": return handleBooking(request, { json });
       default:
         return json(404, { error: "not_found" });
     }

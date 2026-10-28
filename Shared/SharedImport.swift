@@ -34,8 +34,8 @@ final class SharedImport: ObservableObject {
     private let now: () -> Date
     /// Set before the pass first waits and cleared on every exit, so overlapping triggers cannot take the same item twice.
     private var inFlight = false
-    /// The composed message of an item whose hand-off was refused, so the retry does not call `/vision` again.
-    private var kept: [UUID: String] = [:]
+    /// The message and the shown line of an item whose hand-off was refused, so the retry does not call `/vision` again.
+    private var kept: [UUID: (message: String, shown: String)] = [:]
     /// The flow of an item whose hand-off was refused, so its retry joins the same flow.
     private var flows: [UUID: UUID] = [:]
     private let connections: ConnectionLog
@@ -54,13 +54,16 @@ final class SharedImport: ObservableObject {
     }
 
     /// One pass handles at most one item. `canHand` says whether the agent can take a message right now; `hand` gives it the
-    /// message and says whether it was accepted.
-    func pass(vision: VisionReading, canHand: () -> Bool, hand: (String) -> Bool) async {
+    /// message and the short line the chat shows for it, and says whether they were accepted.
+    func pass(vision: VisionReading, canHand: () -> Bool, hand: (_ message: String, _ shown: String) -> Bool) async {
         guard !inFlight else { return }
         inFlight = true
         defer { inFlight = false; isReading = false }
         guard canHand(), let item = inbox.pending(now: now()).first else { return }
-        if let message = kept[item.id] { deliver(message, for: item, flow: flows[item.id] ?? ConnectionLog.beginFlow(), hand: hand); return }
+        if let held = kept[item.id] {
+            deliver(held.message, shown: held.shown, for: item, flow: flows[item.id] ?? ConnectionLog.beginFlow(), hand: hand)
+            return
+        }
 
         let flow = ConnectionLog.beginFlow()
         let caption = SharedMessage.classify(item.text)
@@ -68,7 +71,9 @@ final class SharedImport: ObservableObject {
             switch caption {
             case .text:
                 noteShare("Text shared", .ok, item, flow)
-                if case .message(let message) = SharedMessage.compose(fields: nil, text: item.text) { deliver(message, for: item, flow: flow, hand: hand) }
+                if case .message(let message) = SharedMessage.compose(fields: nil, text: item.text) {
+                    deliver(message, shown: SharedMessage.shownLine(fields: nil), for: item, flow: flow, hand: hand)
+                }
             case .link:
                 noteShare("Link shared", .ok, item, flow)
                 finish(item, line: SharedLine.linkOnly)
@@ -97,7 +102,9 @@ final class SharedImport: ObservableObject {
         case .success(let fields):
             noteRead(nil, flow)
             if fields.isEmpty { finish(item, line: SharedLine.nothingFound); return }
-            if case .message(let message) = SharedMessage.compose(fields: fields, text: item.text) { deliver(message, for: item, flow: flow, hand: hand) }
+            if case .message(let message) = SharedMessage.compose(fields: fields, text: item.text) {
+                deliver(message, shown: SharedMessage.shownLine(fields: fields), for: item, flow: flow, hand: hand)
+            }
         }
     }
 
@@ -128,18 +135,27 @@ final class SharedImport: ObservableObject {
     }
 
     /// The flow is on offer to the log only while `hand` runs, so the agent's packets for this message join it.
-    private func deliver(_ message: String, for item: SharedInbox.Item, flow: UUID, hand: (String) -> Bool) {
+    private func deliver(_ message: String, shown: String, for item: SharedInbox.Item, flow: UUID,
+                         hand: (_ message: String, _ shown: String) -> Bool) {
         connections.offerFlow(flow)
-        let accepted = hand(message)
+        let accepted = hand(message, shown)
         connections.withdrawOffer()
         if accepted {
             inbox.remove(item.id)
             kept[item.id] = nil
             flows[item.id] = nil
         } else {
-            kept[item.id] = message
+            kept[item.id] = (message, shown)
             flows[item.id] = flow
         }
+    }
+
+    /// The one place that decides what a share puts into the chat: the model gets `message`, the chat draws `shown`.
+    /// Sends nothing and answers false when there is no session or it cannot take a message now.
+    static func give(message: String, shown: String, to session: AgentSession?) -> Bool {
+        guard let session, session.canSend else { return false }
+        session.send(message, shown: shown)
+        return true
     }
 
 #if DEBUG
