@@ -276,6 +276,46 @@ final class CalendarMirrorTests: XCTestCase {
         XCTAssertEqual(fake.createCalls, 1)   // ... so a new event is written
     }
 
+    func testAC_APPLECAL_005_RemovedActivityRemovesItsEventAndLink() async {
+        let fake = FakeCalendarBackend()
+        let (mirror, url) = makeMirror(fake)
+        let a = activity("Standup")
+        await run(mirror, [a])
+        XCTAssertEqual(fake.createCalls, 1)
+        XCTAssertEqual(fake.events.count, 1)
+        XCTAssertEqual(CalendarTestSupport.loadFile(url)?.links.count, 1)
+
+        await run(mirror, [])   // the activity is gone from the list
+        XCTAssertEqual(fake.removeCalls, 1)
+        XCTAssertTrue(fake.events.isEmpty)
+        XCTAssertEqual(CalendarTestSupport.loadFile(url)?.links.count, 0)   // saved to disk, not only in memory
+        XCTAssertEqual(mirror.status, .ok)
+    }
+
+    func testAC_APPLECAL_005_SuccessfulUpdateRefreshesTheLinkSignature() async {
+        let fake = FakeCalendarBackend()
+        let (mirror, url) = makeMirror(fake)
+        var a = activity("Standup")
+        await run(mirror, [a])
+        let created = CalendarTestSupport.loadFile(url)?.links[a.id.uuidString]
+        XCTAssertEqual(created?.signature, CalendarDraft(a))
+
+        a.title = "Daily standup"
+        await run(mirror, [a])
+        XCTAssertEqual(fake.updateCalls, 1)
+        XCTAssertEqual(fake.createCalls, 1)   // the same event was changed, none was added
+        XCTAssertEqual(fake.events[created?.eventId ?? ""]?.title, "Daily standup")
+        let updated = CalendarTestSupport.loadFile(url)?.links[a.id.uuidString]
+        XCTAssertEqual(updated?.eventId, created?.eventId)
+        XCTAssertEqual(updated?.signature, CalendarDraft(a))   // the new values, on disk
+        XCTAssertEqual(mirror.status, .ok)
+
+        // With the signature refreshed the activity reads as unchanged: a further pass writes nothing.
+        await run(mirror, [a])
+        XCTAssertEqual(fake.updateCalls, 1)
+        XCTAssertEqual(fake.createCalls, 1)
+    }
+
     // MARK: AC-006 one pass at a time
 
     func testAC_APPLECAL_006_QueuedRequestsRunAsOneNewestPass() async {
