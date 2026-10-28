@@ -1,6 +1,32 @@
-# besir — any input, one plan
+# besir — the app that connects your apps
 
-An iOS planning agent that turns screenshots, Instagram posts and camera snaps into schedules, departure alarms and meal plans, powered by Meta Muse Spark.
+An iOS planning agent, powered by Meta Muse Spark, that sits between the apps on your phone. What you find in one app becomes a plan, and the plan is carried to the next app for you.
+
+## Why besir: connecting apps
+
+Google connected websites. Facebook and Instagram connected people. **besir connects the apps on your phone.**
+
+Today a plan is spread across apps: a festival you saw on Instagram, a restaurant you found on a map, a booking in a reservation app, the time in your calendar. You copy and paste between them yourself. besir is the layer in the middle: it reads what you share, turns it into a plan with Muse Spark, and hands each piece to the app that needs it, filled in so that you only check it and confirm.
+
+Three principles guide every connection:
+
+- **Convenience** — besir fills in the details (time, place, travel time, party size); the user's only job is to confirm.
+- **Your apps stay your apps** — besir does not replace the apps you already use, so there is no new service to sign up for and no habit to give up. Instead it connects them, even apps from fields that seem to have nothing in common, so that the whole plan can be managed from one place.
+- **The user stays in control** — nothing is saved or sent to another app until the user taps Confirm, and besir only receives what the user chooses to share (no scraping).
+
+Not every app offers an API or MCP server for this, so besir carries data in one common shape — which app it came from, which app it goes to, what it is and its status — whatever the app on the other side supports.
+
+As an MVP, besir starts with one everyday scenario — an event you came across, a place to eat nearby, a booking and the time in your calendar — and connects the few apps that scenario needs. Each app connected later adds to what the others can do, so the value of besir grows with every new connection. The table below shows where each connection stands today.
+
+| Connection | Direction | Status |
+|---|---|---|
+| Instagram post or screenshot → besir, through the iOS share sheet | in | built for screenshots and photos; an Instagram post shares only its link, which besir does not open |
+| Image → Muse Spark Open, read into a title, time and place | in | built |
+| besir ↔ Google Places and Routes | both ways | built |
+| Muse Spark agent → besir schedule, through tool calls the user confirms | in | built |
+| besir → Apple Calendar | out | planned |
+| besir → a reservation app, filled in from the plan, and the booking back into besir | round trip | planned, with a simulated partner app clearly labeled *Simulated* |
+| besir → budget and health apps (what was spent, where and when) | out | roadmap |
 
 ## Pre-existing code (before the hackathon kickoff — Oct 26, 2026, 12:00 PM ET)
 
@@ -46,6 +72,9 @@ Each merged unit of work gets one line below, in the form "what was newly built 
 - **Image reading route** — the proxy Worker has a new `/vision` route that sends one image to Muse Spark Open and returns only a title, a time, a place and a confidence; the model key is held only as a Worker secret, and one real call with a synthetic poster came back with all three fields read correctly; accuracy on other images and on large images is not proven, and the app is not wired to it yet — [`78642ec`](https://github.com/paul8004-lee/besir_global/commit/78642ec814e9952a27b5832a04616d18a8ebc666)
 - **Google place search** — every place search in the app (typed searches, nearby chips and the meal sheet's origin and destination) now goes to Google Places through the proxy Worker instead of Kakao and MapKit, repeated place names such as several "Starbucks" branches show as separate results, the device location is passed to the searches, and the Google Maps mark appears once under each of the five result lists in Light and Dark; 34 new unit tests (146 in total) and one live check of each search kind (10 and 20 results) passed, and the simulator walk passed except that the offline path was not tried on a device (unit tests only); route lookups still use the earlier service until the next card replaces them — [`5ed7598`](https://github.com/paul8004-lee/besir_global/commit/5ed7598699c8ef8460eb1115604b4370154f1f47)
 - **Agent reply polish** — the chat no longer shows the short preface bubbles the model writes before a tool call, shows a status line instead of an error when the chat is closed in the middle of a reply, and the agent instructions now ask for plain text, 12-hour times and no event ids in replies; the message field grows up to five lines, Return adds a newline and the Send button is the only way to send; 17 new unit tests, a 12-call live check of the reply style and a simulator walk of the chat rows passed, while the hardware Return key was not verified — [`bfacd61`](https://github.com/paul8004-lee/besir_global/commit/bfacd6153c8dbfe4a00d47842ef54f2d121d6a2f)
+- **Google travel times** — travel times for car, transit, walk and bicycle now come from Google Routes through the proxy Worker instead of Kakao, a transit route shows its steps in English with one row for each stretch of walking, and the Google Maps mark and any walking or bicycling warnings from Google appear on the event detail screen; 52 new unit tests (198 in total), one live call for each mode and a simulator walk of the iPhone detail screens passed, while the Add Event screen that shows these values exists only on the Mac and was checked by unit tests and code reading — [`2619c40`](https://github.com/paul8004-lee/besir_global/commit/2619c409cd3e165dca8d211a8aac984b534fd7e1)
+- **Share to event** — a screenshot or photo shared to besir from the iOS share sheet is queued by the share extension, shrunk, read by Muse Spark Open through the Worker's `/vision` route into a title, a time and a place, and handed to the agent as data, which shows an Add event card the user confirms; one image is read per pass; 49 new unit tests, a simulator walk with one real image read, and an install on an iPhone with a Photos share that ended in a confirmed event passed, while reading accuracy on other images is not proven and a failure while the chat is open is not yet shown to the user — [`46cf9d8`](https://github.com/paul8004-lee/besir_global/commit/46cf9d89b825337ae564a45d81a39b27e004f6e5)
+- **Chat freeze fix** — sending a multi-line message into a conversation that already fills the screen no longer freezes the app: the chat now jumps to the newest message instead of sliding there; the freeze was reproduced 4 of 4 times by a UI test before the change and 0 times in 3 long runs (186 sends) after it, and a by-hand check with the real Worker passed 3 of 3; 264 unit tests passed on the merged code, while the exact layout cause is not proven and no committed test covers it — [`b4d52d5`](https://github.com/paul8004-lee/besir_global/commit/b4d52d5f978f2697cde60d2dc69ad31f6c7bab87)
 
 Some baseline files are edited in place, only for two reasons: the English localization of the app UI, and the split of the app and App Group identifiers from the earlier app. Both are listed as lines above when they land. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
@@ -54,4 +83,4 @@ Some baseline files are edited in place, only for two reasons: the English local
 - **be healthy sir** — fit workouts into the free time between plans
 - **be fun sir** — suggest leisure and events that fit the day's schedule
 - **be rich sir** — track spending tied to each plan
-- **External integrations** — Apple Health, Ticketmaster, Plaid, and others
+- **More connections** — real partner apps in place of the simulated reservation partner, and outgoing records to budget and health apps (Apple Health, Plaid, Ticketmaster and others), each one confirmed by the user

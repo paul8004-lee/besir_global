@@ -25,7 +25,8 @@ struct EventDetailView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var routeSegments: [RouteSegment] = []
+    /// The strings Google returned with the walking or bicycling route of this event, in its order.
+    @State private var routeWarnings: [String] = []
     @State private var transitSteps: [TransitStep] = []
     /// 단계 분 합으로 설명되지 않는 "그 외" 분(첫·끝 도보·대기). 값은 변환 함수가 정하고(N ≥ 1일 때만)
     /// 화면은 그리기만 한다 — 여기서 다시 빼면 같은 계산이 두 곳에 생긴다(계약 5).
@@ -69,6 +70,16 @@ struct EventDetailView: View {
                     .accessibilityLabel("\(event.destination.name) map")
 
                 departureCard
+
+                ForEach(Array(shownWarnings.enumerated()), id: \.offset) { _, text in
+                    Label(text, systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(Theme.warn)
+                }
+
+                // The departure card shows a Google travel time for every mode; the transit route card carries its own mark.
+                if event.mode != .transit, event.departureDate != nil, event.travelSeconds != nil {
+                    GoogleMapsAttribution()
+                }
 
                 transitItinerary
 
@@ -117,36 +128,35 @@ struct EventDetailView: View {
                      destinationName: event.destination.name)
     }
 
+    /// Warnings are shown for walking and bicycling events only, and only the strings Google returned.
+    private var shownWarnings: [String] {
+        event.mode == .walk || event.mode == .bicycle ? routeWarnings : []
+    }
+
     private func loadTransitPath() async {
-        routeSegments = []
+        routeWarnings = []
         transitSteps = []
         transitExtraMinutes = nil
         transitFailure = nil
         guard let origin = originCoord else { return }
-        switch event.mode {
-        case .transit:
+        switch DirectionsService.detailLookup(for: event.mode) {
+        case .transitPlan:
             // 프록시 유무는 여기서 가르지 않는다 — 서비스가 네트워크 없이 `.notConfigured`를 돌려주므로
             // 가드를 두면 '설정 필요'가 이 화면에 닿지 않고 안내 블록이 말없이 사라진다(REQ-020).
             let plan = await store.directions.transitPlan(from: origin, to: destCoord)
             // 취소된 조회는 에러가 아니라 빈 결과로 돌아온다(서비스의 catch가 값 없음으로 바꾼다) — await 뒤
             // 재확인 없이 쓰면 옛 조회의 빈 결과가 새 조회의 결과를 덮는다(setLookup과 같은 규율).
             guard !Task.isCancelled else { return }
-            routeSegments = plan.segments
             transitSteps = plan.steps
             transitExtraMinutes = plan.extraMinutes
             transitFailure = plan.failure
-        case .car:
-            let segments = await store.directions.carRouteSegments(from: origin, to: destCoord)
+        case .estimateForWarnings:
+            // One estimate whose only use here is the warnings Google returns with walking and bicycling routes.
+            let estimate = await store.directions.estimate(event.mode, from: origin, to: destCoord)
             guard !Task.isCancelled else { return }
-            routeSegments = segments
-        case .walk:
-            let segments = await store.directions.walkRouteSegments(from: origin, to: destCoord)
-            guard !Task.isCancelled else { return }
-            routeSegments = segments
-        case .bicycle:
-            let segments = await store.directions.bicycleRouteSegments(from: origin, to: destCoord)
-            guard !Task.isCancelled else { return }
-            routeSegments = segments
+            routeWarnings = estimate.warnings
+        case .none:
+            break
         }
     }
 
@@ -254,11 +264,7 @@ struct EventDetailView: View {
                         .frame(width: 26, height: 26)
                 }
 
-                // 카카오가 출발 시각을 받는지·시간표 기준인지 확인하지 못했다 — 실시간도 평균도
-                // 단정하지 않고 출처만 밝힌다.
-                Text("카카오 길찾기 기준 예상 경로예요.")
-                    .font(.caption2).foregroundStyle(Theme.faint)
-                    .padding(.top, 8)
+                GoogleMapsAttribution()
             }
             .padding(18)
             .background(Theme.raised, in: RoundedRectangle(cornerRadius: Theme.radius))

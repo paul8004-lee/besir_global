@@ -41,6 +41,8 @@ struct RootView: View {
     // @State optional as nil (a blank sheet); the holder is the same object in every copy.
     @State private var chatHolder = AgentChatHolder()
     @State private var showingChat = false
+    @StateObject private var shareImport = SharedImport()
+    @Environment(\.scenePhase) private var scenePhase
 
     /// 로비 맨 위 줄의 besir 로고와 설정 톱니는 한 줄에 나란히 서지만 틀 크기는 따로 잡는다 — 로고(BesirMark)는 틀의 가로 약
     /// 88%·세로 약 85%만 칠하고 톱니는 틀을 거의 다 채워서, 같은 틀이면 톱니 잉크가 5~6pt 커 보인다. 틀 34·30이면 잉크가 둘 다 30pt 안팎으로
@@ -76,6 +78,25 @@ struct RootView: View {
                 .padding(.bottom, FloatingCircle.inset)
             }
         }
+        .overlay { if shareImport.isReading { ProgressView().controlSize(.large) } }
+        .alert(shareImport.alertLine ?? "", isPresented: Binding(get: { shareImport.alertLine != nil },
+                                                                 set: { if !$0 { shareImport.alertLine = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
+        .task { await runShareImport() }
+        .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await runShareImport() } } }
+        .onChange(of: showingChat) { _, showing in if !showing { Task { await runShareImport() } } }
+    }
+
+    /// One pass over the share queue: one item per pass, the agent gets only the composed text (SPEC-SHARE-001).
+    private func runShareImport() async {
+        let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
+        await shareImport.pass(vision: client, canHand: { chatHolder.session?.canSend ?? true }, hand: { text in
+            openChat()
+            guard let session = chatHolder.session, session.canSend else { return false }
+            session.send(text)
+            return true
+        })
     }
 
     private func openChat() {
