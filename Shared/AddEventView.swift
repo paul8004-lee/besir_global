@@ -339,7 +339,7 @@ struct AddEventView: View {
             // 안 하면 켤 때 경고가 끝까지 안 뜨고 끌 때 경고가 남는다(두 방향을 이 호출이 다 닫는다).
             syncFieldExtras()
         case "origin_query":
-            if value == Self.hereMarker, location.currentLocation == nil {
+            if value == Self.hereMarker, location.realFixLocation == nil {
                 // 위치를 아직 모르는 동안엔 고른 값으로 남기지 않는다 — chosen이 있으면 isReady가
                 // 풀려 저장 버튼이 열리는데 좌표는 없어 save()가 조용히 아무 일도 안 하게 된다.
                 // 원본은 제출 판정 식으로 이 창을 잠갔고, 여기서는 미고름으로 같은 잠금을 낸다.
@@ -466,7 +466,7 @@ struct AddEventView: View {
 
     /// "현재 위치" 칩. 좌표가 이미 있으면 그 자리에서 확정하고, 아니면 위치를 얻을 때까지 기다린다.
     private func useCurrentLocationAsOrigin() {
-        if let c = location.currentLocation {
+        if let c = location.realFixLocation {
             confirmCurrentLocationAsOrigin(c)
         } else {
             location.useCurrentLocation()
@@ -486,7 +486,7 @@ struct AddEventView: View {
             syncFieldExtras()
             return
         }
-        if location.currentLocation == nil { location.useCurrentLocation() }
+        if location.realFixLocation == nil { location.useCurrentLocation() }
         // 대기 시한은 LocationManager의 측위 시한에서 파생한다(계약 5: 같은 값이 두 곳에 살지
         // 않는다) — 여기가 5초인데 측위가 8초까지 기다리면 5~8초에 오는 위치가 빈 출발지 줄을
         // 채우지 못했다(t11 sync N5). +1초는 시한 직후에 도착하는 값을 받는 여유고, max(5, ·)는
@@ -496,7 +496,7 @@ struct AddEventView: View {
             // sleep은 취소되면 즉시 반환한다 — 대기가 태깅돼 취소가 실제로 닿게 된 지금, 재확인
             // 없이 돌면 0.2초 간격을 잃고 폴링이 빠르게 돈다.
             if Task.isCancelled { break }
-            if let c = location.currentLocation {
+            if let c = location.realFixLocation {
                 confirmCurrentLocationAsOrigin(c)
                 return
             }
