@@ -37,6 +37,22 @@ struct FullSirView: View {
     /// 일정으로 등록하려고 고른 식당.
     @State private var scheduling: NearbyPlace?
 
+    /// Bumps on every base change; an answer that comes back after a bump belongs to an earlier base and is dropped.
+    @State private var baseEpoch = 0
+    /// A search was on screen when the base lost its coordinate; it runs once when a base with a coordinate is next chosen.
+    @State private var searchWaitsForBase = false
+
+    /// The user's choice of base: another Picker entry, or the Search Location field gaining or losing its place.
+    /// A moving Current Location, a renamed place or a deleted event are not base changes.
+    private struct BaseKey: Hashable {
+        let basis: Basis
+        let place: Place?
+    }
+
+    private var baseKey: BaseKey {
+        BaseKey(basis: basis, place: basis == .custom ? customPlace : nil)
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
@@ -68,6 +84,7 @@ struct FullSirView: View {
             .sheet(item: $scheduling) { item in
                 MealScheduleSheet(target: item) { scheduling = nil }
             }
+            .onChange(of: baseKey) { baseChanged() }
         }
         #if os(macOS)
         .frame(minWidth: 620, minHeight: 640)
@@ -265,16 +282,39 @@ struct FullSirView: View {
         return selectedQuick == "Cafe" ? .cafe : .restaurant
     }
 
+    // @MX:NOTE: The base changed. No row of the old base may stay under the new name, so the list is cleared
+    // first. A search that had run, is running or was waiting is repeated once for the new base with the chip,
+    // keyword and sort selected now; a base without a coordinate shows nothing and keeps the search waiting.
+    // A search that never ran stays unrun. `baseEpoch` makes `runSearch()` drop the answer of an older base.
+    private func baseChanged() {
+        baseEpoch += 1
+        guard searched || searching || searchWaitsForBase else { return }
+        results = []
+        if basisCoordinate != nil {
+            searchWaitsForBase = false
+            searching = true
+            Task { await runSearch() }
+        } else {
+            searched = false
+            searching = false
+            searchWaitsForBase = true
+        }
+    }
+
     private func runSearch() async {
         guard let center = basisCoordinate else { return }
+        let epoch = baseEpoch
+        searchWaitsForBase = false
         searching = true
         status = ""
-        results = await store.placeSearch.nearbyPlaces(category: searchCategory,
-                                                       keyword: keyword,
-                                                       near: center,
-                                                       radiusMeters: 1500,
-                                                       sort: sort,
-                                                       limit: 10)
+        let found = await store.placeSearch.nearbyPlaces(category: searchCategory,
+                                                         keyword: keyword,
+                                                         near: center,
+                                                         radiusMeters: 1500,
+                                                         sort: sort,
+                                                         limit: 10)
+        guard epoch == baseEpoch else { return }
+        results = found
         searching = false
         searched = true
     }
