@@ -220,7 +220,6 @@ final class AgentSession: ObservableObject {
     private func begin(_ clean: String, shown: String?, cap: Int) {
         let line = shown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         flow = connections.takeOfferedFlow() ?? ConnectionLog.beginFlow()
-        toolbox.currentFlow = flow
         history.append(.user(clean))
         entries.append(AgentLogEntry(kind: .user(line.isEmpty ? clean : line)))
         requestCap = cap

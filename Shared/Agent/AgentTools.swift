@@ -401,8 +401,6 @@ final class AgentToolbox {
     private(set) var extraCheckGranted = false
     /// The next plan handle number; it counts up for the session, so an old handle never names a new check.
     private var nextPlanNumber = 1
-    /// The flow of the message being served, set by the session; the Routes lookups of a check carry it.
-    var currentFlow: UUID?
 
     /// Starts a plan turn: the counters and the stored checks of an earlier turn are gone.
     func beginDayPlan(_ context: DayPlanContext) {
@@ -457,7 +455,7 @@ final class AgentToolbox {
             case .search: return try search(values, flow: flow)
             case .travel: return try travel(values, flow: flow)
             case .booking: return try book(values)
-            case .checkDay: return try checkDayPlan(values)
+            case .checkDay: return try checkDayPlan(values, flow: flow)
             case .showDay: return try showDayPlan(values)
             }
         } catch {
@@ -705,7 +703,7 @@ final class AgentToolbox {
 
     /// Gate, then the Routes lookups one after the other, then the stored check. The numbers are the app's: a leg whose
     /// lookup failed, was cancelled or fell beyond the cap simply has no route and stays unchecked.
-    private func checkDayPlan(_ values: [String: String]) throws -> AgentToolOutcome {
+    private func checkDayPlan(_ values: [String: String], flow: UUID?) throws -> AgentToolOutcome {
         guard let context = dayPlan else { throw Rejection(AgentDayPlan.Say.notInPlanTurn) }
         guard checks.count < AgentDayPlan.checksPerTurn + (extraCheckGranted ? 1 : 0) else {
             throw Rejection(AgentDayPlan.Say.checksUsed)
@@ -729,7 +727,7 @@ final class AgentToolbox {
                 guard let origin = stops[pair.from - 1].place, let destination = stops[pair.to - 1].place else { continue }
                 let estimate = await service.estimate(
                     mode, from: CLLocationCoordinate2D(latitude: origin.latitude, longitude: origin.longitude),
-                    to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude), flow: currentFlow)
+                    to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude), flow: flow)
                 guard let seconds = estimate.duration else { continue }
                 routes[pair] = AgentRoute(mode: mode, seconds: seconds, origin: origin, destination: destination,
                                           warnings: estimate.warnings, createdAt: now())

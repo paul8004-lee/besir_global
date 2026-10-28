@@ -479,7 +479,6 @@ final class DayPlanToolTests: XCTestCase {
         XCTAssertTrue(session.session.sendPlan(message: "Plan my day. data", shown: nil, context: context))
         await session.session.settle()
         XCTAssertEqual(gate(), DayText.stopsFormat, "the plan turn is active after the hand-off")
-        XCTAssertNotNil(session.tools.currentFlow, "the turn's flow reaches the toolbox")
         await session.say("Thanks")
         XCTAssertEqual(gate(), DayText.notInPlanTurn, "the next message ends the plan turn")
         XCTAssertTrue(session.session.sendPlan(message: "Plan my day. data", shown: nil, context: context))
@@ -666,8 +665,7 @@ final class DayPlanToolTests: XCTestCase {
         _ = tools.registry.register([p2, p3])
         tools.beginDayPlan(DayPlanContext(mode: .car, events: [dayA()], checkWindowEnd: dayEnd))
         let flow = UUID()
-        tools.currentFlow = flow
-        let outcome = tools.handle(name: "check_day_plan", arguments: PlaceTurns.arguments(["stops": encoded(dayStops())]))
+        let outcome = tools.handle(name: "check_day_plan", arguments: PlaceTurns.arguments(["stops": encoded(dayStops())]), flow: flow)
         _ = await outcome.lookup?.run()
         await log.flush()
         let routePackets = log.packets.filter { $0.kind == .route }

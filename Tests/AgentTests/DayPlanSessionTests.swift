@@ -315,11 +315,11 @@ final class DayPlanSessionTests: XCTestCase {
                        [.share: 2, .imageRead: 2, .agentMessage: 6, .agentToolCall: 5, .route: 2, .placeSearch: 3])
         let flowed = packets.compactMap(\.flowID)
         XCTAssertEqual(Set(flowed).count, 1, "one flow for the whole tap")
-        XCTAssertEqual(flowed.count, 17, "share, image read, message, tool call and route packets all carry it")
-        // The baseline place-search packet has no flow parameter (PlaceSearch.swift is not t19's to edit), so the three
-        // searches stay outside it; nothing else may be outside.
-        XCTAssertTrue(packets.filter { $0.flowID == nil }.allSatisfy { $0.kind == .placeSearch })
-        XCTAssertEqual(ConnectionFlows.group(packets).first?.packets.count, 17)
+        XCTAssertEqual(flowed.count, 20, "share, image read, message, tool call, place search and route packets all carry it")
+        // t54 gave the chat agent's place searches the flow of their message, so nothing is outside the flow.
+        XCTAssertTrue(packets.allSatisfy { $0.flowID != nil })
+        XCTAssertEqual(ConnectionFlows.group(packets).first?.packets.count, 20)
+        XCTAssertEqual(ConnectionFlows.group(packets).count, 1)
     }
 
     // MARK: T53, T54
