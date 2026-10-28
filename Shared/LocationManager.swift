@@ -12,6 +12,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     @Published var lastError: String?
     /// 측위가 진행 중인지.
     @Published var isLocating = false
+    /// currentLocation이 IP 폴백이 만든 대략 위치인지. 진짜 측위가 오면 그쪽이 덮어쓴다.
+    @Published private(set) var isApproximate = false
 
     /// 사용자가 수동으로 지정한 출발지(있으면 현재 위치보다 우선).
     @Published var manualOrigin: Place?
@@ -54,10 +56,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
         // 이미 확보된 최신 위치가 있으면 즉시 사용 (재요청 시 콜백이 안 와 멈추는 문제 방지).
         if let loc = manager.location {
-            timeoutTask?.cancel()
-            isLocating = false
-            currentLocation = loc.coordinate
-            reverseGeocode(loc)
+            applyFix(loc)
             manager.startUpdatingLocation()   // 백그라운드 갱신(첫 콜백 후 자동 정지)
             return
         }
@@ -110,17 +109,41 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
                   let lat = (obj["latitude"] as? Double) ?? (obj["lat"] as? Double),
                   let lon = (obj["longitude"] as? Double) ?? (obj["lon"] as? Double) else { return }
             guard currentLocation == nil else { return }
-            currentLocation = CLLocationCoordinate2D(latitude: lat, longitude: lon)
-            isLocating = false
-            lastError = nil
             let region = (obj["region"] as? String) ?? (obj["regionName"] as? String)
-            let city = obj["city"] as? String
-            let name = Self.joinedApproxName(region: region, city: city)
-            currentPlaceName = name.isEmpty ? "Current Location (approx.)" : "\(name) (approx.)"
+            applyApproximate(latitude: lat, longitude: lon, region: region, city: obj["city"] as? String)
         } catch {
             // 폴백 실패 시 조용히 무시(상위에서 에러 메시지 처리)
         }
     }
+
+    /// 대략 위치를 현재 위치로 쓴다. isLocating을 내리므로, 이 뒤에 오는 권한 허용에서도 측위를
+    /// 시작할 수 있게 isApproximate를 남긴다(t39: 권한 대화상자가 8초 넘게 떠 있으면 폴백이 서울을
+    /// 넣고, 허용해도 측위가 시작되지 않아 서울이 세션 내내 남았다).
+    func applyApproximate(latitude: Double, longitude: Double, region: String?, city: String?) {
+        currentLocation = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        isApproximate = true
+        isLocating = false
+        lastError = nil
+        let name = Self.joinedApproxName(region: region, city: city)
+        currentPlaceName = name.isEmpty ? "Current Location (approx.)" : "\(name) (approx.)"
+    }
+
+    /// 진짜 측위를 받아들인다. 대략 위치의 이름은 새 이름이 올 때까지 남기지 않는다 — 역지오코딩이
+    /// 실패하면 새 좌표에 옛 "(approx.)" 이름이 붙어 남는다.
+    func applyFix(_ location: CLLocation) {
+        timeoutTask?.cancel()
+        if isApproximate {
+            currentPlaceName = nil
+            isApproximate = false
+        }
+        currentLocation = location.coordinate
+        lastError = nil
+        isLocating = false
+        reverseGeocode(location)
+    }
+
+    /// 권한이 허용됐을 때 측위를 시작해야 하는지. 측위 중이거나, 대략 위치로 버티는 중이면 시작한다.
+    var shouldStartUpdatesWhenAuthorized: Bool { isLocating || isApproximate }
 
     /// Joins region and city for the approximate name; writes the text once when both are exactly equal.
     static func joinedApproxName(region: String?, city: String?) -> String {
@@ -136,7 +159,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         Task { @MainActor in
             self.authorizationStatus = status
             if self.isAuthorized(status) {
-                if self.isLocating { manager.startUpdatingLocation() }
+                if self.shouldStartUpdatesWhenAuthorized { manager.startUpdatingLocation() }
             } else if status == .denied || status == .restricted {
                 self.isLocating = false
                 self.lastError = "Location permission was denied. Allow it in Settings."
@@ -147,12 +170,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
         Task { @MainActor in
-            self.timeoutTask?.cancel()
             manager.stopUpdatingLocation()
-            self.currentLocation = loc.coordinate
-            self.lastError = nil
-            self.isLocating = false
-            self.reverseGeocode(loc)
+            self.applyFix(loc)
         }
     }
 
