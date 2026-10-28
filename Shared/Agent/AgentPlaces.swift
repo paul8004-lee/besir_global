@@ -102,6 +102,11 @@ enum AgentPlaces {
         return AgentLookupOutput(result: result, showsGoogleData: true)
     }
 
+    /// The `search_places` answer for a search that failed: the places-unavailable text, no place, no Google data.
+    static func searchFailure() -> AgentLookupOutput {
+        AgentLookupOutput(result: placesUnavailable, showsGoogleData: false)
+    }
+
     /// The `get_travel_time` answer for a route; registers it. `leaveBy` is the app-computed `YYYY-MM-DDTHH:MM`.
     static func travelOutput(_ route: AgentRoute, leaveBy: String?, registry: inout AgentPlaceRegistry) -> AgentLookupOutput {
         guard let handle = registry.register(route) else {

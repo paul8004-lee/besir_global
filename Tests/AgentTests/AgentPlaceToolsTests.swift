@@ -480,30 +480,86 @@ final class AgentPlaceToolsTests: XCTestCase {
         XCTAssertTrue(rig.tools.registry.place("p1")?.name.unicodeScalars.contains { $0.value == 0x07 } ?? false)
     }
 
-    func testAGPLACE_SearchNoResultsAndFailureLookAlike() async {
+    func testPLACEFAIL_ToolAnswersUnavailableForFailureAndNoResultsForEmpty() async {
         // Positive control: a good answer registers places and shows Google data.
         let good = PlaceRig()
         let ok = await good.search("cafe")
         XCTAssertEqual(ok.status, "ok")
         XCTAssertTrue(ok.showsGoogleData)
 
-        let stubs: [(String, PlacesTransportStub)] = [
+        // An answer that came back with nothing in it: no_results.
+        var empties: [String] = []
+        let emptyStubs: [(String, PlacesTransportStub)] = [
             ("empty answer", PlaceStubs.places("places-empty")),
-            ("status 500", PlacesTransportStub.answering(status: 500, with: Data("{}".utf8))),
-            ("offline", PlacesTransportStub { _ in throw URLError(.notConnectedToInternet) }),
             ("undecodable", PlacesTransportStub.answering(with: Data("not json".utf8)))]
-        var texts: [String] = []
-        for (label, stub) in stubs {
+        for (label, stub) in emptyStubs {
             let rig = PlaceRig(places: stub)
             let reply = await rig.search("cafe")
             XCTAssertTrue(reply.isLookup, label)
             XCTAssertEqual(dictionary(reply), Text.noResults as NSDictionary, label)
             XCTAssertFalse(reply.showsGoogleData, label)
             XCTAssertEqual(rig.tools.registry.placeHandles, [], label)
-            texts.append(reply.text ?? "")
+            empties.append(reply.text ?? "")
         }
-        XCTAssertEqual(Set(texts).count, 1, "the four failures answer byte-equal")
-        XCTAssertEqual(texts.count, 4)
+        XCTAssertEqual(Set(empties).count, 1, "the two empty answers are byte-equal")
+
+        // A search that failed: unavailable, the text the app already holds for places.
+        var failures: [String] = []
+        let failingStubs: [(String, PlacesTransportStub)] = [
+            ("status 500", PlacesTransportStub.answering(status: 500, with: Data("{}".utf8))),
+            ("offline", PlacesTransportStub { _ in throw URLError(.notConnectedToInternet) })]
+        for (label, stub) in failingStubs {
+            let rig = PlaceRig(places: stub)
+            let reply = await rig.search("cafe")
+            XCTAssertTrue(reply.isLookup, label)
+            XCTAssertEqual(dictionary(reply), Text.placesUnavailable as NSDictionary, label)
+            XCTAssertFalse(reply.showsGoogleData, label)
+            XCTAssertEqual(rig.tools.registry.placeHandles, [], label)
+            failures.append(reply.text ?? "")
+        }
+        // No proxy: PlaceRig fixes its Places config, so this toolbox is built here with an unconfigured one.
+        let silent = PlacesTransportStub.answering(with: PlaceFixture.data("places-search-three"))
+        let clock = MutableClock(now: TestClock.date(TestClock.nowString))
+        let bare = AgentToolbox(store: EmptyStore.make(), now: { clock.now }, timeZone: { clock.zone },
+                                places: { PlaceSearch(config: AppConfig(), transport: silent.transport) })
+        guard case .lookup(let unconfigured) = bare.handle(name: "search_places", arguments: #"{"query":"cafe"}"#) else {
+            return XCTFail("search_places is a lookup")
+        }
+        let bareOutput = await unconfigured.run()
+        XCTAssertEqual(TestClock.object(bareOutput.result) as NSDictionary?, Text.placesUnavailable as NSDictionary)
+        XCTAssertFalse(bareOutput.showsGoogleData)
+        XCTAssertEqual(bare.registry.placeHandles, [])
+        XCTAssertEqual(silent.callCount, 0, "no proxy: the transport is never called")
+        failures.append(bareOutput.result)
+
+        XCTAssertEqual(Set(failures).count, 1, "the three failures answer byte-equal")
+        XCTAssertEqual(failures.count, 3)
+        XCTAssertNotEqual(failures.first, empties.first, "a failure no longer looks like an empty answer")
+
+        // A cancelled lookup keeps the base behaviour: the answer is dropped before it is encoded (L5).
+        let cancelledRig = PlaceRig(places: PlacesTransportStub.answering(status: 500, with: Data("{}".utf8)))
+        let cancelledReply = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await cancelledRig.search("cafe")
+        }.value
+        XCTAssertEqual(dictionary(cancelledReply), Text.noResults as NSDictionary)
+    }
+
+    func testPLACEFAIL_ResultForAFailureEchoesNothing() async {
+        let words = ["SECRET-BODY", "quota", "503"]
+        let body = Data(#"{"error":{"code":503,"message":"SECRET-BODY quota exceeded"}}"#.utf8)
+        let status = PlacesTransportStub.answering(status: 503, with: body)
+        let thrown = PlacesTransportStub { _ in throw NSError(domain: "SECRET-BODY", code: 503,
+                                                                userInfo: [NSLocalizedDescriptionKey: "quota"]) }
+        for (label, stub) in [("status 503", status), ("thrown", thrown)] {
+            let rig = PlaceRig(places: stub)
+            let reply = await rig.search("cafe")
+            XCTAssertEqual(reply.status, "unavailable", label)
+            let text = reply.text ?? ""
+            XCTAssertFalse(text.isEmpty, label)
+            for word in words { XCTAssertFalse(text.contains(word), "\(label): \(word)") }
+            XCTAssertEqual(dictionary(reply), Text.placesUnavailable as NSDictionary, label)
+        }
     }
 
     func testAGPLACE_SearchBiasFollowsTheDeviceOrigin() async {
