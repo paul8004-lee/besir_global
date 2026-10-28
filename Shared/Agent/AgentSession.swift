@@ -205,12 +205,15 @@ final class AgentSession: ObservableObject {
 
     // MARK: Entry points
 
-    func send(_ text: String) {
+    /// `text` is what the model gets. `shown`, when it is not blank, is what the chat draws instead (a share's short line);
+    /// it never enters `history` or a request.
+    func send(_ text: String, shown: String? = nil) {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend, !clean.isEmpty else { return }
+        let line = shown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         flow = connections.takeOfferedFlow() ?? ConnectionLog.beginFlow()
         history.append(.user(clean))
-        entries.append(AgentLogEntry(kind: .user(clean)))
+        entries.append(AgentLogEntry(kind: .user(line.isEmpty ? clean : line)))
         requestsThisMessage = 0
         googleDataThisMessage = false
         startRequest()
