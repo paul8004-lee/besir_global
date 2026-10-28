@@ -317,6 +317,12 @@ final class ConnectionLogTests: XCTestCase {
         XCTAssertEqual(grouped.count, 1)
         XCTAssertEqual(grouped[0].chain, [.besir, .museSpark, .besir, .museSpark])
         XCTAssertEqual(ConnectionFlows.chainText(grouped[0]), "besir → Muse Spark → besir → Muse Spark")
+
+        // Packets between the same two parties one after another add no hop.
+        let routes = UUID()
+        let four = (1...4).map { packet(routes, .besir, .googleRoutes, at: TimeInterval($0), kind: .route) }
+        XCTAssertEqual(ConnectionFlows.group(four)[0].chain, [.besir, .googleRoutes])
+        XCTAssertEqual(ConnectionFlows.chainText(ConnectionFlows.group(four)[0]), "besir → Google Routes")
     }
 
     func testCONNECT_T38_EmptyTextStatusWordsAndTheShareChain() {

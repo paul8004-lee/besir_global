@@ -322,8 +322,13 @@ enum ConnectionFlows {
         let flows = order.map { key -> (flow: ConnectionFlow, last: Int) in
             let members = buckets[key] ?? []
             var chain: [ConnectionParty] = []
-            for party in members.flatMap({ [$0.packet.from, $0.packet.to] }) where chain.last != party {
-                chain.append(party)
+            var previous: (from: ConnectionParty, to: ConnectionParty)?
+            for member in members {
+                let pair = (from: member.packet.from, to: member.packet.to)
+                // A packet between the same two parties as the one before it adds no hop (four route lookups, one line).
+                if let previous, previous == pair { continue }
+                previous = pair
+                for party in [pair.from, pair.to] where chain.last != party { chain.append(party) }
             }
             let flow = ConnectionFlow(id: key, packets: members.map(\.packet), chain: chain,
                                       latest: members.map(\.packet.at).max() ?? .distantPast)
