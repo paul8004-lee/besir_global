@@ -1,7 +1,8 @@
-// Build values for the Worker address and the app token. Both default to empty.
+// Build values for the Worker address, the app token and the Maps SDK key. All three default to empty.
 // Config/Local.xcconfig (git-ignored, see Local.xcconfig.example) overrides them when it exists.
 
 BESIR_PROXY_HOST =
 BESIR_APP_TOKEN =
+BESIR_MAPS_IOS_KEY =
 
 #include? "Local.xcconfig"
