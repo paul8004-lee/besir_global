@@ -122,6 +122,8 @@ struct TravelEstimate: Identifiable {
     var failure: TravelFailure? = nil
     /// The warning strings Google returned with the route, in its order. Only walking and bicycling routes carry any.
     var warnings: [String] = []
+    /// The route time without traffic conditions. Filled only by a live car lookup (a replan trigger).
+    var staticDuration: TimeInterval? = nil
 
     var id: String { mode.rawValue }
 

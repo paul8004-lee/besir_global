@@ -279,16 +279,37 @@ final class PlaceSearchTests: XCTestCase {
     }
 }
 
+/// Card t48: a location source with no CoreLocation behind it. It counts what the manager asks of it.
+@MainActor
+final class FakeLocationSource: LocationSource {
+    var authorizationStatus: CLAuthorizationStatus
+    var cachedLocation: CLLocation?
+    var distanceFilter: CLLocationDistance = 0
+    private(set) var requestCount = 0
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+
+    init(status: CLAuthorizationStatus) { authorizationStatus = status }
+
+    func requestWhenInUseAuthorization() { requestCount += 1 }
+    func startUpdatingLocation() { startCount += 1 }
+    func stopUpdatingLocation() { stopCount += 1 }
+}
+
 /// Card t39: an IP-based approximate origin must not outlive the real fix.
 @MainActor
 final class OriginLocationTests: XCTestCase {
     func testORIGIN_ApproximateStillStartsUpdatesWhenPermissionIsGranted() {
-        let lm = LocationManager()
-        XCTAssertFalse(lm.shouldStartUpdatesWhenAuthorized, "a fresh manager has nothing to start")
+        let source = FakeLocationSource(status: .notDetermined)
+        let lm = LocationManager(source: source, ipLookup: { nil }, nameResolver: { _ in nil }, waitSeconds: 0.05)
+        lm.handleAuthorization(.notDetermined)
+        XCTAssertEqual(source.startCount, 0, "a fresh manager has nothing to start")
         lm.applyApproximate(latitude: 37.5661369, longitude: 126.9783785, region: "Seoul", city: "Seoul")
         XCTAssertFalse(lm.isLocating, "the fallback ends the locating state")
         XCTAssertTrue(lm.isApproximate)
-        XCTAssertTrue(lm.shouldStartUpdatesWhenAuthorized, "granting permission after the fallback must start real positioning")
+        source.authorizationStatus = .authorizedWhenInUse
+        lm.handleAuthorization(.authorizedWhenInUse)
+        XCTAssertEqual(source.startCount, 1, "granting permission after the fallback must start real positioning")
     }
 
     func testORIGIN_RealFixReplacesApproximateCoordinateAndName() {
@@ -299,12 +320,477 @@ final class OriginLocationTests: XCTestCase {
         XCTAssertEqual(lm.currentLocation?.latitude, 37.7849)
         XCTAssertEqual(lm.currentLocation?.longitude, -122.4094)
         XCTAssertFalse(lm.isApproximate)
-        XCTAssertFalse(lm.shouldStartUpdatesWhenAuthorized, "a real fix needs no further start")
         XCTAssertNotEqual(lm.currentPlaceName, "Seoul (approx.)", "the approximate name must not stay on the real coordinate")
     }
 
     func testORIGIN_ApproximateNameJoinsRegionAndCity() {
         XCTAssertEqual(LocationManager.joinedApproxName(region: "Seoul", city: "Seoul"), "Seoul")
         XCTAssertEqual(LocationManager.joinedApproxName(region: "California", city: "San Francisco"), "California San Francisco")
+    }
+}
+
+// MARK: - Card t48: location permission flow
+
+/// An IP lookup that counts its calls. With `suspendFirst` the first call parks until `release`.
+final class IPLookupStub: @unchecked Sendable {
+    private let lock = NSLock()
+    private var calledCount = 0
+    private var parkedCount = 0
+    private var waiting: [CheckedContinuation<ApproximateLocation?, Never>] = []
+    private let answer: ApproximateLocation?
+    private let suspendFirst: Bool
+
+    init(answer: ApproximateLocation? = nil, suspendFirst: Bool = false) {
+        self.answer = answer
+        self.suspendFirst = suspendFirst
+    }
+
+    var calls: Int { lock.withLock { calledCount } }
+    /// Calls that are parked and ready to be released.
+    var parked: Int { lock.withLock { parkedCount } }
+
+    func lookup() async -> ApproximateLocation? {
+        let n = lock.withLock { () -> Int in
+            calledCount += 1
+            return calledCount
+        }
+        guard suspendFirst, n == 1 else { return answer }
+        return await withCheckedContinuation { c in
+            lock.withLock {
+                waiting.append(c)
+                parkedCount += 1
+            }
+        }
+    }
+
+    func release(_ value: ApproximateLocation?) {
+        let all = lock.withLock { () -> [CheckedContinuation<ApproximateLocation?, Never>] in
+            let taken = waiting
+            waiting = []
+            return taken
+        }
+        for c in all { c.resume(returning: value) }
+    }
+}
+
+/// A name lookup that follows a script: answer at once, or park until `release`.
+final class NameLookupStub: @unchecked Sendable {
+    enum Step { case answer(String?), suspend }
+
+    private let lock = NSLock()
+    private var script: [Step]
+    private var waiting: [CheckedContinuation<String?, Never>] = []
+    private var parkedCount = 0
+    private var cancelledAfterParking: [Bool] = []
+
+    init(_ script: [Step]) { self.script = script }
+
+    var parked: Int { lock.withLock { parkedCount } }
+    /// For each parked call, whether its task was cancelled when it was released.
+    var cancelledSeen: [Bool] { lock.withLock { cancelledAfterParking } }
+
+    func resolve(_ location: CLLocation) async -> String? {
+        let step = lock.withLock { () -> Step in script.isEmpty ? .answer(nil) : script.removeFirst() }
+        switch step {
+        case .answer(let name):
+            return name
+        case .suspend:
+            let name = await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
+                lock.withLock {
+                    waiting.append(c)
+                    parkedCount += 1
+                }
+            }
+            let cancelled = Task.isCancelled
+            lock.withLock { cancelledAfterParking.append(cancelled) }
+            return name
+        }
+    }
+
+    func release(_ name: String?) {
+        let all = lock.withLock { () -> [CheckedContinuation<String?, Never>] in
+            let taken = waiting
+            waiting = []
+            return taken
+        }
+        for c in all { c.resume(returning: name) }
+    }
+}
+
+/// Card t48: the permission flow, the IP guess that is never an origin, and the fresh position, driven through a
+/// fake location source. Nothing here touches CoreLocation, the network or the geocoder.
+@MainActor
+final class LocationPermissionTests: XCTestCase {
+    private let sf = CLLocation(latitude: 37.7849, longitude: -122.4094)
+    private let seoul = ApproximateLocation(latitude: 37.5661369, longitude: 126.9783785, region: "Seoul", city: "Seoul")
+    private let deniedText = "Location permission was denied. Allow it in Settings."
+    private let failureText = "Couldn't get your location. Check Settings → Location Services, or search for an origin yourself."
+
+    private struct Rig {
+        let lm: LocationManager
+        let source: FakeLocationSource
+        let ip: IPLookupStub
+        let names: NameLookupStub
+    }
+
+    private func makeRig(_ status: CLAuthorizationStatus, ip: IPLookupStub = IPLookupStub(),
+                         names: NameLookupStub = NameLookupStub([]), wait: TimeInterval = 0.05) -> Rig {
+        let source = FakeLocationSource(status: status)
+        let lm = LocationManager(source: source,
+                                 ipLookup: { await ip.lookup() },
+                                 nameResolver: { await names.resolve($0) },
+                                 waitSeconds: wait)
+        return Rig(lm: lm, source: source, ip: ip, names: names)
+    }
+
+    /// Polls every 10 ms until the condition holds or the deadline passes.
+    private func eventually(_ timeout: TimeInterval = 2, _ condition: () -> Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        return condition()
+    }
+
+    private func pause(_ seconds: TimeInterval) async {
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    private func grant(_ rig: Rig) {
+        rig.source.authorizationStatus = .authorizedWhenInUse
+        rig.lm.handleAuthorization(.authorizedWhenInUse)
+    }
+
+    private func holdSeoul(_ rig: Rig) {
+        rig.lm.applyApproximate(latitude: seoul.latitude, longitude: seoul.longitude, region: "Seoul", city: "Seoul")
+    }
+
+    // MARK: AU authorization and waits
+
+    func testLOCPERM_GrantAfterDenialStartsPositioning() {
+        let rig = makeRig(.denied)
+        rig.lm.useCurrentLocation()
+        XCTAssertNotNil(rig.lm.lastError)
+        XCTAssertFalse(rig.lm.isLocating)
+        grant(rig)
+        XCTAssertEqual(rig.source.startCount, 1)
+        XCTAssertTrue(rig.lm.isLocating)
+    }
+
+    func testLOCPERM_GrantAfterFailedIPLookupStartsPositioning() async {
+        let rig = makeRig(.notDetermined)
+        rig.lm.useCurrentLocation()
+        let ended = await eventually { !rig.lm.isLocating }
+        XCTAssertTrue(ended)
+        XCTAssertNil(rig.lm.currentLocation)
+        XCTAssertFalse(rig.lm.isApproximate)
+        let before = rig.source.startCount
+        grant(rig)
+        XCTAssertTrue(rig.lm.isLocating)
+        XCTAssertEqual(rig.source.startCount, before + 1)
+    }
+
+    func testLOCPERM_GrantAfterApproximateStartsPositioning() {
+        let rig = makeRig(.notDetermined)
+        holdSeoul(rig)
+        grant(rig)
+        XCTAssertEqual(rig.source.startCount, 1)
+        XCTAssertTrue(rig.lm.isLocating)
+        rig.lm.handleUpdate(sf)
+        XCTAssertFalse(rig.lm.isApproximate)
+        XCTAssertEqual(rig.lm.currentLocation?.latitude, sf.coordinate.latitude)
+        XCTAssertEqual(rig.lm.currentLocation?.longitude, sf.coordinate.longitude)
+    }
+
+    func testLOCPERM_GrantWithARealFixStartsNoWait() async {
+        let rig = makeRig(.authorizedWhenInUse)
+        rig.lm.handleUpdate(sf)
+        grant(rig)
+        XCTAssertFalse(rig.lm.isLocating)
+        await pause(0.15)
+        XCTAssertEqual(rig.ip.calls, 0)
+    }
+
+    func testLOCPERM_GrantArmsABoundedWait() async {
+        let rig = makeRig(.notDetermined, ip: IPLookupStub(answer: seoul))
+        grant(rig)
+        let done = await eventually { rig.ip.calls == 1 && rig.lm.isApproximate }
+        XCTAssertTrue(done)
+        XCTAssertEqual(rig.ip.calls, 1)
+        XCTAssertNotNil(rig.lm.currentLocation)
+        XCTAssertFalse(rig.lm.isLocating)
+    }
+
+    func testLOCPERM_BeginningTwiceKeepsOneWait() async {
+        let rig = makeRig(.notDetermined, ip: IPLookupStub(suspendFirst: true))
+        grant(rig)
+        grant(rig)
+        let parked = await eventually { rig.ip.parked == 1 }
+        XCTAssertTrue(parked)
+        await pause(0.1)
+        XCTAssertEqual(rig.ip.calls, 1, "a wait that was not cancelled would have called the lookup twice")
+        rig.ip.release(seoul)
+        let applied = await eventually { rig.lm.currentLocation != nil }
+        XCTAssertTrue(applied)
+        XCTAssertEqual(rig.lm.currentLocation?.latitude, seoul.latitude)
+        XCTAssertEqual(rig.lm.currentPlaceName, "Seoul (approx.)")
+    }
+
+    func testLOCPERM_WaitEndWithApproximateHeldClearsIsLocating() async {
+        let rig = makeRig(.authorizedWhenInUse)
+        holdSeoul(rig)
+        rig.lm.useCurrentLocation()
+        XCTAssertTrue(rig.lm.isLocating)
+        let ended = await eventually { !rig.lm.isLocating }
+        XCTAssertTrue(ended)
+        XCTAssertNil(rig.lm.lastError)
+        XCTAssertEqual(rig.ip.calls, 0)
+    }
+
+    func testLOCPERM_WaitEndWithNothingRunsIPLookupThenReportsFailure() async {
+        let rig = makeRig(.notDetermined)
+        rig.lm.useCurrentLocation()
+        let ended = await eventually { !rig.lm.isLocating }
+        XCTAssertTrue(ended)
+        XCTAssertEqual(rig.lm.lastError, failureText)
+    }
+
+    func testLOCPERM_DenialDiscardsApproximateAndStopsEverything() async {
+        let rig = makeRig(.authorizedWhenInUse)
+        holdSeoul(rig)
+        rig.lm.useCurrentLocation()
+        XCTAssertTrue(rig.lm.isLocating)
+        rig.source.authorizationStatus = .denied
+        rig.lm.handleAuthorization(.denied)
+        XCTAssertNil(rig.lm.currentLocation)
+        XCTAssertFalse(rig.lm.isApproximate)
+        XCTAssertNil(rig.lm.currentPlaceName)
+        XCTAssertFalse(rig.lm.isLocating)
+        XCTAssertGreaterThanOrEqual(rig.source.stopCount, 1)
+        XCTAssertEqual(rig.lm.lastError, deniedText)
+        await pause(0.15)
+        XCTAssertEqual(rig.ip.calls, 0)
+    }
+
+    func testLOCPERM_DenialKeepsARealFix() {
+        let rig = makeRig(.authorizedWhenInUse)
+        rig.lm.handleUpdate(sf)
+        rig.source.authorizationStatus = .denied
+        rig.lm.handleAuthorization(.denied)
+        XCTAssertEqual(rig.lm.currentLocation?.latitude, sf.coordinate.latitude)
+        XCTAssertEqual(rig.lm.currentLocation?.longitude, sf.coordinate.longitude)
+        XCTAssertFalse(rig.lm.isApproximate)
+        XCTAssertNotNil(rig.lm.lastError)
+    }
+
+    func testLOCPERM_IPAnswerAfterDenialIsDiscarded() async {
+        let rig = makeRig(.notDetermined, ip: IPLookupStub(suspendFirst: true))
+        rig.lm.useCurrentLocation()
+        let parked = await eventually { rig.ip.parked == 1 }
+        XCTAssertTrue(parked)
+        rig.source.authorizationStatus = .denied
+        rig.lm.handleAuthorization(.denied)
+        rig.ip.release(seoul)
+        await pause(0.1)
+        XCTAssertNil(rig.lm.currentLocation)
+        XCTAssertFalse(rig.lm.isApproximate)
+    }
+
+    func testLOCPERM_IPAnswerAfterRealFixIsDiscarded() async {
+        let rig = makeRig(.notDetermined, ip: IPLookupStub(suspendFirst: true))
+        rig.lm.useCurrentLocation()
+        let parked = await eventually { rig.ip.parked == 1 }
+        XCTAssertTrue(parked)
+        rig.lm.handleUpdate(sf)
+        rig.ip.release(seoul)
+        await pause(0.1)
+        XCTAssertEqual(rig.lm.currentLocation?.latitude, sf.coordinate.latitude)
+        XCTAssertEqual(rig.lm.currentLocation?.longitude, sf.coordinate.longitude)
+        XCTAssertFalse(rig.lm.isApproximate)
+    }
+
+    func testLOCPERM_IPLookupIsNotRunWhenDenied() async {
+        let rig = makeRig(.notDetermined)
+        rig.lm.useCurrentLocation()
+        XCTAssertTrue(rig.lm.isLocating)
+        rig.source.authorizationStatus = .denied
+        let ended = await eventually { !rig.lm.isLocating }
+        XCTAssertTrue(ended)
+        XCTAssertEqual(rig.ip.calls, 0)
+    }
+
+    func testLOCPERM_FailureWithALocationHeldWritesNoError() async {
+        let rig = makeRig(.authorizedWhenInUse)
+        holdSeoul(rig)
+        rig.lm.useCurrentLocation()
+        XCTAssertTrue(rig.lm.isLocating)
+        rig.lm.handleFailure(NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet))
+        XCTAssertNil(rig.lm.lastError)
+        XCTAssertFalse(rig.lm.isLocating)
+        await pause(0.15)
+        XCTAssertEqual(rig.ip.calls, 0)
+    }
+
+    func testLOCPERM_LocationUnknownFailureIsIgnored() {
+        let rig = makeRig(.authorizedWhenInUse)
+        rig.lm.useCurrentLocation()
+        XCTAssertTrue(rig.lm.isLocating)
+        rig.lm.handleFailure(CLError(.locationUnknown))
+        XCTAssertTrue(rig.lm.isLocating)
+        XCTAssertNil(rig.lm.lastError)
+    }
+
+    func testLOCPERM_IPAnswerAfterAReplacedWaitIsDiscarded() async {
+        let rig = makeRig(.notDetermined, ip: IPLookupStub(suspendFirst: true), wait: 1)
+        rig.lm.useCurrentLocation()
+        let parked = await eventually(3) { rig.ip.parked == 1 }
+        XCTAssertTrue(parked)
+        grant(rig)
+        rig.ip.release(seoul)
+        await pause(0.1)
+        XCTAssertNil(rig.lm.currentLocation)
+        XCTAssertFalse(rig.lm.isApproximate)
+        XCTAssertTrue(rig.lm.isLocating, "the newer wait is still armed")
+        XCTAssertNil(rig.lm.lastError)
+    }
+
+    // MARK: RF real fix and the places that commit an origin
+
+    func testLOCPERM_RealFixLocationIsNilForApproximate() {
+        let rig = makeRig(.notDetermined)
+        holdSeoul(rig)
+        XCTAssertNotNil(rig.lm.currentLocation)
+        XCTAssertNil(rig.lm.realFixLocation)
+    }
+
+    func testLOCPERM_RealFixLocationFollowsTheFix() {
+        let rig = makeRig(.authorizedWhenInUse)
+        XCTAssertNil(rig.lm.realFixLocation)
+        rig.lm.applyFix(sf)
+        XCTAssertEqual(rig.lm.realFixLocation?.latitude, sf.coordinate.latitude)
+        XCTAssertEqual(rig.lm.realFixLocation?.longitude, sf.coordinate.longitude)
+    }
+
+    func testLOCPERM_AvailablePlaceIgnoresApproximate() {
+        let rig = makeRig(.notDetermined)
+        holdSeoul(rig)
+        XCTAssertNil(PlaceLineResolve.availablePlace(rig.lm))
+        rig.lm.applyFix(sf)
+        let place = PlaceLineResolve.availablePlace(rig.lm)
+        XCTAssertEqual(place?.latitude, sf.coordinate.latitude)
+        XCTAssertEqual(place?.longitude, sf.coordinate.longitude)
+    }
+
+    func testLOCPERM_WaitReturnsTheRealFixThatReplacesApproximate() async {
+        let rig = makeRig(.authorizedWhenInUse)
+        holdSeoul(rig)
+        let lm = rig.lm
+        let started = Date()
+        let waiter = Task { @MainActor in await PlaceLineResolve.waitForCurrentPlace(lm, maxSeconds: 2) }
+        await pause(0.3)
+        lm.handleUpdate(sf)
+        let place = await waiter.value
+        XCTAssertEqual(place?.latitude, sf.coordinate.latitude)
+        XCTAssertEqual(place?.longitude, sf.coordinate.longitude)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
+    func testLOCPERM_WaitEndsEmptyWhenOnlyApproximateIsHeld() async {
+        let rig = makeRig(.authorizedWhenInUse)
+        holdSeoul(rig)
+        let place = await PlaceLineResolve.waitForCurrentPlace(rig.lm, maxSeconds: 0.6)
+        XCTAssertNil(place)
+        XCTAssertTrue(rig.lm.isApproximate)
+        XCTAssertNotNil(rig.lm.currentLocation)
+    }
+
+    func testLOCPERM_WaitAsksForPositioningWhenOnlyApproximateIsHeld() async {
+        let rig = makeRig(.authorizedWhenInUse)
+        holdSeoul(rig)
+        _ = await PlaceLineResolve.waitForCurrentPlace(rig.lm, maxSeconds: 0.3)
+        XCTAssertEqual(rig.source.startCount, 1)
+    }
+
+    // MARK: FR foreground freshness
+
+    func testLOCPERM_ForegroundWithGrantStartsUpdates() {
+        let rig = makeRig(.authorizedWhenInUse)
+        rig.lm.setForeground(true)
+        XCTAssertEqual(rig.source.startCount, 1)
+        XCTAssertTrue(rig.lm.isLocating)
+    }
+
+    func testLOCPERM_ForegroundWithoutGrantStartsNothing() {
+        let rig = makeRig(.notDetermined)
+        rig.lm.setForeground(true)
+        XCTAssertEqual(rig.source.startCount, 0)
+        rig.source.authorizationStatus = .denied
+        rig.lm.setForeground(true)
+        XCTAssertEqual(rig.source.startCount, 0)
+    }
+
+    func testLOCPERM_SecondFixReplacesFirstAndUpdatesKeepRunning() {
+        let rig = makeRig(.authorizedWhenInUse)
+        let a = CLLocation(latitude: 37.30, longitude: -121.90)
+        let b = CLLocation(latitude: 37.33, longitude: -122.00)
+        rig.lm.handleUpdate(a)
+        rig.lm.handleUpdate(b)
+        XCTAssertEqual(rig.lm.currentLocation?.latitude, b.coordinate.latitude)
+        XCTAssertEqual(rig.lm.currentLocation?.longitude, b.coordinate.longitude)
+        XCTAssertEqual(rig.source.stopCount, 0)
+    }
+
+    func testLOCPERM_BackgroundStopsUpdatesAndForegroundResumes() {
+        let rig = makeRig(.authorizedWhenInUse)
+        rig.lm.handleUpdate(sf)
+        rig.lm.setForeground(false)
+        XCTAssertEqual(rig.source.stopCount, 1)
+        XCTAssertFalse(rig.lm.isLocating)
+        let starts = rig.source.startCount
+        rig.lm.setForeground(true)
+        XCTAssertEqual(rig.source.startCount, starts + 1)
+        XCTAssertFalse(rig.lm.isLocating)
+
+        let other = makeRig(.notDetermined)
+        other.lm.setForeground(false)
+        grant(other)
+        XCTAssertEqual(other.source.startCount, 0)
+        XCTAssertFalse(other.lm.isLocating)
+    }
+
+    func testLOCPERM_DistanceFilterIsOneHundredMeters() {
+        let rig = makeRig(.notDetermined)
+        XCTAssertEqual(rig.source.distanceFilter, 100)
+    }
+
+    func testLOCPERM_FixClearsThePreviousNameUntilItsOwnArrives() async {
+        let rig = makeRig(.authorizedWhenInUse, names: NameLookupStub([.answer("Alpha"), .suspend]))
+        rig.lm.handleUpdate(CLLocation(latitude: 37.30, longitude: -121.90))
+        let named = await eventually { rig.lm.currentPlaceName == "Alpha" }
+        XCTAssertTrue(named)
+        rig.lm.handleUpdate(CLLocation(latitude: 37.33, longitude: -122.00))
+        XCTAssertNil(rig.lm.currentPlaceName)
+        let parked = await eventually { rig.names.parked == 1 }
+        XCTAssertTrue(parked)
+        rig.names.release("Beta")
+        let renamed = await eventually { rig.lm.currentPlaceName == "Beta" }
+        XCTAssertTrue(renamed)
+    }
+
+    func testLOCPERM_LateNameForAnOlderFixIsDropped() async {
+        let rig = makeRig(.authorizedWhenInUse, names: NameLookupStub([.suspend, .answer("Beta")]))
+        rig.lm.handleUpdate(CLLocation(latitude: 37.30, longitude: -121.90))
+        let parked = await eventually { rig.names.parked == 1 }
+        XCTAssertTrue(parked)
+        rig.lm.handleUpdate(CLLocation(latitude: 37.33, longitude: -122.00))
+        let named = await eventually { rig.lm.currentPlaceName == "Beta" }
+        XCTAssertTrue(named)
+        rig.names.release("Alpha")
+        let seen = await eventually { rig.names.cancelledSeen.count == 1 }
+        XCTAssertTrue(seen)
+        await pause(0.1)
+        XCTAssertEqual(rig.lm.currentPlaceName, "Beta")
+        XCTAssertEqual(rig.names.cancelledSeen, [true], "the older name lookup was cancelled")
     }
 }

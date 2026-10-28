@@ -21,7 +21,7 @@ enum BackgroundSync {
             // 예약은 한 번 실행되면 소모된다 — 다음 회차를 먼저 잡아둬야 계속 이어진다.
             schedule()
             let work = Task { @MainActor in
-                await store.refreshUpcomingEstimates()
+                await store.refreshUpcomingEstimates(trigger: .background)
                 store.rescheduleNearestNotifications()
             }
             // 주어진 시간을 다 쓰면 iOS가 여기를 부른다. 정리하지 않으면 앱이 강제 종료된다.
@@ -87,6 +87,7 @@ struct BesirApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
+                        location.setForeground(true)
                         // 권한은 설정 앱에서 언제 바뀔지 모르니 활성화마다 다시 읽는다 — 느린
                         // 캘린더 동기화를 기다리면 그동안 캡션이 낡은 권한으로 남는다.
                         notifications.refreshPermissionStatus()
@@ -100,6 +101,7 @@ struct BesirApp: App {
                             store.rescheduleNearestNotifications()
                         }
                     } else if phase == .background {
+                        location.setForeground(false)
                         #if os(iOS)
                         // 백그라운드로 갈 때마다 다음 동기화를 예약해둔다(실행 시점은 iOS가 정함).
                         BackgroundSync.schedule()
