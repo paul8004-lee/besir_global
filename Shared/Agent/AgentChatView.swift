@@ -61,11 +61,13 @@ struct AgentChatView: View {
                 }
                 .padding(16)
             }
+            // Scroll without animation: with an animated scrollTo, sending a multi-line message into a conversation
+            // that already overflows left the main thread in one layout pass that never ended (card t34).
             .onChange(of: session.entries.count) { _, _ in
-                withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                proxy.scrollTo(Self.bottomID, anchor: .bottom)
             }
             .onChange(of: session.isWaiting) { _, _ in
-                withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                proxy.scrollTo(Self.bottomID, anchor: .bottom)
             }
         }
     }
