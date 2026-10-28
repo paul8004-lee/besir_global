@@ -429,7 +429,7 @@ private struct MealScheduleSheet: View {
         // 제안 근거를 설명하는 캡션은 §10으로 지웠다 — 여기는 장소 값만 채운다.
         if let b = before {
             origin = b.place
-        } else if let c = location.currentLocation {
+        } else if let c = location.realFixLocation {
             origin = Place(name: location.currentPlaceName ?? "Current Location", address: "",
                            latitude: c.latitude, longitude: c.longitude)
         } else {

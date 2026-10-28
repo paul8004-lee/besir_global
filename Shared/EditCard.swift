@@ -420,7 +420,7 @@ enum PlaceLine {
 
     /// 이미 잡혀 있는 좌표로 Place를 만든다(없으면 nil) — 대기 없이 확정되는 길.
     static func availablePlace(_ location: LocationManager) -> Place? {
-        guard let c = location.currentLocation else { return nil }
+        guard let c = location.realFixLocation else { return nil }
         return Place(name: location.currentPlaceName ?? "Current Location",
                      address: "", latitude: c.latitude, longitude: c.longitude)
     }
@@ -429,7 +429,7 @@ enum PlaceLine {
     /// 반환하므로 0.2초마다 취소와 좌표를 함께 재확인한다(대기가 빠르게 도는 것을 막는다).
     static func waitForCurrentPlace(_ location: LocationManager, maxSeconds: Double? = nil) async -> Place? {
         guard !isLocationBlocked(location) else { return nil }
-        if location.currentLocation == nil { location.useCurrentLocation() }
+        if location.realFixLocation == nil { location.useCurrentLocation() }
         // 시한은 LocationManager의 측위 시한에서 파생한다(계약 5) — 여기가 짧으면 시한 직후에 오는
         // 위치가 빈 줄을 채우지 못한다(t11 sync N5). max(5, ·)는 측위 시한이 짧은 맥의 행동을 지킨다.
         // A test passes a shorter window through `maxSeconds`.

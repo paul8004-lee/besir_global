@@ -102,7 +102,7 @@ struct RootView: View {
     private func openChat() {
         if chatHolder.session == nil {
             let location = location
-            let origin = { AgentPlaces.devicePlace(manual: location.manualOrigin, current: location.currentLocation) }
+            let origin = { AgentPlaces.devicePlace(manual: location.manualOrigin, current: location.realFixLocation) }
             chatHolder.session = AgentSession(toolbox: AgentToolbox(store: store, now: { Date() }, timeZone: { TimeZone.current },
                                                                     deviceOrigin: origin),
                                               transport: AgentClient(config: store.config, now: { Date() }, timeZone: { TimeZone.current }))

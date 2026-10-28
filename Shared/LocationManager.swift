@@ -105,7 +105,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     /// The position from a real fix, nil while only the IP guess is held.
-    var realFixLocation: CLLocationCoordinate2D? { currentLocation }
+    var realFixLocation: CLLocationCoordinate2D? { isApproximate ? nil : currentLocation }
 
     /// Tells the manager whether the app is in the foreground.
     func setForeground(_ foreground: Bool) {}
