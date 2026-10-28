@@ -213,6 +213,75 @@ final class GoogleRoutesTests: XCTestCase {
         XCTAssertEqual(try request(.bicycle).value(forHTTPHeaderField: "x-goog-fieldmask"), expected)
     }
 
+    // MARK: - REPLAN live request (SPEC-REPLAN-001, AC-REPLAN-001 and 002)
+
+    private func liveRequest(_ mode: TransportMode, live: Bool = true) throws -> URLRequest {
+        try XCTUnwrap(GoogleRoutes.request(mode: mode, from: Support.origin, to: Support.dest,
+                                           mask: GoogleRoutes.mask(for: mode), config: Support.config, live: live))
+    }
+
+    func testREPLAN_LiveCarBodyTrafficAware() throws {
+        let body = try XCTUnwrap(Support.body(of: try liveRequest(.car)))
+        XCTAssertEqual(body["routingPreference"] as? String, "TRAFFIC_AWARE")
+        XCTAssertEqual(body["travelMode"] as? String, "DRIVE")
+        for key in ["departureTime", "arrivalTime"] { XCTAssertNil(body[key], key) }
+    }
+
+    func testREPLAN_LiveCarMaskExact() throws {
+        let expected = "routes.duration,routes.staticDuration,routes.distanceMeters"
+        XCTAssertEqual(GoogleRoutes.liveCarMask, expected)
+        XCTAssertEqual(try liveRequest(.car).value(forHTTPHeaderField: "x-goog-fieldmask"), expected)
+    }
+
+    func testREPLAN_LiveOtherModesUnchanged() throws {
+        for mode in [TransportMode.transit, .walk, .bicycle] {
+            let live = try liveRequest(mode, live: true)
+            let plain = try liveRequest(mode, live: false)
+            XCTAssertEqual(live.httpBody, plain.httpBody, "\(mode)")
+            XCTAssertEqual(live.value(forHTTPHeaderField: "x-goog-fieldmask"),
+                           plain.value(forHTTPHeaderField: "x-goog-fieldmask"), "\(mode)")
+            XCTAssertEqual(live.url, plain.url, "\(mode)")
+        }
+    }
+
+    func testREPLAN_DefaultRequestsByteIdentical() throws {
+        for mode in TransportMode.allCases {
+            let omitted = try request(mode)
+            let explicit = try liveRequest(mode, live: false)
+            XCTAssertEqual(omitted.httpBody, explicit.httpBody, "\(mode)")
+            XCTAssertEqual(omitted.value(forHTTPHeaderField: "x-goog-fieldmask"),
+                           explicit.value(forHTTPHeaderField: "x-goog-fieldmask"), "\(mode)")
+        }
+        let car = try XCTUnwrap(Support.body(of: try request(.car)))
+        XCTAssertEqual(Set(car.allKeys.compactMap { $0 as? String }),
+                       ["origin", "destination", "travelMode", "languageCode", "regionCode", "routingPreference"])
+        XCTAssertEqual(car["routingPreference"] as? String, "TRAFFIC_UNAWARE")
+        XCTAssertEqual(try request(.car).value(forHTTPHeaderField: "x-goog-fieldmask"), "routes.duration,routes.distanceMeters")
+    }
+
+    func testREPLAN_ParseStaticDuration() throws {
+        let data = Support.json(["routes": [["duration": "1860s", "staticDuration": "1080s", "distanceMeters": 9214]]])
+        let route = try GoogleRoutes.parse(data)
+        XCTAssertEqual(route.duration, 1860)
+        XCTAssertEqual(route.staticDuration, 1080)
+        XCTAssertEqual(route.distance, 9214)
+    }
+
+    func testREPLAN_ParseStaticDurationAbsentOrInvalid() throws {
+        let variants: [[String: Any]] = [
+            ["duration": "1860s"],
+            ["duration": "1860s", "staticDuration": NSNull()],
+            ["duration": "1860s", "staticDuration": "abc"],
+            ["duration": "1860s", "staticDuration": "-5s"],
+            ["duration": "1860s", "staticDuration": 5]
+        ]
+        for route in variants {
+            let parsed = try GoogleRoutes.parse(Support.json(["routes": [route]]))
+            XCTAssertEqual(parsed.duration, 1860, "\(route)")
+            XCTAssertNil(parsed.staticDuration, "\(route)")
+        }
+    }
+
     func testROUTES_MaskTransitPlanExact() throws {
         XCTAssertEqual(GoogleRoutes.transitPlanMask, transitPlanMask)
         XCTAssertEqual(GoogleRoutes.transitPlanMask.split(separator: ",").count, 11)

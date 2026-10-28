@@ -51,15 +51,17 @@ struct DirectionsService {
     // @MX:ANCHOR fan_in 3 - Store.lookupTravelSeconds, Store.travelSeconds and estimateAll call this
     // @MX:REASON the failure contract: a value, or a typed reason (a cancelled lookup has neither)
     /// A failed lookup (no proxy, offline, no route and so on) comes back as an estimate with no value.
-    /// The one place a reason is attached is the catch below.
+    /// The one place a reason is attached is the catch below. `live` is true only for the lookups of a replan trigger:
+    /// a car lookup then carries traffic and also returns the time without traffic (`staticDuration`).
     func estimate(_ mode: TransportMode,
                   from origin: CLLocationCoordinate2D,
                   to dest: CLLocationCoordinate2D,
-                  flow: UUID? = nil) async -> TravelEstimate {
+                  flow: UUID? = nil,
+                  live: Bool = false) async -> TravelEstimate {
         // Without a proxy nothing goes on the network and the reason is fixed at once.
         guard config.hasProxy,
               let request = GoogleRoutes.request(mode: mode, from: origin, to: dest,
-                                                 mask: GoogleRoutes.mask(for: mode), config: config) else {
+                                                 mask: GoogleRoutes.mask(for: mode), config: config, live: live) else {
             return TravelEstimate(mode: mode, duration: nil, distance: nil, source: Self.source,
                                   failure: .notConfigured)
         }
@@ -68,7 +70,8 @@ struct DirectionsService {
             let route = try GoogleRoutes.parse(try await GoogleRoutes.fetch(request, transport: transport))
             note(summary, .ok, flow: flow)
             return TravelEstimate(mode: mode, duration: route.duration, distance: route.distance,
-                                  source: Self.source, warnings: route.warnings)
+                                  source: Self.source, warnings: route.warnings,
+                                  staticDuration: live && mode == .car ? route.staticDuration : nil)
         } catch {
             // A cancelled lookup has no failure, so the caller does not draw it as one.
             let failure = GoogleRoutes.failure(for: error, hasProxy: config.hasProxy)
