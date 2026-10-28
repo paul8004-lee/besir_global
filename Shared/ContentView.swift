@@ -151,6 +151,7 @@ struct ContentView: View {
 
     @EnvironmentObject var store: Store
     @EnvironmentObject var location: LocationManager
+    @EnvironmentObject var notifications: NotificationManager
 
     @State private var selection: ScheduledEvent.ID?
     @State private var selectedActivityId: ActivityBlock.ID?
@@ -318,6 +319,13 @@ struct ContentView: View {
         // NavigationSplitView의 detail 컬럼은 iPhone처럼 좁은 화면(compact)에서는 실제 네비게이션
         // push가 있어야 사이드바에서 넘어간다 — selection 상태만 바꿔서는(제스처로 탭했을 때처럼)
         // 화면 전환이 일어나지 않는다(탭해도 상세정보가 안 보이던 원인). 시트로 띄우면 이 문제가 없다.
+        // A tap on a departure alert opens that event's detail; the id is consumed once, and an id with no event is dropped
+        // (SPEC-REPLAN-001 REQ-REPLAN-013).
+        .onChange(of: notifications.tappedEventID, initial: true) {
+            if let id = Replan.tapSelection(pending: notifications.consumeTappedEventID(), events: store.events) {
+                selection = id
+            }
+        }
         .sheet(isPresented: Binding(
             get: { selection != nil },
             set: { if !$0 { selection = nil } }

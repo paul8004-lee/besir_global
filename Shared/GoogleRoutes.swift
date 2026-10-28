@@ -16,6 +16,9 @@ enum GoogleRoutes {
 
     static let estimateMask = "routes.duration,routes.distanceMeters"
     static let warningsMask = "routes.duration,routes.distanceMeters,routes.warnings"
+    /// The mask of a live car lookup (a replan trigger): `staticDuration` is the route time without traffic conditions,
+    /// so the answer carries both the time with traffic (`duration`) and the time without it.
+    static let liveCarMask = "routes.duration,routes.staticDuration,routes.distanceMeters"
 
     // @MX:NOTE Adding a field to this mask can move every transit lookup to a higher billing tier.
     static let transitPlanMask = [
@@ -69,6 +72,8 @@ enum GoogleRoutes {
         var distance: Double? = nil
         var warnings: [String] = []
         var steps: [Step] = []
+        /// The route time without traffic conditions; only a live car request asks for it.
+        var staticDuration: TimeInterval? = nil
     }
 
     // MARK: - Requests
@@ -82,9 +87,11 @@ enum GoogleRoutes {
     }
 
     /// One `computeRoutes` request for `mode`. The routing preference is valid for DRIVE only, so no other mode sends it.
+    /// `live` is true only for the lookups of a replan trigger: a car request then asks for traffic (`TRAFFIC_AWARE`) and
+    /// for `staticDuration`; every other request, and every request with `live == false`, is byte-identical to the base.
     /// Nil when the proxy is not configured.
     static func request(mode: TransportMode, from origin: CLLocationCoordinate2D, to dest: CLLocationCoordinate2D,
-                        mask: String, config: AppConfig) -> URLRequest? {
+                        mask: String, config: AppConfig, live: Bool = false) -> URLRequest? {
         var body: [String: Any] = [
             "origin": waypoint(origin),
             "destination": waypoint(dest),
@@ -92,10 +99,11 @@ enum GoogleRoutes {
             "languageCode": languageCode,
             "regionCode": regionCode
         ]
-        if mode == .car { body["routingPreference"] = "TRAFFIC_UNAWARE" }
+        let liveCar = live && mode == .car
+        if mode == .car { body["routingPreference"] = liveCar ? "TRAFFIC_AWARE" : "TRAFFIC_UNAWARE" }
         guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]),
               var request = config.proxyPOSTRequest(path, body: data, timeout: timeout) else { return nil }
-        request.setValue(mask, forHTTPHeaderField: fieldMaskHeader)
+        request.setValue(liveCar ? liveCarMask : mask, forHTTPHeaderField: fieldMaskHeader)
         return request
     }
 
@@ -155,7 +163,10 @@ enum GoogleRoutes {
         let steps = legs.flatMap { leg in
             ((leg["steps"] as? [Any])?.compactMap { $0 as? [String: Any] } ?? []).map(step(from:))
         }
-        return Route(duration: duration, distance: number(route["distanceMeters"]), warnings: warnings, steps: steps)
+        // A missing, null or invalid `staticDuration` is nil; it never makes the route malformed.
+        let staticDuration = (route["staticDuration"] as? String).flatMap(parseDuration)
+        return Route(duration: duration, distance: number(route["distanceMeters"]), warnings: warnings, steps: steps,
+                     staticDuration: staticDuration)
     }
 
     private static func step(from raw: [String: Any]) -> Step {

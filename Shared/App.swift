@@ -21,7 +21,7 @@ enum BackgroundSync {
             // 예약은 한 번 실행되면 소모된다 — 다음 회차를 먼저 잡아둬야 계속 이어진다.
             schedule()
             let work = Task { @MainActor in
-                await store.refreshUpcomingEstimates()
+                await store.refreshUpcomingEstimates(trigger: .background)
                 store.rescheduleNearestNotifications()
             }
             // 주어진 시간을 다 쓰면 iOS가 여기를 부른다. 정리하지 않으면 앱이 강제 종료된다.

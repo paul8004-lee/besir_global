@@ -90,6 +90,24 @@ final class Store: ObservableObject {
     /// 하나다. rescheduleNearestNotifications 꼬리에서 꺼낸다(REQ-009).
     private var pendingCatchUpIDs: Set<UUID> = []
 
+    // MARK: Live replan state (SPEC-REPLAN-001) - in memory only, never in events.json
+
+    /// The result of the last live check of each event; the departure card of the detail screen reads it.
+    @Published private(set) var replanOutcomes: [UUID: ReplanOutcome] = [:]
+    /// The clock of the new code only (debounce, `now` of the classification, `checkedAt`). The baseline reads of `Date()`
+    /// stay as they are.
+    var replanNow: () -> Date = { Date() }
+    /// Where the Muse Spark draft request goes; a test replaces it.
+    var replanDraftSend: ReplanDraftClient.Send = { try await URLSession(configuration: .ephemeral).data(for: $0) }
+    /// When the last successful live lookup of an event finished.
+    private var lastLiveLookup: [UUID: Date] = [:]
+    /// Events with a live lookup in flight.
+    private var liveLookupsInFlight: [UUID: Int] = [:]
+    /// The start stamp of the newest live lookup of an event that has finished and written.
+    private var finishedLookupStart: [UUID: Date] = [:]
+    /// The answer of the live lookup that `applyEstimate` just made for an event, read once by the refresh loop.
+    private var lastLiveAnswers: [UUID: (seconds: TimeInterval, noTrafficSeconds: TimeInterval?)] = [:]
+
     init(notifications: NotificationManager) {
         self.notifications = notifications
         self.config = AppConfig.load()
@@ -97,6 +115,10 @@ final class Store: ObservableObject {
         loadFavorites()
         loadActivities()
         loadMeals()
+        // A tap on a departure alert starts the live check of its event (REQ-REPLAN-006).
+        notifications.onAlertTap = { [weak self] id in
+            Task { @MainActor in await self?.replanAfterAlert(id: id, trigger: .alertTap) }
+        }
     }
 
     /// 점(달력 날짜 키)은 일간 나열과 같은 겹침 판정으로 채운다 — 자정을 넘는 블록은 구간이
@@ -1444,19 +1466,38 @@ final class Store: ObservableObject {
     var drvSaveMealsCount = 0
     var drvSaveFavoritesCount = 0
 
+    /// SPEC-REPLAN-001 — the seam of a live lookup (a replan trigger): the live seconds and the seconds without traffic,
+    /// or nil for a failed lookup. It may suspend, so a test can overlap two lookups. The counters tell a test whether a
+    /// lookup was live; the app logic does not read them.
+    var drvLiveLookupOverride: ((_ mode: TransportMode, _ origin: Place, _ destination: Place) async
+        -> (seconds: TimeInterval, noTrafficSeconds: TimeInterval?)?)?
+    var drvLiveLookupCount = 0
+    var drvNonLiveLookupCount = 0
+
     /// 조회 결과 (초, 출처). nil은 조회 실패 — 대역에서도 실패 모양을 흉내 낼 수 있게 옵셔널이다.
-    private func lookupTravelSeconds(_ mode: TransportMode, origin: Place, destination: Place) async
-        -> (seconds: TimeInterval, source: String)? {
+    /// `live` is true only for the lookups of a replan trigger (SPEC-REPLAN-001): a car lookup then carries traffic and
+    /// also returns the seconds without traffic.
+    private func lookupTravelSeconds(_ mode: TransportMode, origin: Place, destination: Place, live: Bool = false) async
+        -> (seconds: TimeInterval, source: String, noTrafficSeconds: TimeInterval?)? {
         drvTravelLookupCount += 1
+        if live { drvLiveLookupCount += 1 } else { drvNonLiveLookupCount += 1 }
+        if live, let drvLiveLookupOverride {
+            return await drvLiveLookupOverride(mode, origin, destination).map {
+                (seconds: $0.seconds, source: "Test driver", noTrafficSeconds: $0.noTrafficSeconds)
+            }
+        }
         if let drvTravelLookupOverride {
-            return drvTravelLookupOverride(mode, origin, destination).map { (seconds: $0, source: "Test driver") }
+            return drvTravelLookupOverride(mode, origin, destination).map {
+                (seconds: $0, source: "Test driver", noTrafficSeconds: nil)
+            }
         }
         let estimate = await directions.estimate(
             mode,
             from: CLLocationCoordinate2D(latitude: origin.latitude, longitude: origin.longitude),
-            to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude))
+            to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude),
+            live: live)
         guard let seconds = estimate.duration else { return nil }
-        return (seconds: seconds, source: estimate.source)
+        return (seconds: seconds, source: estimate.source, noTrafficSeconds: estimate.staticDuration)
     }
 
     /// 출발지·목적지·수단으로 이동시간을 계산해 출발시각/알림을 세팅한다(기존 알림은 갱신).
@@ -1465,7 +1506,8 @@ final class Store: ObservableObject {
     /// 틀려서 "실패해도 유지"가 의미가 없다(SPEC-ONTIME-005 REQ-003, plan F1). 켜면 조회가
     /// 성공한 뒤에만 옛 알림을 취소·비워, 오프라인 재진입이 이동시간과 알림을 지우지 않게 한다(REQ-001).
     @discardableResult
-    private func applyEstimate(to event: inout ScheduledEvent, keepOnFailure: Bool = false) async -> RefreshAlarmDecision? {
+    private func applyEstimate(to event: inout ScheduledEvent, keepOnFailure: Bool = false,
+                               live: Bool = false) async -> RefreshAlarmDecision? {
         if !keepOnFailure {
             event.anchor = .arrival
             if let nid = event.notificationId { notifications.cancel(id: nid) }
@@ -1474,10 +1516,11 @@ final class Store: ObservableObject {
             event.departureDate = nil
         }
         guard let o = event.origin else { return .normal }   // 출발지 없음 — 사본 무변화, 오늘처럼 되쓴다
-        guard let found = await lookupTravelSeconds(event.mode, origin: o, destination: event.destination) else {
+        guard let found = await lookupTravelSeconds(event.mode, origin: o, destination: event.destination, live: live) else {
             return .normal   // 조회 실패 — 유지 모드라 사본 무변화, 되쓰기 무해(t68 동작 보존)
         }
         let seconds = found.seconds
+        if live { lastLiveAnswers[event.id] = (seconds: seconds, noTrafficSeconds: found.noTrafficSeconds) }
         var decision: RefreshAlarmDecision = .normal
         if keepOnFailure {
             // 판정(REQ-004·001·002): await 사이에 옛 알림이 울렸는지 되쓰기 직전에, id로 다시 읽은
@@ -1572,7 +1615,8 @@ final class Store: ObservableObject {
         return notifications.schedule(
             title: "🚶 \(event.title) — time to get ready",
             body: notificationBody(for: event, estimate: estimate),
-            at: NotificationManager.alarmTime(departure: departure, leadMinutes: event.notifyLeadMinutes))
+            at: NotificationManager.alarmTime(departure: departure, leadMinutes: event.notifyLeadMinutes),
+            eventID: event.id)
     }
 
     func notificationBody(for event: ScheduledEvent, estimate: TravelEstimate) -> String {
@@ -2207,13 +2251,15 @@ final class Store: ObservableObject {
             let depText = f.string(from: dep)
             switch verdict {
             case .catchUp:
+                let base = "\(record.mode.title) to \(record.destination.name): \(estimate.durationText). Leave by \(depText) to make it."
                 notifications.deliverNow(title: "🚶 \(record.title) — leave earlier than planned",
-                                         body: "\(record.mode.title) to \(record.destination.name): \(estimate.durationText). Leave by \(depText) to make it.",
-                                         id: "catchup-" + record.id.uuidString)
+                                         body: Replan.catchUpBody(base: base, outcome: replanOutcomes[id]),
+                                         id: "catchup-" + record.id.uuidString, eventID: record.id)
             case .late:
+                let base = "\(record.mode.title) to \(record.destination.name): \(estimate.durationText). The departure time (\(depText)) has passed."
                 notifications.deliverNow(title: "🚶 \(record.title) — the departure time has passed",
-                                         body: "\(record.mode.title) to \(record.destination.name): \(estimate.durationText). The departure time (\(depText)) has passed.",
-                                         id: "catchup-" + record.id.uuidString)
+                                         body: Replan.catchUpBody(base: base, outcome: replanOutcomes[id]),
+                                         id: "catchup-" + record.id.uuidString, eventID: record.id)
             case .drop: break
             }
         }
@@ -2271,27 +2317,47 @@ final class Store: ObservableObject {
 
     /// 출발 시각이 임박한(기본 2시간 이내) 일정들의 이동시간을 실시간으로 다시 조회해 갱신한다.
     /// 반복 일정 생성 때 아낀 API 호출을, 실제로 그 회차가 다가왔을 때만 소비한다. 앱이 foreground될 때 호출.
-    func refreshUpcomingEstimates(withinMinutes: Int = 120) async {
+    /// SPEC-REPLAN-001: `trigger` says who asked. `.appOpen` (the default; the foreground call) looks up with traffic and
+    /// keeps a replan outcome; `.background` (the baseline app-refresh task) is not live, keeps no outcome and leaves every
+    /// car event alone.
+    func refreshUpcomingEstimates(withinMinutes: Int = 120, trigger: ReplanTrigger = .appOpen) async {
         let now = Date()
         // 인덱스가 아니라 id로 대상을 잡는다 — 아래 루프는 await로 중단되고, 그 사이 동기화나
         // 사용자의 추가·삭제로 events 배열이 바뀌면 인덱스가 다른 일정을 가리키거나(엉뚱한 일정을
         // 덮어씀) 범위를 벗어나 크래시할 수 있다.
         // 창 안 판정과 알림 경과 동결은 selectRefreshTargets가 단독으로 한다(REQ-004·드라이버 R4~R10).
-        let targetIDs = Store.selectRefreshTargets(events: events, now: now, withinMinutes: withinMinutes)
-        guard !targetIDs.isEmpty else { return }
+        var targetIDs = Store.selectRefreshTargets(events: events, now: now, withinMinutes: withinMinutes)
+        // A background launch is a fresh process with no outcome in memory, and a car lookup without traffic could only
+        // overwrite a live-adjusted departure, so the background pass skips every car event (REQ-REPLAN-009).
+        if trigger == .background {
+            targetIDs.removeAll { id in events.first(where: { $0.id == id })?.mode == .car }
+        }
+        // Events the window skips because their alert fired or their departure passed, while the arrival is ahead.
+        let postAlertIDs = trigger == .appOpen
+            ? Store.selectPostAlertTargets(events: events, now: replanNow(), withinMinutes: withinMinutes) : []
+        guard !targetIDs.isEmpty || !postAlertIDs.isEmpty else { return }
         for id in targetIDs {
             guard let idx = events.firstIndex(where: { $0.id == id }) else { continue }
             var event = events[idx]
             let before = event   // await 전 사본 — 재조회가 실제로 바꾼 필드만 가려내는 기준
+            // Live only for the two foreground triggers and for an event anchored on arrival (REQ-REPLAN-005, 009).
+            let live = trigger != .background && (event.anchor ?? .arrival) == .arrival
+            let started = replanNow()
+            if live {
+                if isLookupInFlight(id) || recentLiveLookup(of: id, at: started) { continue }
+                beginLookup(id)
+                lastLiveAnswers[id] = nil
+            }
             let decision: RefreshAlarmDecision?
             switch event.anchor ?? .arrival {
             case .arrival:
                 // 유지 모드 — 재조회가 실패해도 직전 이동시간·출발 시각·알림을 지우지 않는다(REQ-001).
-                decision = await applyEstimate(to: &event, keepOnFailure: true)
+                decision = await applyEstimate(to: &event, keepOnFailure: true, live: live)
             case .departure:
                 guard let dep = event.departureDate else { continue }
                 decision = await applyDepartureAnchoredEstimate(to: &event, departureDate: dep, keepOnFailure: true)
             }
+            if live { endLookup(id) }
             // 버림(nil = 레코드 없음·출발 nil·조회 중 옛 알림 울림)이면 되쓰기도 생략한다(REQ-004, Q2=A).
             guard let decision else { continue }
             // await 후 인덱스를 다시 찾는다(위와 같은 이유).
@@ -2305,8 +2371,156 @@ final class Store: ObservableObject {
             if decision == .catchUp || decision == .late {
                 pendingCatchUpIDs.insert(event.id)
             }
+            if live, let answer = lastLiveAnswers.removeValue(forKey: id) {
+                recordOutcomeOfOpenPass(before: before, started: started, trigger: trigger, answer: answer)
+            }
         }
-        save()
+        if !targetIDs.isEmpty { save() }
+        for id in postAlertIDs {
+            await replanAfterAlert(id: id, trigger: .appOpen)
+        }
+    }
+
+    // MARK: - Live replan (SPEC-REPLAN-001, card t18)
+
+    /// Events the baseline window skips because their alert fired or their departure passed, while the arrival is still
+    /// ahead: arrival ahead, departure inside the window, not in the baseline selection, anchored on arrival, with a stored
+    /// plan and an origin. Soonest arrival first, at most `limit` (REQ-REPLAN-005, L3). Pure, so a test reads it as a table.
+    static func selectPostAlertTargets(events: [ScheduledEvent], now: Date, withinMinutes: Int,
+                                       limit: Int = Replan.maxPostAlertEvents) -> [UUID] {
+        let baseline = Set(selectRefreshTargets(events: events, now: now, withinMinutes: withinMinutes))
+        let horizon = now.addingTimeInterval(Double(withinMinutes) * 60)
+        return events
+            .filter { e in
+                guard e.arrivalDate > now, (e.anchor ?? .arrival) == .arrival, e.origin != nil,
+                      e.travelSeconds != nil, let departure = e.departureDate, departure <= horizon else { return false }
+                return !baseline.contains(e.id)
+            }
+            .sorted { $0.arrivalDate < $1.arrivalDate }
+            .prefix(limit)
+            .map { $0.id }
+    }
+
+    private func recentLiveLookup(of id: UUID, at now: Date) -> Bool {
+        guard let last = lastLiveLookup[id] else { return false }
+        return now.timeIntervalSince(last) < Replan.debounce
+    }
+
+    private func beginLookup(_ id: UUID) { liveLookupsInFlight[id, default: 0] += 1 }
+
+    private func endLookup(_ id: UUID) {
+        let left = (liveLookupsInFlight[id] ?? 1) - 1
+        liveLookupsInFlight[id] = left > 0 ? left : nil
+    }
+
+    private func isLookupInFlight(_ id: UUID) -> Bool { liveLookupsInFlight[id] != nil }
+
+    /// The pair a new check compares with: the first plan of the event's cycle (REQ-REPLAN-004). It is the pair of the
+    /// event's outcome while that outcome was made from the same inputs and its arrival is ahead, else the stored pair.
+    private func referencePair(of id: UUID, inputs: ReplanInputs, now: Date, storedDeparture: Date,
+                               storedTravel: TimeInterval) -> (departure: Date, travel: TimeInterval) {
+        Replan.referencePair(existing: replanOutcomes[id], inputs: inputs, now: now,
+                             storedDeparture: storedDeparture, storedTravel: storedTravel)
+    }
+
+    /// Keeps an outcome, or removes the event's outcome when the result is unchanged, and asks for the draft of a late one.
+    private func keep(_ outcome: ReplanOutcome, title: String) {
+        guard outcome.kind != .unchanged else {
+            replanOutcomes[outcome.eventID] = nil
+            return
+        }
+        var kept = outcome
+        if kept.kind == .late, let estimate = kept.arrivalEstimate {
+            kept.draft = Replan.templateDraft(lateBy: kept.minutes, title: title, estimate: estimate)
+        }
+        replanOutcomes[kept.eventID] = kept
+        requestDraft(for: kept)
+    }
+
+    /// The Muse Spark replacement of a late outcome's draft (REQ-REPLAN-014). The reply is applied only while the event's
+    /// outcome is still the one the request was made for. A test awaits `replanDraftTask`.
+    private(set) var replanDraftTask: Task<Void, Never>?
+
+    private func requestDraft(for outcome: ReplanOutcome) {
+        guard outcome.kind == .late, outcome.trigger != .background, config.hasAI,
+              let estimate = outcome.arrivalEstimate else { return }
+        let client = ReplanDraftClient(config: config, send: replanDraftSend)
+        let estimateText = Replan.clockText(estimate)
+        let id = outcome.eventID
+        let stamp = outcome.checkedAt
+        let lateBy = outcome.minutes
+        replanDraftTask = Task { @MainActor in
+            guard let text = await client.refine(lateBy: lateBy, estimateText: estimateText),
+                  var current = self.replanOutcomes[id], current.checkedAt == stamp else { return }
+            current.draft = text
+            self.replanOutcomes[id] = current
+        }
+    }
+
+    /// The app-open path of an event whose alert has not fired: the baseline code has already stored the live pair, so this
+    /// only keeps the outcome. `before` is the copy taken before the lookup.
+    private func recordOutcomeOfOpenPass(before: ScheduledEvent, started: Date, trigger: ReplanTrigger,
+                                         answer: (seconds: TimeInterval, noTrafficSeconds: TimeInterval?)) {
+        let id = before.id
+        guard let current = events.first(where: { $0.id == id }) else { return }
+        // A lookup that started earlier writes no outcome when a later-started one of the event has finished.
+        if let done = finishedLookupStart[id], done >= started { return }
+        finishedLookupStart[id] = started
+        let finished = replanNow()
+        lastLiveLookup[id] = finished
+        guard let storedDeparture = before.departureDate, let storedTravel = before.travelSeconds else { return }
+        let inputs = ReplanInputs(event: current)
+        let reference = referencePair(of: id, inputs: inputs, now: finished,
+                                      storedDeparture: storedDeparture, storedTravel: storedTravel)
+        let outcome = Replan.classify(eventID: id, trigger: trigger, checkedAt: started, inputs: inputs,
+                                      referenceDeparture: reference.departure, referenceTravel: reference.travel,
+                                      liveTravel: answer.seconds, noTrafficTravel: answer.noTrafficSeconds, now: finished)
+        keep(outcome, title: current.title)
+    }
+
+    /// The live check of one event whose alert has fired (a tap on its alert, or an app-open pass over an event the window
+    /// skips). It sends no notification, stores the new travel time and departure only when the new departure is not later
+    /// than the stored one, and keeps the outcome (REQ-REPLAN-006, 007, 008).
+    func replanAfterAlert(id: UUID, trigger: ReplanTrigger) async {
+        guard let startIndex = events.firstIndex(where: { $0.id == id }) else { return }
+        let copy = events[startIndex]
+        let started = replanNow()
+        // No lookup and no draft for a past arrival or an event anchored on departure (REQ-REPLAN-006).
+        guard copy.arrivalDate > started, (copy.anchor ?? .arrival) == .arrival,
+              let origin = copy.origin, copy.departureDate != nil, copy.travelSeconds != nil else { return }
+        if trigger == .appOpen, isLookupInFlight(id) || recentLiveLookup(of: id, at: started) { return }
+        beginLookup(id)
+        let found = await lookupTravelSeconds(copy.mode, origin: origin, destination: copy.destination, live: true)
+        endLookup(id)
+        guard !Task.isCancelled, let found else { return }
+        let finished = replanNow()
+        // The record is read again by id: gone, edited meanwhile, or past its arrival means nothing is written.
+        guard let current = events.firstIndex(where: { $0.id == id }),
+              Store.estimateInputsUnchanged(copy, events[current]),
+              events[current].arrivalDate > finished,
+              let storedDeparture = events[current].departureDate,
+              let storedTravel = events[current].travelSeconds else { return }
+        if let done = finishedLookupStart[id], done >= started { return }
+        finishedLookupStart[id] = started
+        lastLiveLookup[id] = finished
+        let inputs = ReplanInputs(event: events[current])
+        let reference = referencePair(of: id, inputs: inputs, now: finished,
+                                      storedDeparture: storedDeparture, storedTravel: storedTravel)
+        let outcome = Replan.classify(eventID: id, trigger: trigger, checkedAt: started, inputs: inputs,
+                                      referenceDeparture: reference.departure, referenceTravel: reference.travel,
+                                      liveTravel: found.seconds, noTrafficTravel: found.noTrafficSeconds, now: finished)
+        // A new departure later than the stored one would schedule a second alert: nothing changes, except that the
+        // late warning does not depend on the stored value (L4).
+        if outcome.newDeparture > storedDeparture, outcome.kind != .late { return }
+        if outcome.newDeparture <= storedDeparture {
+            let currentCopy = events[current]
+            var after = currentCopy
+            after.travelSeconds = found.seconds
+            after.departureDate = outcome.newDeparture
+            Store.patchEstimateFields(from: currentCopy, to: after, into: &events[current])
+            save()
+        }
+        keep(outcome, title: events[current].title)
     }
 
     /// 이동시간 재계산의 입력이 `await` 동안 그대로인지 본다(`copy` = await 전 사본, `current` = id로 다시 읽은 레코드).

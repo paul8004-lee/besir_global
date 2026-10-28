@@ -209,6 +209,24 @@ struct EventDetailView: View {
                 // 시각과 상태 캡션을 한 덩어리로 낭독한다(REQ-023) — 따로 읽히면 "언제"와 "얼마나
                 // 남았는지"가 갈라져 한 번에 이해되지 않는다.
                 .accessibilityElement(children: .combine)
+                // The result of the last live check (SPEC-REPLAN-001): what changed and why, and for a late arrival the
+                // message draft with one share control. It shows nothing when nothing changed.
+                if let lines = Replan.displayLines(for: store.replanOutcomes[event.id], event: event, now: Date()) {
+                    Divider()
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(lines.headline)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(lines.kind == .late ? Theme.warn : Theme.travel)
+                        Text(lines.reason)
+                            .font(.caption).foregroundStyle(Theme.muted)
+                        if let draft = lines.draft {
+                            Text(draft)
+                                .font(.callout)
+                                .textSelection(.enabled)
+                            ShareLink(item: draft)
+                        }
+                    }
+                }
             }
             .padding(18)
             .background(Theme.raised, in: RoundedRectangle(cornerRadius: Theme.radius))
