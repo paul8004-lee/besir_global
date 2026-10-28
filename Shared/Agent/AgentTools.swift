@@ -3,7 +3,7 @@ import CoreLocation
 
 // SPEC-AGENT-001: the four schedule tools, SPEC-AGENTPLACE-001: the place and travel-time tools. The app, not the
 // model, decides: every argument goes through one gate, every write waits for the user's Confirm, and the card shows
-// validated values and Store records only.
+// validated values and Store records only. SPEC-PLANDAY-001 adds the two day plan tools and the plan turn.
 
 enum AgentTools {
     /// JSON array of the nine function declarations sent with every request.
@@ -198,6 +198,8 @@ private enum Tool: String {
     case search = "search_places"
     case travel = "get_travel_time"
     case booking = "request_booking"
+    case checkDay = "check_day_plan"
+    case showDay = "show_day_plan"
 
     /// The declared parameters, in declaration order. Nothing else is ever read.
     var params: [String] {
@@ -209,6 +211,8 @@ private enum Tool: String {
         case .search: return ["query"]
         case .travel: return ["place_id", "mode", "origin_place_id", "arrive_by"]
         case .booking: return ["place_id", "start", "party_size"]
+        case .checkDay: return ["stops"]
+        case .showDay: return ["plan_id"]
         }
     }
 }
@@ -227,6 +231,9 @@ private enum Say {
         if tool == .booking {
             return "Call request_booking again with \(param) as a string. If you do not have it, ask the user; do not guess it."
         }
+        // The day plan tools have their own fixed lines.
+        if tool == .checkDay { return AgentDayPlan.Say.stopsFormat }
+        if tool == .showDay { return AgentDayPlan.Say.planUnknown }
         return "Call \(tool.rawValue) again with \(param) as a string, or omit it if the user did not give it."
     }
     static func timeForm(_ tool: Tool, _ param: String) -> String {
@@ -377,13 +384,41 @@ final class AgentToolbox {
     }
 
     /// New chat: forgets the handles; the counters keep counting up, so an old handle never names a new entry.
-    func resetConversation() { registry.clear() }
+    func resetConversation() {
+        registry.clear()
+        endDayPlan()
+    }
 
-    // SPEC-PLANDAY-001 signatures only (red): the plan-turn state comes with the implementation.
-    var currentFlow: UUID?
+    // MARK: - Plan turn state (SPEC-PLANDAY-001)
+
+    /// Set while a plan turn is active; the two day plan tools exist only then.
+    private(set) var dayPlan: DayPlanContext?
+    /// The checks made in this plan turn, oldest first. The latest one is the only one `show_day_plan` may show.
     private(set) var checks: [AgentDayPlan.Check] = []
-    func beginDayPlan(_ context: DayPlanContext) {}
-    func endDayPlan() {}
+    /// `search_places` calls accepted in this plan turn.
+    private(set) var searchesThisPlan = 0
+    /// Set by the stale refusal of `show_day_plan`: one check more than the usual three is allowed in this turn.
+    private(set) var extraCheckGranted = false
+    /// The next plan handle number; it counts up for the session, so an old handle never names a new check.
+    private var nextPlanNumber = 1
+    /// The flow of the message being served, set by the session; the Routes lookups of a check carry it.
+    var currentFlow: UUID?
+
+    /// Starts a plan turn: the counters and the stored checks of an earlier turn are gone.
+    func beginDayPlan(_ context: DayPlanContext) {
+        dayPlan = context
+        checks = []
+        searchesThisPlan = 0
+        extraCheckGranted = false
+    }
+
+    /// Ends the plan turn (the next ordinary message, or a new chat).
+    func endDayPlan() {
+        dayPlan = nil
+        checks = []
+        searchesThisPlan = 0
+        extraCheckGranted = false
+    }
 
     /// The formatters for the zone as it is now; rebuilt only when the zone differs from the last use.
     private var formats: Formats {
@@ -397,6 +432,17 @@ final class AgentToolbox {
     /// Reads one function call (tool name and the raw arguments string the model sent).
     func handle(name: String, arguments: String) -> AgentToolOutcome {
         guard let tool = Tool(rawValue: name) else { return reject(Say.unknownTool) }
+        // SPEC-PLANDAY-001: the rules of a plan turn come before any argument is read.
+        switch tool {
+        case .checkDay, .showDay:
+            if dayPlan == nil { return reject(AgentDayPlan.Say.notInPlanTurn) }
+        case .travel:
+            if dayPlan != nil { return reject(AgentDayPlan.Say.travelRefused) }
+        case .search:
+            if dayPlan != nil, searchesThisPlan >= AgentDayPlan.searchesPerTurn { return reject(AgentDayPlan.Say.searchLimit) }
+        default:
+            break
+        }
         guard let data = arguments.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return reject(Say.notObject(tool)) }
@@ -410,6 +456,8 @@ final class AgentToolbox {
             case .search: return try search(values)
             case .travel: return try travel(values)
             case .booking: return try book(values)
+            case .checkDay: return try checkDayPlan(values)
+            case .showDay: return try showDayPlan(values)
             }
         } catch {
             return reject((error as? Rejection)?.message ?? Say.notObject(tool))
@@ -601,6 +649,7 @@ final class AgentToolbox {
         guard let query = values["query"], query.count >= AgentPlaces.queryMin else { throw Rejection(Say.queryMissing) }
         if query.count > AgentPlaces.queryMax { throw Rejection(Say.queryLong) }
         let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        if dayPlan != nil { searchesThisPlan += 1 }
         return .lookup(AgentLookup { [self] in
             let service = placeSearchProvider?() ?? store.placeSearch
             let found = await service.search(query, near: center)
@@ -644,6 +693,56 @@ final class AgentToolbox {
             }
             return AgentPlaces.travelOutput(route, leaveBy: leaveBy, registry: &registry)
         })
+    }
+
+    // MARK: - Day plan (SPEC-PLANDAY-001)
+
+    /// Gate, then the Routes lookups one after the other, then the stored check. The numbers are the app's: a leg whose
+    /// lookup failed, was cancelled or fell beyond the cap simply has no route and stays unchecked.
+    private func checkDayPlan(_ values: [String: String]) throws -> AgentToolOutcome {
+        guard let context = dayPlan else { throw Rejection(AgentDayPlan.Say.notInPlanTurn) }
+        guard checks.count < AgentDayPlan.checksPerTurn + (extraCheckGranted ? 1 : 0) else {
+            throw Rejection(AgentDayPlan.Say.checksUsed)
+        }
+        guard let text = values["stops"] else { throw Rejection(AgentDayPlan.Say.stopsFormat) }
+        let parsed: [AgentDayPlan.Stop]
+        do {
+            parsed = try AgentDayPlan.parse(text, context: context, registry: registry, now: now(), zone: zone())
+        } catch let refusal as AgentDayPlan.Refusal {
+            throw Rejection(refusal.message)
+        }
+        let stops = AgentDayPlan.effective(parsed, events: context.events)
+        let pairs = AgentDayPlan.legPairs(stops, cap: AgentDayPlan.lookupCap).pairs
+        let mode = context.mode
+        return .lookup(AgentLookup { [self] in
+            let service = directionsProvider?() ?? store.directions
+            var routes: [AgentDayPlan.Pair: AgentRoute] = [:]
+            for pair in pairs {
+                // A cancelled run writes nothing and starts no further lookup.
+                guard !Task.isCancelled else { return AgentPlaces.travelFailure(nil) }
+                guard let origin = stops[pair.from - 1].place, let destination = stops[pair.to - 1].place else { continue }
+                let estimate = await service.estimate(
+                    mode, from: CLLocationCoordinate2D(latitude: origin.latitude, longitude: origin.longitude),
+                    to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude), flow: currentFlow)
+                guard let seconds = estimate.duration else { continue }
+                routes[pair] = AgentRoute(mode: mode, seconds: seconds, origin: origin, destination: destination,
+                                          warnings: estimate.warnings, createdAt: now())
+            }
+            guard !Task.isCancelled else { return AgentPlaces.travelFailure(nil) }
+            let evaluated = AgentDayPlan.evaluate(stops: stops, routes: routes, bufferMinutes: AgentPlaces.legBufferMinutes)
+            let created = now()
+            let check = AgentDayPlan.Check(
+                handle: "d\(nextPlanNumber)", stops: stops, legs: evaluated.legs, problems: evaluated.problems, createdAt: created,
+                signature: AgentDayPlan.signature(of: store.activities, from: created, to: context.checkWindowEnd))
+            nextPlanNumber += 1
+            checks.append(check)
+            return AgentLookupOutput(result: AgentDayPlan.resultJSON(check, checksMade: checks.count), showsGoogleData: !routes.isEmpty)
+        })
+    }
+
+    /// Milestone M2b builds the card from the stored check here; until then no plan can be shown.
+    private func showDayPlan(_ values: [String: String]) throws -> AgentToolOutcome {
+        throw Rejection(AgentDayPlan.Say.planUnknown)
     }
 
     // MARK: - Booking (SPEC-BOOKING-001)

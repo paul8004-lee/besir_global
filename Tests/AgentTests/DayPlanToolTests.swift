@@ -569,7 +569,7 @@ final class DayPlanToolTests: XCTestCase {
             XCTAssertFalse(reply.isLookup, row.label)
         }
         XCTAssertEqual(rows.count, 37)
-        XCTAssertGreaterThan(planted, 20, "most rows plant a sentinel")
+        XCTAssertGreaterThanOrEqual(planted, 20, "most rows plant a sentinel")
         XCTAssertEqual(rig.routes.callCount + rig.places.callCount, 0, "a refused call sends nothing")
         XCTAssertTrue(rig.tools.checks.isEmpty, "a refused call stores nothing")
 

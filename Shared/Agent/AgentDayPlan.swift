@@ -8,6 +8,8 @@ enum AgentDayPlan {
     /// Routes lookups per check, checks per turn, and the longest lists of explaining lines on a card.
     static let lookupCap = 10
     static let checksPerTurn = 3
+    /// `search_places` calls that are executed in one plan turn.
+    static let searchesPerTurn = 6
     private static let firstIdeaMax = 2
     private static let changeMax = 2
 
@@ -109,14 +111,126 @@ enum AgentDayPlan {
         static func leftOut(_ title: String) -> String { "Left out: \(title)." }
     }
 
-    /// A refusal of the stop gate: one fixed `Say` string.
+    // MARK: The stop gate (REQ-PLANDAY-008)
+
+    /// A refusal of the stop gate: one fixed `Say` string, never a value the model sent.
     struct Refusal: Error {
         let message: String
     }
 
-    /// The strict stop gate of REQ-PLANDAY-008 (signature only in the red commit).
+    private static let stopsMax = 8
+    private static let titleMax = 80
+    private static let spanMax: TimeInterval = 24 * 3600
+    private static let stopKeys: Set<String> = ["event", "title", "start", "end", "place_id"]
+
+    /// The Store activities that overlap the fixed window from `from` to `to`, sorted. The window does not move, so an
+    /// activity that ends after the check does not change the signature; a changed title, place or time does.
+    static func signature(of activities: [ActivityBlock], from: Date, to: Date) -> [Signature] {
+        activities.filter { $0.startDate < to && $0.endDate > from }
+            .map { Signature(id: $0.id, title: $0.title, place: $0.location, start: $0.startDate, end: $0.endDate) }
+            .sorted { ($0.start, $0.id.uuidString) < ($1.start, $1.id.uuidString) }
+    }
+
+    /// Parses `stops` strictly and returns the new stops and the events the model named, in the order given. The events and
+    /// the registry are read as they are when the call arrives. Every refusal is one fixed string.
     static func parse(_ text: String, context: DayPlanContext, registry: AgentPlaceRegistry, now: Date, zone: TimeZone) throws -> [Stop] {
-        throw Refusal(message: "")
+        guard let data = text.data(using: .utf8),
+              let array = (try? JSONSerialization.jsonObject(with: data)) as? [Any],
+              (1...stopsMax).contains(array.count) else { throw Refusal(message: Say.stopsFormat) }
+
+        // First every stop's shape, then the meaning of each stop in order.
+        var objects: [[String: String]] = []
+        for element in array {
+            guard let object = element as? [String: Any] else { throw Refusal(message: Say.stopsFormat) }
+            var strings: [String: String] = [:]
+            for (key, value) in object {
+                guard let string = value as? String else { throw Refusal(message: Say.stopsFormat) }
+                strings[key] = string
+            }
+            objects.append(strings)
+        }
+        if objects.contains(where: { !Set($0.keys).isSubset(of: stopKeys) }) { throw Refusal(message: Say.stopBuild) }
+
+        let formatter = localFormatter(zone)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let minute = Date(timeIntervalSince1970: (now.timeIntervalSince1970 / 60).rounded(.down) * 60)
+        var named = Set<String>()
+        var stops: [Stop] = []
+        for object in objects {
+            // A blank value is absent, as everywhere in the gate.
+            func present(_ key: String) -> String? {
+                guard let value = object[key], !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+                return value
+            }
+            func place(_ id: String) throws -> Place {
+                guard AgentPlaces.isPlaceHandle(id), let known = registry.place(id) else { throw Refusal(message: Say.stopPlace) }
+                return known
+            }
+
+            if let handle = present("event") {
+                guard !named.contains(handle), let event = context.events.first(where: { $0.handle == handle }) else {
+                    throw Refusal(message: Say.stopEvent)
+                }
+                named.insert(handle)
+                // Title and times come from the app; sending one is a stop built wrongly, not a value to replace quietly.
+                guard object["title"] == nil, object["start"] == nil, object["end"] == nil else { throw Refusal(message: Say.stopBuild) }
+                var given: Place?
+                if let id = present("place_id") {
+                    guard event.place == nil else { throw Refusal(message: Say.stopBuild) }
+                    given = try place(id)
+                }
+                stops.append(Stop(title: event.title, start: event.start, end: event.end, place: given ?? event.place,
+                                  eventHandle: handle, isNew: false, referenced: true))
+                continue
+            }
+
+            let title = AgentToolbox.sanitized(object["title"] ?? "")
+            guard !title.isEmpty, let startText = present("start"), let endText = present("end") else {
+                throw Refusal(message: Say.stopNew)
+            }
+            guard title.count <= titleMax else { throw Refusal(message: Say.stopTitle) }
+            guard let start = localDate(startText, formatter), let end = localDate(endText, formatter),
+                  end > start, end.timeIntervalSince(start) <= spanMax,
+                  calendar.isDate(start, inSameDayAs: now), start >= minute else { throw Refusal(message: Say.stopTime) }
+            let given = try present("place_id").map(place)
+            // Adding what the schedule already holds would add an event twice.
+            let startMinute = (start.timeIntervalSince1970 / 60).rounded(.down)
+            if context.events.contains(where: {
+                $0.title.lowercased() == title.lowercased() && ($0.start.timeIntervalSince1970 / 60).rounded(.down) == startMinute
+            }) { throw Refusal(message: Say.stopDuplicate) }
+            stops.append(Stop(title: title, start: start, end: end, place: given, eventHandle: nil, isNew: true, referenced: false))
+        }
+        guard stops.contains(where: \.isNew) else { throw Refusal(message: Say.stopNone) }
+        return stops
+    }
+
+    private static func localFormatter(_ zone: TimeZone) -> DateFormatter {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = calendar
+        f.timeZone = zone
+        f.isLenient = false
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        return f
+    }
+
+    /// `YYYY-MM-DDTHH:MM` and nothing else, as `create_activity` reads it; a local time that does not exist is not a date.
+    private static func localDate(_ text: String, _ formatter: DateFormatter) -> Date? {
+        let bytes = Array(text.utf8)
+        guard bytes.count == 16 else { return nil }
+        for (i, b) in bytes.enumerated() {
+            switch i {
+            case 4, 7: if b != 0x2D { return nil }
+            case 10: if b != 0x54 { return nil }
+            case 13: if b != 0x3A { return nil }
+            default: if b < 0x30 || b > 0x39 { return nil }
+            }
+        }
+        guard let date = formatter.date(from: text), formatter.string(from: date) == text else { return nil }
+        return date
     }
 
     // MARK: Effective stops, overlaps and legs (REQ-PLANDAY-009)
