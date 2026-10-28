@@ -53,6 +53,12 @@ struct FullSirView: View {
             }
             .background(Theme.bg)
             .navigationTitle("be full sir")
+            // An opaque bar band: rows that scroll up under the round Home button are not drawn there, so the
+            // button never sits over the Base Location caption or any other row once the title has collapsed.
+            // The visibility is left automatic: forcing it visible hid the large title at the top.
+            #if os(iOS)
+            .toolbarBackground(Theme.bg, for: .navigationBar)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button { onBack() } label: { Label("Home", systemImage: "chevron.left") }
