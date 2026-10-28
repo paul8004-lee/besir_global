@@ -93,9 +93,40 @@ enum ShareObservation {
         return "\(nsError.domain) \(nsError.code)"
     }
 
-    /// The kinds found, in order, for the Debug label of the extension (for example `image, url`).
-    static func summary(of record: Record) -> String {
-        record.attachments.isEmpty ? "nothing" : record.attachments.map { $0.kind.rawValue }.joined(separator: ", ")
+    /// What one share did, as far as the Debug card has to say.
+    struct Outcome: Equatable {
+        enum RecordResult: Equatable { case written, fileMissing, failed(String) }   // failed holds describe(error)
+        enum QueueResult: Equatable { case stored, writeFailed, nothingToStore }
+        enum InboxState: Equatable { case count(Int), noFolder, notReadable }
+        var hasContainer: Bool
+        var record: RecordResult        // ignored when hasContainer is false
+        var queue: QueueResult
+        var inbox: InboxState
+    }
+
+    /// The lines for the Debug card: failures only, in the order App Group or Record, Queue, Inbox. Empty means "say nothing".
+    static func failureLines(for outcome: Outcome) -> [String] {
+        var lines: [String] = []
+        if !outcome.hasContainer {
+            lines.append("App Group: no container")
+        } else {
+            switch outcome.record {
+            case .written: break
+            case .fileMissing: lines.append("Record: written, file missing")
+            case .failed(let text): lines.append("Record: failed \(text)")
+            }
+        }
+        switch outcome.queue {
+        case .stored: break
+        case .writeFailed: lines.append("Queue: write failed")
+        case .nothingToStore: lines.append("Queue: nothing to store")
+        }
+        switch outcome.inbox {
+        case .count: break
+        case .noFolder: lines.append("Inbox: no folder")
+        case .notReadable: lines.append("Inbox: folder not readable")
+        }
+        return lines
     }
 
     private static func containsURL(_ text: String) -> Bool {

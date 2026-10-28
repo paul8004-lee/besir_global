@@ -26,8 +26,8 @@ final class ShareViewController: UIViewController {
         card.addSubview(label)
         view.addSubview(card)
 #if DEBUG
-        // Debug only: room for the several lines of the record result.
-        let cardSize = CGSize(width: 300, height: 170)
+        // Debug only: the card starts like the Release card and grows only when it has failure lines to show.
+        let cardSize = CGSize(width: 220, height: 80)
         label.numberOfLines = 0
         label.widthAnchor.constraint(lessThanOrEqualTo: card.widthAnchor, constant: -16).isActive = true
 #else
@@ -80,49 +80,62 @@ final class ShareViewController: UIViewController {
         }
         // The image is shrunk to a small JPEG here, once, so the queue never holds a large one.
 #if DEBUG
-        var queueLine = "Queue: nothing to store"
+        var queueResult = ShareObservation.Outcome.QueueResult.nothingToStore
 #endif
         if let queued = SharedInbox.prepare(text: text, imageData: imageData, mime: mimeType) {
 #if DEBUG
-            queueLine = SharedInbox.standard.enqueue(queued) ? "Queue: stored" : "Queue: write failed"
+            queueResult = SharedInbox.standard.enqueue(queued) ? .stored : .writeFailed
 #else
             SharedInbox.standard.enqueue(queued)
 #endif
         }
 #if DEBUG
-        label.font = .preferredFont(forTextStyle: .footnote)
-        label.text = (writeObservation(itemCount: items.count) + [queueLine, inboxLine()]).joined(separator: "\n")
-        // Long enough to read and to screenshot; the Release build closes at once.
-        try? await Task.sleep(nanoseconds: 8_000_000_000)
+        let written = writeObservation(itemCount: items.count)
+        let lines = ShareObservation.failureLines(for: ShareObservation.Outcome(
+            hasContainer: written.hasContainer, record: written.record, queue: queueResult, inbox: inboxState()))
+        if !lines.isEmpty {
+            showFailures(lines)
+            // Long enough to read and to screenshot; a share with no failure closes at once, as in Release.
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+        }
 #endif
         finish()
     }
 
 #if DEBUG
-    /// Appends this share's record to the App Group file and returns the lines for the card: the kinds found and what the
-    /// write did. A missing container and a failed write are both said out loud (domain and code only, no path, no content).
-    private func writeObservation(itemCount: Int) -> [String] {
+    /// Appends this share's record to the App Group file and returns what happened: whether the container exists and what the
+    /// write did. A failed write keeps the domain and code only, no path, no content. With no container nothing is appended.
+    private func writeObservation(itemCount: Int) -> (hasContainer: Bool, record: ShareObservation.Outcome.RecordResult) {
         let record = ShareObservation.record(at: Date(), itemCount: itemCount, attachments: observed)
-        var lines = ["Found: \(ShareObservation.summary(of: record))"]
         guard let container = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: SharedInbox.appGroupID) else {
-            return lines + ["App Group: no container"]
+            return (false, .written)
         }
-        lines.append("App Group: container found")
         let file = container.appendingPathComponent(ShareObservation.fileName)
         do {
             try ShareObservation.append(record, to: file)
-            lines.append(FileManager.default.fileExists(atPath: file.path) ? "Record: written, file present" : "Record: written, file missing")
+            return (true, FileManager.default.fileExists(atPath: file.path) ? .written : .fileMissing)
         } catch {
-            lines.append("Record: failed \(ShareObservation.describe(error))")
+            return (true, .failed(ShareObservation.describe(error)))
         }
-        return lines
     }
 
     /// How many item files the queue folder holds right now (a count, nothing else).
-    private func inboxLine() -> String {
-        guard let directory = SharedInbox.standard.directory else { return "Inbox: no folder" }
+    private func inboxState() -> ShareObservation.Outcome.InboxState {
+        guard let directory = SharedInbox.standard.directory else { return .noFolder }
         let count = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.count
-        return count.map { "Inbox: \($0) file(s)" } ?? "Inbox: folder not readable"
+        return count.map { .count($0) } ?? .notReadable
+    }
+
+    /// Draws the failure lines: a larger card with a footnote font. The card's own fixed width and height are the only
+    /// `equal` constraints on it with no second item.
+    private func showFailures(_ lines: [String]) {
+        label.font = .preferredFont(forTextStyle: .footnote)
+        label.text = lines.joined(separator: "\n")
+        for constraint in label.superview?.constraints ?? [] where constraint.relation == .equal && constraint.secondItem == nil {
+            if constraint.firstAttribute == .width { constraint.constant = 300 }
+            if constraint.firstAttribute == .height { constraint.constant = 170 }
+        }
+        view.layoutIfNeeded()
     }
 #endif
 
