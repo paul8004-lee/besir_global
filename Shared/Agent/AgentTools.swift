@@ -745,6 +745,11 @@ final class AgentToolbox {
         throw Rejection(AgentDayPlan.Say.planUnknown)
     }
 
+    /// The result of a confirmed day plan, read back from the Store (signature stub of milestone M2b).
+    func dayPlanApplied(_ ids: [UUID], listed: Int) -> (AgentResolution, AgentCardMark) {
+        (AgentResolution(result: "{}", notice: nil), .notApplied)
+    }
+
     // MARK: - Booking (SPEC-BOOKING-001)
 
     private func bookingClient() -> BookingClient {
