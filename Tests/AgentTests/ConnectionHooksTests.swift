@@ -551,7 +551,7 @@ final class ConnectionHooksTests: XCTestCase {
         enqueue(rig, image: imageBase64)
         var offered: [UUID?] = []
         var accepts = false
-        let hand: (String) -> Bool = { _ in
+        let hand: (String, String) -> Bool = { _, _ in
             let flow = rig.log.takeOfferedFlow()
             offered.append(flow)
             if let flow { rig.log.offerFlow(flow) }
@@ -574,7 +574,7 @@ final class ConnectionHooksTests: XCTestCase {
             let rig = try makeShare()
             enqueue(rig, image: imageBase64)
             var inside: UUID?
-            await rig.importer.pass(vision: rig.reader, canHand: { true }, hand: { _ in
+            await rig.importer.pass(vision: rig.reader, canHand: { true }, hand: { _, _ in
                 inside = rig.log.takeOfferedFlow()
                 if let inside { rig.log.offerFlow(inside) }
                 return accepts
@@ -591,9 +591,8 @@ final class ConnectionHooksTests: XCTestCase {
         enqueue(rig, image: imageBase64)
         let session = AgentSession(toolbox: ToolHarness.make().tools, transport: FakeTransport([.turn(Turns.text("Noted."))]),
                                    connections: rig.log)
-        await rig.importer.pass(vision: rig.reader, canHand: { session.canSend }, hand: { message in
-            session.send(message)
-            return true
+        await rig.importer.pass(vision: rig.reader, canHand: { session.canSend }, hand: { message, shown in
+            SharedImport.give(message: message, shown: shown, to: session)
         })
         await session.settle()
         await rig.log.flush()
