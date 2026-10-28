@@ -33,6 +33,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>besir saves the events you confirm to your calendar and reads today's events to plan your day.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>besir uses your current location to calculate your departure time.</string>
 	<key>UIBackgroundModes</key>
