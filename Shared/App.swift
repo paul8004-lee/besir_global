@@ -63,6 +63,8 @@ struct BesirApp: App {
         #if os(iOS)
         // 백그라운드 태스크 등록은 앱 실행이 끝나기 전에 해야 한다 — 그래서 여기(App.init)다.
         BackgroundSync.register(store: s)
+        // Attach the Apple Calendar mirror before any save of this run, so the baseline is taken first.
+        s.attachCalendar(AppleCalendarMirror(backend: EventKitBackend(), linksURL: AppleCalendarMirror.defaultLinksURL))
         #endif
     }
 
