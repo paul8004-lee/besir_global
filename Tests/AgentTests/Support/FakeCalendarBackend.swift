@@ -104,3 +104,26 @@ final class FakeCalendarBackend: CalendarBackend {
     /// The user deletes an event in the Calendar app.
     func userDelete(_ id: String) { events[id] = nil }
 }
+
+/// Waiting and file helpers shared by the calendar tests.
+@MainActor
+enum CalendarTestSupport {
+    /// Waits until the mirror has no pass running; returns false after 5 seconds.
+    static func settle(_ mirror: AppleCalendarMirror) async -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while mirror.running {
+            if Date() > deadline { return false }
+            try? await Task.sleep(nanoseconds: 2_000_000)
+        }
+        return true
+    }
+
+    static func freshLinksURL() -> URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("besir-cal-\(UUID().uuidString).json")
+    }
+
+    static func loadFile(_ url: URL) -> CalendarLinkFile? {
+        if case .file(let file) = CalendarLinkFile.load(url) { return file }
+        return nil
+    }
+}

@@ -741,6 +741,7 @@ final class Store: ObservableObject {
         drvSaveActivitiesCount += 1   // t50 S1 — REQ-005 계수기(앱 논리 영향 없음)
         try? FileManager.default.createDirectory(at: AppConfig.supportDirectory, withIntermediateDirectories: true)
         try? JSONEncoder().encode(activities).write(to: activitiesURL)
+        calendarMirror.reconcile(activities)
     }
 
     private func loadActivities() {
@@ -839,6 +840,18 @@ final class Store: ObservableObject {
     /// 새 일정·활동의 "구글 캘린더에 보이기" 기본값. 연결이 없어도 값은 저장되므로 연결 상태로 가리지
     /// 않는다. 추가 화면 둘은 드라이버가 컴파일하지 못해서, 계산을 여기 한 곳에 두고 화면은 읽기만 하게 한다(계약 5).
     var calendarSyncDefault: Bool { config.autoAddToCalendar }
+
+    /// Apple Calendar link (SPEC-APPLECAL-001): a no-op until the app attaches the real mirror.
+    var calendarMirror: CalendarMirroring = NoCalendarMirror()
+    @Published private(set) var calendarStatus: CalendarStatus = .idle
+
+    func attachCalendar(_ mirror: AppleCalendarMirror) {
+        mirror.onStatus = { [weak self] in self?.calendarStatus = $0 }
+        mirror.captureBaseline(activities)
+        calendarMirror = mirror
+    }
+
+    func reconcileCalendar() { calendarMirror.reconcile(activities) }
 
 
     /// 어떤 시간대 앞뒤로 사용자가 있을/가야 할 장소를 추정한다(판단은 `ScheduleLogic`이 한다).
