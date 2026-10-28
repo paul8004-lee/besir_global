@@ -369,7 +369,12 @@ enum AgentDayPlan {
     /// what changed from it. Every title is the sanitized title; every number is the app's.
     static func cardLines(_ check: Check, first: Check?, mode: TransportMode, zone: TimeZone) -> [String] {
         let time = timeFormatter(zone)
+        let day = dayFormatter(zone)
         func title(_ stop: Stop) -> String { AgentPlaces.displayName(stop.title) }
+        /// The end of a stop that ends on another day carries its day, as the baseline `range` does; Confirm writes that end.
+        func end(_ stop: Stop) -> String {
+            time.calendar.isDate(stop.start, inSameDayAs: stop.end) ? time.string(from: stop.end) : day.string(from: stop.end)
+        }
         func title(at position: Int) -> String { check.stops.indices.contains(position - 1) ? title(check.stops[position - 1]) : "" }
 
         var lines = [check.problems.isEmpty ? Say.heading : Say.headingProblems]
@@ -386,7 +391,7 @@ enum AgentDayPlan {
                     lines.append(Say.unchecked)
                 }
             }
-            lines.append("\(time.string(from: stop.start)) - \(time.string(from: stop.end)) \(title(stop))" + (stop.isNew ? " (new)" : ""))
+            lines.append("\(time.string(from: stop.start)) - \(end(stop)) \(title(stop))" + (stop.isNew ? " (new)" : ""))
             if stop.isNew, let place = stop.place { lines.append("At \(AgentPlaces.displayName(place.name))") }
             above = index
         }
@@ -466,6 +471,13 @@ enum AgentDayPlan {
         f.calendar = calendar
         f.timeZone = zone
         f.dateFormat = "h:mm a"
+        return f
+    }
+
+    /// The same day-and-time form as the baseline card range (`AgentToolbox.Formats.day`).
+    private static func dayFormatter(_ zone: TimeZone) -> DateFormatter {
+        let f = timeFormatter(zone)
+        f.dateFormat = "EEE, MMM d, h:mm a"
         return f
     }
 }

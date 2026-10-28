@@ -236,6 +236,33 @@ final class DayPlanToolTests: XCTestCase {
         AgentDayPlan.cardLines(check, first: first, mode: .car, zone: TestClock.zone)
     }
 
+    /// Audit item D34: Confirm writes the end of a stop that ends tomorrow, so the card draws it with its day, the way the
+    /// baseline range does; a stop that ends the same day keeps the time-only range.
+    func testPLANDAY_T73_aStopThatEndsOnAnotherDayShowsItsEndWithTheDay() {
+        let tomorrow = { (local: String) in TestClock.date("2026-10-28T" + local) }
+        let pastMidnight = Stop(title: "Late show", start: date("23:00"), end: tomorrow("01:00"), place: nil,
+                                eventHandle: nil, isNew: true, referenced: false)
+        XCTAssertEqual(lines(check(run(events: [], news: [pastMidnight]))),
+                       ["Plan for today", "11:00 PM - Wed, Oct 28, 1:00 AM Late show (new)"])
+
+        let fullDay = Stop(title: "Marathon", start: date("09:00"), end: tomorrow("09:00"), place: nil,
+                           eventHandle: nil, isNew: true, referenced: false)
+        XCTAssertEqual(lines(check(run(events: [], news: [fullDay]))),
+                       ["Plan for today", "9:00 AM - Wed, Oct 28, 9:00 AM Marathon (new)"],
+                       "exactly 24 hours later is another day, not 9:00 AM - 9:00 AM")
+
+        let sameDay = newStop("Early show", "20:00", "23:59", place: nil)
+        XCTAssertEqual(lines(check(run(events: [], news: [sameDay]))),
+                       ["Plan for today", "8:00 PM - 11:59 PM Early show (new)"], "an end on the same day keeps the time-only range")
+
+        let overnightEvent = event("e1", "Night shift", "22:00", "23:00", place: nil)
+        let longEvent = PlanMyDay.Event(handle: "e2", title: "Night watch", start: date("23:30"), end: tomorrow("06:30"), locationText: nil,
+                                        place: nil, placeHandle: nil, source: .calendar)
+        let withEvents = lines(check(run(events: [overnightEvent, longEvent], news: [newStop("Snack", "23:10", "23:20", place: nil)])))
+        XCTAssertTrue(withEvents.contains("11:30 PM - Wed, Oct 28, 6:30 AM Night watch"), "an existing event that ends tomorrow too: \(withEvents)")
+        XCTAssertTrue(withEvents.contains("10:00 PM - 11:00 PM Night shift"))
+    }
+
     func testPLANDAY_T44_theCardSaysWhatChangedFromTheFirstIdeaAndNothingWithoutOne() {
         let firstIdea = check(run(events: [dayA()], news: [dayB("17:50", "18:50"), dayC()], seconds: dayRoutes), handle: "d1")
         let revised = check(run(events: [dayA()], news: [dayB(), dayC()], seconds: dayRoutes), handle: "d2")
