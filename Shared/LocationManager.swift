@@ -66,7 +66,12 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     private let ipLookup: IPLookup
     private let nameResolver: PlaceNameResolver
     private let waitSeconds: TimeInterval
-    private var timeoutTask: Task<Void, Never>?
+    /// The one wait that bounds a positioning attempt. A newer wait replaces it; the generation tells a
+    /// replaced or cancelled wait (and the IP lookup it started) that its answer is no longer wanted.
+    private var waitTask: Task<Void, Never>?
+    private var waitGeneration = 0
+    /// Whether the app is in the foreground. It starts true; REQ-010 moves it.
+    private var isForeground = true
 
     private func isAuthorized(_ s: CLAuthorizationStatus) -> Bool {
         #if os(iOS)
@@ -121,13 +126,34 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             return
         }
         // 캐시가 없으면 새로 측위.
+        beginPositioning(status: status)
+    }
+
+    /// The only place that starts a wait. It also starts the updates, or asks for the permission when the
+    /// status is not determined (the grant callback then calls this again). It does nothing in the background.
+    private func beginPositioning(status: CLAuthorizationStatus) {
+        guard isForeground else { return }
+        lastError = nil
         isLocating = true
-        startTimeout()
+        armWait()
         if status == .notDetermined {
             source.requestWhenInUseAuthorization()   // 허용되면 didChangeAuthorization에서 측위 시작
         } else {
             source.startUpdatingLocation()            // 이미 허용된 상태
         }
+    }
+
+    /// Ends a positioning attempt: no wait, no updates, not locating.
+    private func stopPositioning() {
+        cancelWait()
+        source.stopUpdatingLocation()
+        isLocating = false
+    }
+
+    private func cancelWait() {
+        waitTask?.cancel()
+        waitTask = nil
+        waitGeneration += 1
     }
 
     /// 측위가 이 시한 안에 오지 않으면 IP 폴백으로 넘어간다. prefillOrigin의 대기 시한도 여기서
@@ -141,26 +167,47 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         #endif
     }()
 
-    private func startTimeout() {
-        timeoutTask?.cancel()
-        timeoutTask = Task { @MainActor in
+    private func armWait() {
+        waitTask?.cancel()
+        waitGeneration += 1
+        let generation = waitGeneration
+        waitTask = Task { @MainActor in
             // GPS(iOS)는 첫 측위에 시간이 걸리므로 충분히 기다린 뒤, 그래도 안 오면 IP 폴백.
             try? await Task.sleep(nanoseconds: UInt64(self.waitSeconds * 1_000_000_000))
-            // A cancelled task writes nothing: the sleep wakes at once on cancel, and a fallback run
-            // after that would be a cancelled request (t12 sync D4, N1).
-            guard !Task.isCancelled, self.isLocating, self.currentLocation == nil else { return }
-            await self.ipLocationFallback()
-            if self.currentLocation == nil {
-                self.isLocating = false
-                self.lastError = "Couldn't get your location. Check Settings → Location Services, or search for an origin yourself."
-            }
+            // A cancelled or replaced wait writes nothing: the sleep wakes at once on cancel, and a
+            // fallback run after that would be a cancelled request (t12 sync D4, N1).
+            guard !Task.isCancelled, generation == self.waitGeneration else { return }
+            await self.waitEnded(generation)
+        }
+    }
+
+    private var isDenied: Bool {
+        let status = source.authorizationStatus
+        return status == .denied || status == .restricted
+    }
+
+    /// A wait that ends while locating and holding no real fix: ask the IP lookup only when nothing at all is
+    /// held and the permission is not denied, then stop locating. A wait that ends while not locating does
+    /// nothing (a failure or a denial already ended the attempt).
+    private func waitEnded(_ generation: Int) async {
+        guard isLocating, realFixLocation == nil else { return }
+        if currentLocation == nil, !isDenied {
+            await ipLocationFallback(generation)
+            guard generation == waitGeneration else { return }
+        }
+        isLocating = false
+        if currentLocation == nil {
+            lastError = "Couldn't get your location. Check Settings → Location Services, or search for an origin yourself."
         }
     }
 
     /// CoreLocation 실패 시 IP 기반 대략 위치(도시 수준). CoreLocation이 나중에 오면 그쪽이 덮어쓴다.
-    private func ipLocationFallback() async {
+    /// The answer is dropped when the wait it belongs to was replaced or cancelled, the permission is
+    /// denied, or a real fix (or any position) arrived while the lookup ran.
+    private func ipLocationFallback(_ generation: Int) async {
         guard let a = await ipLookup() else { return }
-        guard currentLocation == nil else { return }
+        guard generation == waitGeneration, !Task.isCancelled, !isDenied,
+              realFixLocation == nil, currentLocation == nil else { return }
         applyApproximate(latitude: a.latitude, longitude: a.longitude, region: a.region, city: a.city)
     }
 
@@ -194,7 +241,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// 진짜 측위를 받아들인다. 대략 위치의 이름은 새 이름이 올 때까지 남기지 않는다 — 역지오코딩이
     /// 실패하면 새 좌표에 옛 "(approx.)" 이름이 붙어 남는다.
     func applyFix(_ location: CLLocation) {
-        timeoutTask?.cancel()
+        cancelWait()
         if isApproximate {
             currentPlaceName = nil
             isApproximate = false
@@ -217,9 +264,21 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     func handleAuthorization(_ status: CLAuthorizationStatus) {
         authorizationStatus = status
         if isAuthorized(status) {
-            if isLocating || isApproximate { source.startUpdatingLocation() }
+            // Any grant starts positioning unless a real fix is held: a grant after a denial, after a failed
+            // IP lookup and after the approximate state all begin the same way.
+            if realFixLocation == nil {
+                beginPositioning(status: status)
+            } else if isForeground {
+                source.startUpdatingLocation()
+            }
         } else if status == .denied || status == .restricted {
-            isLocating = false
+            // The IP guess does not survive a denial; a real fix does (DL6).
+            stopPositioning()
+            if isApproximate {
+                currentLocation = nil
+                isApproximate = false
+                currentPlaceName = nil
+            }
             lastError = "Location permission was denied. Allow it in Settings."
         }
     }
@@ -233,7 +292,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         // kCLErrorLocationUnknown(0)은 일시적이므로 계속 시도하게 둔다.
         if (error as NSError).code == CLError.locationUnknown.rawValue { return }
         isLocating = false
-        lastError = error.localizedDescription
+        // A position that is already held (real or approximate) makes the error a non-event.
+        if currentLocation == nil { lastError = error.localizedDescription }
     }
 
     // MARK: - CLLocationManagerDelegate
