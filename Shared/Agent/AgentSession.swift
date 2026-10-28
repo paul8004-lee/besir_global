@@ -399,7 +399,7 @@ final class AgentSession: ObservableObject {
             endTurn(with: Line.tooManySteps)
             return
         }
-        switch toolbox.handle(name: first.name, arguments: first.arguments) {
+        switch toolbox.handle(name: first.name, arguments: first.arguments, flow: flow) {
         case .result(let result):
             record((first, extras), firstResult: result, notice: nil)
             startRequest()

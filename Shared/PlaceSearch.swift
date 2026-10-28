@@ -21,25 +21,26 @@ struct PlaceSearch {
     private static func results(_ count: Int) -> String { count == 1 ? "1 result" : "\(count) results" }
 
     /// One packet for a request that was sent. A cancelled search records nothing.
-    private func note(_ summary: String, _ status: ConnectionStatus) {
+    private func note(_ summary: String, _ status: ConnectionStatus, flow: UUID? = nil) {
         guard !Task.isCancelled else { return }
-        connections.record(from: .besir, to: .googlePlaces, kind: .placeSearch, summary: summary, status: status)
+        connections.record(from: .besir, to: .googlePlaces, kind: .placeSearch, summary: summary, status: status, flowID: flow)
     }
 
     /// Typed search. A trimmed query under 2 characters sends nothing.
     /// - `center`: the device or base location, used as a bias circle; nil sends no bias.
+    /// - `flow`: the Connections flow the packet joins (the chat agent passes its message's flow); nil is a flow of none.
     // @MX:ANCHOR fan_in 5 - add event, activity card, activity detail, favorites and the place field all call this
     // @MX:REASON the failure contract is an empty list: no proxy, a bad status, a thrown error or an undecodable body
-    func search(_ query: String, near center: CLLocationCoordinate2D?) async -> [Place] {
+    func search(_ query: String, near center: CLLocationCoordinate2D?, flow: UUID? = nil) async -> [Place] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 2,
               let request = GooglePlaces.searchRequest(query: trimmed, near: center, config: config) else { return [] }
         guard let data = await GooglePlaces.fetch(request, transport: transport) else {
-            note("Search failed", .failed)
+            note("Search failed", .failed, flow: flow)
             return []
         }
         let places = GooglePlaces.parsePlaces(data)
-        note("Searched “\(trimmed)” · \(Self.results(places.count))", .ok)
+        note("Searched “\(trimmed)” · \(Self.results(places.count))", .ok, flow: flow)
         return places
     }
 

@@ -788,6 +788,261 @@ final class ConnectionHooksTests: XCTestCase {
         XCTAssertEqual(log.packets, [])
     }
 
+    // MARK: - SPEC-CONNECT-003 (card t54): the agent's place and route lookups join the message's flow
+
+    private func nearbyOnly(_ log: ConnectionLog) -> [ConnectionPacket] { log.packets.filter { $0.kind == .placeSearch } }
+
+    func testCONNECT3_P01_ASearchWithAFlowRecordsItsPacketInThatFlow() async throws {
+        let log = makeLog()
+        let flow = UUID()
+        let stub = PlacesTransportStub.answering(with: try Places.fixture("places-search-three"))
+        let found = await placeSearch(stub, log).search("cafe", near: Places.center, flow: flow)
+        XCTAssertEqual(found.count, 3)
+        await log.flush()
+        XCTAssertEqual(lines(log), ["besir>googlePlaces placeSearch ok Searched “cafe” · 3 results"])
+        XCTAssertEqual(log.packets.map(\.flowID), [flow])
+    }
+
+    func testCONNECT3_P02_AFailedSearchWithAFlowIsAFailedPacketInThatFlow() async throws {
+        let flow = UUID()
+        let stubs: [PlacesTransportStub] = [
+            .answering(status: 500, with: try Places.fixture("places-search-three")),
+            PlacesTransportStub { _ in throw URLError(.notConnectedToInternet) }
+        ]
+        for stub in stubs {
+            let log = makeLog()
+            let found = await placeSearch(stub, log).search("cafe", near: nil, flow: flow)
+            XCTAssertEqual(found, [])
+            await log.flush()
+            XCTAssertEqual(lines(log), ["besir>googlePlaces placeSearch failed Search failed"])
+            XCTAssertEqual(log.packets.map(\.flowID), [flow])
+        }
+    }
+
+    func testCONNECT3_P03_ASearchWithoutAFlowRecordsNone() async throws {
+        let log = makeLog()
+        let stub = PlacesTransportStub.answering(with: try Places.fixture("places-search-three"))
+        _ = await placeSearch(stub, log).search("cafe", near: Places.center)
+        await log.flush()
+        XCTAssertEqual(lines(log), ["besir>googlePlaces placeSearch ok Searched “cafe” · 3 results"])
+        XCTAssertEqual(log.packets.map(\.flowID), [nil])
+    }
+
+    func testCONNECT3_P04_ANearbySearchRecordsNoFlow() async throws {
+        let log = makeLog()
+        let stub = PlacesTransportStub.answering(with: try Places.fixture("places-search-three"))
+        _ = await placeSearch(stub, log).nearbyPlaces(category: nil, keyword: "cafe", near: Places.center)
+        await log.flush()
+        XCTAssertEqual(nearbyOnly(log).count, 1)
+        XCTAssertEqual(log.packets.map(\.flowID), [nil])
+    }
+
+    /// A toolbox whose Places and Routes services write to `log`, with the device at the test fixture.
+    private func flowTools(places: PlacesTransportStub, routes: RoutesTransportStub, log: ConnectionLog) -> AgentToolbox {
+        let store = EmptyStore.make()
+        store.config = AppConfig()
+        let instant = TestClock.date(TestClock.nowString)
+        return AgentToolbox(store: store, now: { instant }, timeZone: { TestClock.zone },
+                            deviceOrigin: { PlaceFixture.device },
+                            places: { PlaceSearch(config: Places.config, transport: places.transport, connections: log) },
+                            directions: { DirectionsService(config: Routes.config, transport: routes.transport, connections: log) })
+    }
+
+    private func lookupCall(_ tools: AgentToolbox, _ name: String, _ arguments: [String: Any], flow: UUID?) throws -> AgentLookup {
+        let outcome = tools.handle(name: name, arguments: PlaceTurns.arguments(arguments), flow: flow)
+        return try XCTUnwrap(outcome.lookup, "\(name) did not answer with a lookup")
+    }
+
+    private func okPlaces() throws -> PlacesTransportStub {
+        .answering(with: try Places.fixture("places-search-three"))
+    }
+
+    private func okRoutes() throws -> RoutesTransportStub {
+        .answering(with: try Routes.fixture("routes-drive"))
+    }
+
+    func testCONNECT3_H01_ASearchLookupRecordsTheFlowGivenToHandle() async throws {
+        let log = makeLog()
+        let flow = UUID()
+        let tools = flowTools(places: try okPlaces(), routes: try okRoutes(), log: log)
+        _ = try await lookupCall(tools, "search_places", ["query": "cafe"], flow: flow).run()
+        _ = try await lookupCall(tools, "search_places", ["query": "cafe"], flow: nil).run()
+        await log.flush()
+        XCTAssertEqual(log.packets.map(\.kind), [.placeSearch, .placeSearch])
+        XCTAssertEqual(log.packets.map(\.flowID), [flow, nil])
+    }
+
+    func testCONNECT3_H02_ARouteLookupRecordsTheFlowGivenToHandle() async throws {
+        let log = makeLog()
+        let flow = UUID()
+        let tools = flowTools(places: try okPlaces(), routes: try okRoutes(), log: log)
+        _ = try await lookupCall(tools, "search_places", ["query": "cafe"], flow: nil).run()
+        _ = try await lookupCall(tools, "get_travel_time", ["place_id": "p1", "mode": "transit"], flow: flow).run()
+        _ = try await lookupCall(tools, "get_travel_time", ["place_id": "p1", "mode": "walk"], flow: nil).run()
+        await log.flush()
+        XCTAssertEqual(log.packets.map(\.kind), [.placeSearch, .route, .route])
+        XCTAssertEqual(log.packets.map(\.flowID), [nil, flow, nil])
+    }
+
+    func testCONNECT3_H03_TheFlowIsTheOneGivenWhenHandleWasCalledNotWhenTheLookupRuns() async throws {
+        let log = makeLog()
+        let first = UUID()
+        let second = UUID()
+        let tools = flowTools(places: try okPlaces(), routes: try okRoutes(), log: log)
+        let firstSearch = try lookupCall(tools, "search_places", ["query": "cafe"], flow: first)
+        let secondSearch = try lookupCall(tools, "search_places", ["query": "noodles"], flow: second)
+        _ = await secondSearch.run()
+        _ = await firstSearch.run()
+        await log.flush()
+        XCTAssertEqual(lines(log), ["besir>googlePlaces placeSearch ok Searched “noodles” · 3 results",
+                                    "besir>googlePlaces placeSearch ok Searched “cafe” · 3 results"])
+        XCTAssertEqual(log.packets.map(\.flowID), [second, first])
+
+        let firstRoute = try lookupCall(tools, "get_travel_time", ["place_id": "p1", "mode": "transit"], flow: first)
+        let secondRoute = try lookupCall(tools, "get_travel_time", ["place_id": "p1", "mode": "walk"], flow: second)
+        _ = await secondRoute.run()
+        _ = await firstRoute.run()
+        await log.flush()
+        XCTAssertEqual(log.packets.suffix(2).map(\.flowID), [second, first])
+    }
+
+    func testCONNECT3_H04_AFlowChangesNothingAnyOtherToolReturns() throws {
+        let list = try XCTUnwrap(JSONSerialization.jsonObject(with: AgentTools.declarationsJSON()) as? [[String: Any]])
+        let flow = UUID()
+        for name in list.compactMap({ $0["name"] as? String }) {
+            let plain = ToolHarness.make().tools.handle(name: name, arguments: "{}")
+            let joined = ToolHarness.make().tools.handle(name: name, arguments: "{}", flow: flow)
+            XCTAssertNotNil(plain.resultText, name)
+            XCTAssertEqual(plain.resultText, joined.resultText, name)
+        }
+        let plain = ToolHarness.make().tools.handle(name: "create_activity", arguments: Turns.createArguments)
+        let joined = ToolHarness.make().tools.handle(name: "create_activity", arguments: Turns.createArguments, flow: flow)
+        let plainCard = try XCTUnwrap(plain.card)
+        XCTAssertEqual(plainCard.lines, try XCTUnwrap(joined.card).lines)
+        XCTAssertFalse(plainCard.lines.isEmpty)
+    }
+
+    /// The two services answer the given stubs. Each call builds a fresh toolbox because the registry hands out
+    /// advancing handles (`p1..p3`, then `p4..p6`), so one toolbox would differ on a correct build.
+    func testCONNECT3_H05_TheResultTheModelGetsIsTheSameWithAndWithoutAFlow() async throws {
+        let cases: [(name: String, tool: String, args: [String: Any], places: PlacesTransportStub,
+                     routes: RoutesTransportStub, status: String)] = [
+            ("places 200", "search_places", ["query": "cafe"], try okPlaces(), try okRoutes(), "ok"),
+            ("places 500", "search_places", ["query": "cafe"],
+             .answering(status: 500, with: try Places.fixture("places-search-three")), try okRoutes(), "no_results"),
+            ("routes 200", "get_travel_time", ["place_id": "p1", "mode": "transit"], try okPlaces(), try okRoutes(), "ok"),
+            ("routes 403", "get_travel_time", ["place_id": "p1", "mode": "transit"], try okPlaces(),
+             .answering(status: 403, with: try Routes.fixture("routes-google-error-403")), "unavailable"),
+            ("routes none", "get_travel_time", ["place_id": "p1", "mode": "transit"], try okPlaces(),
+             .answering(with: try Routes.fixture("routes-empty-routes")), "no_route")
+        ]
+        for item in cases {
+            var answers: [String] = []
+            for flow in [UUID?.none, UUID()] {
+                let tools = flowTools(places: item.places, routes: item.routes, log: makeLog())
+                if item.tool == "get_travel_time" {
+                    _ = try await lookupCall(tools, "search_places", ["query": "cafe"], flow: nil).run()
+                }
+                answers.append(try await lookupCall(tools, item.tool, item.args, flow: flow).run().result)
+            }
+            XCTAssertEqual(answers[0], answers[1], item.name)
+            XCTAssertEqual(TestClock.object(answers[0])?["status"] as? String, item.status, item.name)
+        }
+    }
+
+    func testCONNECT3_H06_ACancelledLookupWithAFlowRecordsNothing() async throws {
+        let log = makeLog()
+        let places = try okPlaces()
+        let routes = try okRoutes()
+        let tools = flowTools(places: places, routes: routes, log: log)
+        let flow = UUID()
+        _ = try await lookupCall(tools, "search_places", ["query": "cafe"], flow: nil).run()
+        await log.flush()
+        let before = log.packets.count
+        let search = try lookupCall(tools, "search_places", ["query": "cafe"], flow: flow)
+        let travel = try lookupCall(tools, "get_travel_time", ["place_id": "p1", "mode": "transit"], flow: flow)
+        _ = await cancelled { await search.run() }
+        _ = await cancelled { await travel.run() }
+        XCTAssertEqual(places.callCount, 2)
+        XCTAssertEqual(routes.callCount, 1)
+        await log.flush()
+        XCTAssertEqual(log.packets.count, before)
+    }
+
+    /// A session whose model searches for a cafe, asks for the transit time to `p1` and then answers, `rounds` times.
+    /// The session and both services write to `log`; no handle is registered outside the session.
+    private func turnRig(log: ConnectionLog, routes: RoutesTransportStub, rounds: Int = 1) throws -> TravelRig {
+        let store = EmptyStore.make()
+        store.config = AppConfig()
+        let instant = TestClock.date(TestClock.nowString)
+        let found = try okPlaces()
+        let tools = AgentToolbox(store: store, now: { instant }, timeZone: { TestClock.zone },
+                                 deviceOrigin: { PlaceFixture.device },
+                                 places: { PlaceSearch(config: Places.config, transport: found.transport, connections: log) },
+                                 directions: { DirectionsService(config: Routes.config, transport: routes.transport, connections: log) })
+        var turns: [FakeTransport.Step] = []
+        for round in 1...rounds {
+            turns.append(.turn(PlaceTurns.search(id: "s\(round)")))
+            turns.append(.turn(PlaceTurns.travel(id: "t\(round)")))
+            turns.append(.turn(Turns.text("It is a short ride.")))
+        }
+        let fake = FakeTransport(turns)
+        return TravelRig(fake: fake, session: AgentSession(toolbox: tools, transport: fake, connections: log))
+    }
+
+    func testCONNECT3_S01_OneMessageWithASearchAndARouteIsOneFlow() async throws {
+        let log = makeLog()
+        let rig = try turnRig(log: log, routes: try okRoutes())
+        await rig.say("Find a cafe and tell me the transit time.")
+        await log.flush()
+        func count(_ kind: ConnectionKind) -> Int { log.packets.filter { $0.kind == kind }.count }
+        XCTAssertEqual(count(.agentMessage), 3)
+        XCTAssertEqual(count(.agentToolCall), 2)
+        XCTAssertEqual(count(.placeSearch), 1)
+        XCTAssertEqual(count(.route), 1)
+        XCTAssertEqual(log.packets.count, 7)
+        XCTAssertNotNil(log.packets[0].flowID)
+        XCTAssertEqual(Set(log.packets.map(\.flowID)).count, 1)
+        XCTAssertEqual(ConnectionFlows.group(log.packets).count, 1)
+        XCTAssertEqual(chains(log), ["besir → Muse Spark → besir → Google Places → Muse Spark → besir → Muse Spark"
+                                     + " → besir → Google Routes → Muse Spark → besir → Muse Spark"])
+    }
+
+    func testCONNECT3_S02_ASecondMessageIsASecondFlow() async throws {
+        let log = makeLog()
+        let rig = try turnRig(log: log, routes: try okRoutes(), rounds: 2)
+        await rig.say("Find a cafe and tell me the transit time.")
+        await log.flush()
+        let firstFlow = try XCTUnwrap(log.packets.first?.flowID)
+        await rig.say("And again, please.")
+        await log.flush()
+        let flows = ConnectionFlows.group(log.packets)
+        XCTAssertEqual(flows.count, 2)
+        XCTAssertEqual(flows.map { $0.packets.count }, [7, 7])
+        XCTAssertEqual(log.packets.prefix(7).map(\.flowID), Array(repeating: firstFlow, count: 7))
+        let secondFlow = try XCTUnwrap(log.packets.last?.flowID)
+        XCTAssertNotEqual(secondFlow, firstFlow)
+        XCTAssertEqual(log.packets.suffix(7).map(\.flowID), Array(repeating: secondFlow, count: 7))
+    }
+
+    func testCONNECT3_S03_AFailedOrNoRouteLookupStaysInTheMessagesFlow() async throws {
+        let cases: [(RoutesTransportStub, String, ConnectionStatus)] = [
+            (.answering(status: 403, with: try Routes.fixture("routes-google-error-403")), "get travel time failed", .failed),
+            (.answering(with: try Routes.fixture("routes-empty-object")), "get travel time noRoute", .noRoute)
+        ]
+        for (routes, toolLine, status) in cases {
+            let log = makeLog()
+            let rig = try turnRig(log: log, routes: routes)
+            await rig.say("Find a cafe and tell me the transit time.")
+            await log.flush()
+            let route = try XCTUnwrap(log.packets.first { $0.kind == .route }, toolLine)
+            XCTAssertEqual(route.status, status, toolLine)
+            XCTAssertNotNil(route.flowID, toolLine)
+            XCTAssertEqual(Set(log.packets.map(\.flowID)), [route.flowID], toolLine)
+            XCTAssertEqual(toolPackets(log), ["search places ok", toolLine])
+        }
+    }
+
     // MARK: - SPEC-CONNECT-002 (card t47): known tool names, "no route" as its own status
 
     /// A session whose model asks for one transit trip to the place `p1`, over a toolbox whose route lookup is stubbed
