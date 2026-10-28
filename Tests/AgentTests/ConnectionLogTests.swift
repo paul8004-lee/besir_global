@@ -73,9 +73,9 @@ final class ConnectionLogTests: XCTestCase {
 
     func testCONNECT_T03_EnumsHaveExactlyTheSpecifiedCasesAndEnglishNames() {
         XCTAssertEqual(Set(ConnectionParty.allCases.map(\.rawValue)),
-                       ["instagram", "shareSheet", "besir", "museSpark", "imageReader", "googlePlaces", "googleRoutes", "appleCalendar"])
+                       ["instagram", "shareSheet", "besir", "museSpark", "imageReader", "googlePlaces", "googleRoutes", "appleCalendar", "bookingPartner"])
         XCTAssertEqual(Set(ConnectionKind.allCases.map(\.rawValue)),
-                       ["share", "imageRead", "placeSearch", "route", "agentMessage", "agentToolCall", "calendarSave"])
+                       ["share", "imageRead", "placeSearch", "route", "agentMessage", "agentToolCall", "calendarSave", "booking"])
         XCTAssertEqual(Set(ConnectionStatus.allCases.map(\.rawValue)), ["ok", "failed", "declined"])
         let names = ConnectionParty.allCases.map(\.displayName) + ConnectionKind.allCases.map(\.displayName)
             + ConnectionKind.allCases.map(\.defaultSummary) + ConnectionStatus.allCases.map(\.word)

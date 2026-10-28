@@ -6,7 +6,7 @@ import CoreLocation
 // validated values and Store records only.
 
 enum AgentTools {
-    /// JSON array of the six function declarations sent with every request.
+    /// JSON array of the seven function declarations sent with every request.
     static func declarationsJSON() -> Data { Data(declarations.utf8) }
 
     private static let declarations = #"""
@@ -99,6 +99,21 @@ enum AgentTools {
           "required": ["place_id", "mode"],
           "additionalProperties": false
         }
+      },
+      {
+        "type": "function",
+        "name": "request_booking",
+        "description": "Ask a simulated table-booking partner for a table at a place found with search_places. The booking is simulated, not a real reservation: always call the result simulated. The user confirms before anything is sent.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "place_id": {"type": "string", "description": "The restaurant: a place_id returned by search_places."},
+            "start": {"type": "string", "description": "The time of the table as a local date-time, YYYY-MM-DDTHH:MM. Ask the user if they have not said."},
+            "party_size": {"type": "string", "description": "How many people the table is for, 1 to 12. Ask the user if they have not said."}
+          },
+          "required": ["place_id", "start", "party_size"],
+          "additionalProperties": false
+        }
       }
     ]
     """#
@@ -156,6 +171,7 @@ private enum Tool: String {
     case delete = "delete_activity"
     case search = "search_places"
     case travel = "get_travel_time"
+    case booking = "request_booking"
 
     /// The declared parameters, in declaration order. Nothing else is ever read.
     var params: [String] {
@@ -166,6 +182,7 @@ private enum Tool: String {
         case .delete: return ["id"]
         case .search: return ["query"]
         case .travel: return ["place_id", "mode", "origin_place_id", "arrive_by"]
+        case .booking: return ["place_id", "start", "party_size"]
         }
     }
 }
@@ -180,7 +197,11 @@ private enum Say {
     }
     static let listRange = "Call list_activities again with from and to as local date-times, or ask the user which days they mean."
     static func wrongType(_ tool: Tool, _ param: String) -> String {
-        "Call \(tool.rawValue) again with \(param) as a string, or omit it if the user did not give it."
+        // Every booking argument is required, so "omit it" would be the wrong advice for this tool.
+        if tool == .booking {
+            return "Call request_booking again with \(param) as a string. If you do not have it, ask the user; do not guess it."
+        }
+        return "Call \(tool.rawValue) again with \(param) as a string, or omit it if the user did not give it."
     }
     static func timeForm(_ tool: Tool, _ param: String) -> String {
         "Call \(tool.rawValue) again with \(param) as a local date-time in the form YYYY-MM-DDTHH:MM, or ask the user."
@@ -217,6 +238,13 @@ private enum Say {
     static let createMismatch = "Call create_activity again with a place_id that matches the route_id, or omit place_id."
     static let routeExpired = "Call get_travel_time again, then call create_activity again with the new route_id."
     static let routeExpiredNotice = "The travel time is out of date. Nothing was added."
+
+    // SPEC-BOOKING-001: each string names only request_booking or search_places.
+    static let bookPlace = "Call search_places to find the place, then call request_booking again with the place_id it returns."
+    static let bookStart = "Ask the user for the time, then call request_booking again. Do not guess it."
+    static let bookWindow = "Ask the user to confirm the date, then call request_booking again. The start must be a time that has not passed and be within the next 366 days."
+    static let bookParty = "Ask the user how many people the table is for, then call request_booking again. Do not guess it."
+    static let bookUnavailable = "Tell the user booking is not available right now. Do not call request_booking again."
 
     static let declined = "The user cancelled. Do not retry the change unless the user asks again."
     static let notFound = "That event no longer exists. Tell the user and ask what to do next."
@@ -295,26 +323,31 @@ final class AgentToolbox {
     let deviceOrigin: () -> Place?
     let placeSearchProvider: (() -> PlaceSearch)?
     let directionsProvider: (() -> DirectionsService)?
+    /// SPEC-BOOKING-001: the booking client, built on use from the live configuration; tests inject a stubbed one.
+    let bookingProvider: (() -> BookingClient)?
 
     /// `timeZone` is read on every use, so a zone change while the app runs reaches dates, cards and the gate.
     init(store: Store, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone,
          deviceOrigin: @escaping () -> Place? = { nil },
          places: (() -> PlaceSearch)? = nil,
-         directions: (() -> DirectionsService)? = nil) {
+         directions: (() -> DirectionsService)? = nil,
+         booking: (() -> BookingClient)? = nil) {
         self.store = store
         self.now = now
         zone = timeZone
         self.deviceOrigin = deviceOrigin
         placeSearchProvider = places
         directionsProvider = directions
+        bookingProvider = booking
     }
 
     convenience init(store: Store, now: @escaping () -> Date, timeZone: TimeZone,
                      deviceOrigin: @escaping () -> Place? = { nil },
                      places: (() -> PlaceSearch)? = nil,
-                     directions: (() -> DirectionsService)? = nil) {
+                     directions: (() -> DirectionsService)? = nil,
+                     booking: (() -> BookingClient)? = nil) {
         self.init(store: store, now: now, timeZone: { timeZone }, deviceOrigin: deviceOrigin,
-                  places: places, directions: directions)
+                  places: places, directions: directions, booking: booking)
     }
 
     /// New chat: forgets the handles; the counters keep counting up, so an old handle never names a new entry.
@@ -344,6 +377,7 @@ final class AgentToolbox {
             case .delete: return try delete(values)
             case .search: return try search(values)
             case .travel: return try travel(values)
+            case .booking: return try book(values)
             }
         } catch {
             return reject((error as? Rejection)?.message ?? Say.notObject(tool))
@@ -578,6 +612,80 @@ final class AgentToolbox {
             }
             return AgentPlaces.travelOutput(route, leaveBy: leaveBy, registry: &registry)
         })
+    }
+
+    // MARK: - Booking (SPEC-BOOKING-001)
+
+    private func bookingClient() -> BookingClient {
+        bookingProvider?() ?? BookingClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
+    }
+
+    /// A booking start is a time that has not passed (by the minute) and is within the next 366 days.
+    private func withinBookingWindow(_ date: Date) -> Bool {
+        let minute = (now().timeIntervalSince1970 / 60).rounded(.down) * 60
+        return date >= Date(timeIntervalSince1970: minute) && date <= Date(timeIntervalSince1970: minute + Self.futureWindow)
+    }
+
+    private func book(_ values: [String: String]) throws -> AgentToolOutcome {
+        guard let handle = values["place_id"], AgentPlaces.isPlaceHandle(handle), let place = registry.place(handle),
+              !AgentPlaces.displayName(place.name).isEmpty else { throw Rejection(Say.bookPlace) }
+        guard values["start"] != nil, let start = try time(values, .booking, "start") else { throw Rejection(Say.bookStart) }
+        guard withinBookingWindow(start) else { throw Rejection(Say.bookWindow) }
+        guard let sizeText = values["party_size"], let partySize = AgentBooking.parsePartySize(sizeText) else {
+            throw Rejection(Say.bookParty)
+        }
+        guard bookingClient().isConfigured else { throw Rejection(Say.bookUnavailable) }
+
+        let f = formats
+        let placeName = AgentPlaces.displayName(place.name)
+        let request = BookingRequest(requestID: UUID().uuidString, restaurant: AgentBooking.sentName(place),
+                                     partySize: partySize, start: f.local.string(from: start))
+        let lines = AgentBooking.cardLines(placeName: placeName, start: f.day.string(from: start), partySize: partySize)
+        // The card keeps the place as it was when it was built; Confirm never reads the registry.
+        return .card(AgentCard(lines: lines, showsGoogleMark: true) { [self] in
+            // The card may have waited a long time: the start must still be a time that has not passed.
+            guard withinBookingWindow(start) else {
+                let result = Self.encode(["status": "rejected", "message": Say.bookWindow])
+                return (AgentResolution(result: result, notice: Say.startPassed), .notApplied)
+            }
+            let answer = await bookingClient().book(request, flow: ConnectionLog.beginFlow())
+            // Cancellation is checked after the answer is known and before anything is written.
+            guard !Task.isCancelled else { return bookingUnavailable() }
+            switch answer {
+            case .failure:
+                return bookingUnavailable()
+            case .success(.declined):
+                let result = Self.encode(["status": "declined", "partner": BookingClient.partnerName, "simulated": true,
+                                          "message": AgentBooking.declinedMessage])
+                return (AgentResolution(result: result, notice: nil), .notApplied)
+            case .success(.confirmed(let code)):
+                let made = await store.addActivityWithTravel(
+                    title: AgentBooking.entryTitle(partySize: partySize, placeName: placeName), location: place,
+                    startDate: start, endDate: start.addingTimeInterval(AgentBooking.entryDuration), travelFrom: nil,
+                    returnTo: nil, outboundMode: .walk, returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0,
+                    syncToCalendar: store.calendarSyncDefault, travelSecondsHint: nil)
+                return bookingApplied(made.activityId, code: code)
+            }
+        })
+    }
+
+    private func bookingUnavailable() -> (AgentResolution, AgentCardMark) {
+        let result = Self.encode(["status": "unavailable", "partner": BookingClient.partnerName, "simulated": true,
+                                  "message": AgentBooking.unavailableMessage])
+        return (AgentResolution(result: result, notice: AgentBooking.unavailableNotice), .notApplied)
+    }
+
+    /// `applied`, with the entry's values read back from the Store. Not private so a test can reach the read-back refusal,
+    /// which the Store write cannot be made to produce (it never suspends between the write and the read).
+    func bookingApplied(_ id: UUID, code: String) -> (AgentResolution, AgentCardMark) {
+        guard let stored = store.activities.first(where: { $0.id == id }) else { return (notFound(), .notApplied) }
+        let local = formats.local
+        var object: [String: Any] = ["status": "applied", "partner": BookingClient.partnerName, "simulated": true,
+                                     "reservation_code": code, "id": stored.id.uuidString, "title": Self.sanitized(stored.title),
+                                     "start": local.string(from: stored.startDate), "end": local.string(from: stored.endDate),
+                                     "message": AgentBooking.appliedMessage]
+        if let place = stored.location { object["location"] = AgentPlaces.displayName(place.name) }
+        return (AgentResolution(result: Self.encode(object), notice: nil), .confirmed)
     }
 
     private func update(_ values: [String: String]) throws -> AgentToolOutcome {

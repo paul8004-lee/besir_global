@@ -138,5 +138,29 @@
       "required": ["place_id", "mode"],
       "additionalProperties": false
     }
+  },
+  {
+    "type": "function",
+    "name": "request_booking",
+    "description": "Ask a simulated table-booking partner for a table at a place found with search_places. The booking is simulated, not a real reservation: always call the result simulated. The user confirms before anything is sent.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "place_id": {
+          "type": "string",
+          "description": "The restaurant: a place_id returned by search_places."
+        },
+        "start": {
+          "type": "string",
+          "description": "The time of the table as a local date-time, YYYY-MM-DDTHH:MM. Ask the user if they have not said."
+        },
+        "party_size": {
+          "type": "string",
+          "description": "How many people the table is for, 1 to 12. Ask the user if they have not said."
+        }
+      },
+      "required": ["place_id", "start", "party_size"],
+      "additionalProperties": false
+    }
   }
 ]
