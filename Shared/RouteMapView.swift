@@ -86,7 +86,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.map = map
         host.onLayout = { [weak coordinator] in coordinator?.didLayout() }
-        host.onAppearanceChange = { [weak coordinator] in coordinator?.reselectSoon() }
+        host.onAppearanceChange = { [weak coordinator] in coordinator?.beginReassert() }
         coordinator.update(origin: origin, destination: destination, name: destinationName,
                            dark: context.environment.colorScheme == .dark)
         coordinator.sync()
@@ -143,9 +143,11 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
 
             let markers = MapMarkerSpec.markers(origin: origin, destination: destination, destinationName: name)
             if markers != lastMarkers || lastDark != dark {
+                let appearanceChanged = lastDark != nil && lastDark != dark
                 replaceMarkers(markers, on: map)
                 lastMarkers = markers
                 lastDark = dark
+                if appearanceChanged { beginReassert() }
             }
 
             reselect()
@@ -186,7 +188,34 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
             DispatchQueue.main.async { [weak self] in self?.reselect() }
         }
 
-        func mapViewDidIdle(_ mapView: GMSMapView) { reselect() }
+        /// After a change of appearance the SDK restyles the map a little later, and the first switch to a style
+        /// it has not drawn yet can drop the info window without any event we get (seen in the walk: the first
+        /// Dark switch after a pan showed no label; the cause is a reading, not proven). So for a few seconds
+        /// the selection is set again from a timer and from every end of tile rendering.
+        private var reassertUntil = Date.distantPast
+
+        func beginReassert() {
+            reassertUntil = LabelReassert.until(from: Date())
+            reselectSoon()
+            for delay in LabelReassert.delays {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.reassert() }
+            }
+        }
+
+        /// Selects the destination marker again even if the map still reports it as selected,
+        /// but leaves a tap on the origin marker alone.
+        private func reassert() {
+            guard let map, let destinationMarker else { return }
+            if let selected = map.selectedMarker, selected !== destinationMarker { return }
+            map.selectedMarker = nil
+            map.selectedMarker = destinationMarker
+        }
+
+        func mapView(_ mapView: GMSMapView, idleAt position: GMSCameraPosition) { reselect() }
+
+        func mapViewDidFinishTileRendering(_ mapView: GMSMapView) {
+            if LabelReassert.isActive(now: Date(), until: reassertUntil) { reassert() } else { reselect() }
+        }
 
         func mapView(_ mapView: GMSMapView, didTapAt coordinate: CLLocationCoordinate2D) { reselectSoon() }
 

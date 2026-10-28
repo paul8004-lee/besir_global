@@ -202,4 +202,26 @@ final class GoogleMapsSetupTests: XCTestCase {
         XCTAssertEqual(MapFitInsets.make(labelWidth: 148, mapWidth: 0, mapHeight: 280), base)
         XCTAssertEqual(MapFitInsets.make(labelWidth: 148, mapWidth: 353, mapHeight: 0), base)
     }
+
+    // MARK: - putting the name label back after a change of appearance
+
+    func testGMAPS_ReassertWindowIsActiveInsideAndOverAfterTheWindow() {
+        let start = Date(timeIntervalSince1970: 1_000)
+        let until = LabelReassert.until(from: start)
+        XCTAssertTrue(LabelReassert.isActive(now: start, until: until))
+        XCTAssertTrue(LabelReassert.isActive(now: start.addingTimeInterval(LabelReassert.window - 0.1), until: until))
+        XCTAssertFalse(LabelReassert.isActive(now: start.addingTimeInterval(LabelReassert.window), until: until))
+    }
+
+    func testGMAPS_ReassertIsInactiveBeforeAnyAppearanceChange() {
+        XCTAssertFalse(LabelReassert.isActive(now: Date(), until: .distantPast))
+    }
+
+    func testGMAPS_ReassertTimersAreIncreasingAndEndInsideTheWindow() {
+        let delays = LabelReassert.delays
+        XCTAssertFalse(delays.isEmpty)
+        XCTAssertEqual(delays, delays.sorted())
+        XCTAssertGreaterThan(delays.first ?? 0, 0)
+        XCTAssertLessThan(delays.last ?? .infinity, LabelReassert.window)
+    }
 }

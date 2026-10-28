@@ -110,6 +110,16 @@ struct MapFitInsets: Equatable {
     }
 }
 
+/// When the destination's name label is put back after a change of appearance: a window of seconds in which
+/// timers and the end of tile rendering select the destination marker again.
+enum LabelReassert {
+    static let window: TimeInterval = 3
+    static let delays: [TimeInterval] = [0.4, 1.2, 2.5]
+
+    static func until(from start: Date) -> Date { start.addingTimeInterval(window) }
+    static func isActive(now: Date, until: Date) -> Bool { now < until }
+}
+
 /// One marker the map shows, as plain values so the list can be compared before the map is touched.
 struct MapMarkerSpec: Equatable {
     enum Role { case origin, destination }
