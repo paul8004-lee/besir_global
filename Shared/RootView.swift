@@ -35,6 +35,7 @@ struct RootView: View {
 
     @EnvironmentObject var store: Store
     @EnvironmentObject var location: LocationManager
+    @EnvironmentObject var notifications: NotificationManager
     @State private var service: Service?
     @State private var showingSettings = false
     // The session lives here, not in the sheet, so the conversation survives closing the sheet. It sits in a reference
@@ -87,6 +88,10 @@ struct RootView: View {
         .task { await runShareImport() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await runShareImport() } } }
         .onChange(of: showingChat) { _, showing in if !showing { Task { await runShareImport() } } }
+        // A tap on a departure alert opens its event on the on-time screen, from the home screen and from be full sir alike.
+        .onChange(of: notifications.tappedEventID, initial: true) { _, id in
+            if id != nil, service != .onTime { service = .onTime }
+        }
     }
 
     /// One pass over the share queue: one item per pass, the agent gets only the composed text and the chat draws a short line
