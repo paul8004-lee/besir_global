@@ -167,10 +167,14 @@ final class AgentSession: ObservableObject {
     private var lookupCalls: (first: AgentCall, extras: [AgentCall])?
     /// Set by any `ok` place or route result of the current user message; cleared only by `send` and `newChat`.
     private var googleDataThisMessage = false
+    private let connections: ConnectionLog
+    /// The flow the packets of the message being served belong to.
+    private var flow = UUID()
 
-    init(toolbox: AgentToolbox, transport: AgentTransport) {
+    init(toolbox: AgentToolbox, transport: AgentTransport, connections: ConnectionLog = ConnectionLog.shared) {
         self.toolbox = toolbox
         self.transport = transport
+        self.connections = connections
     }
 
     /// Send and the text field are available only when nothing is in flight and no card waits.
@@ -204,6 +208,7 @@ final class AgentSession: ObservableObject {
     func send(_ text: String) {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend, !clean.isEmpty else { return }
+        flow = connections.takeOfferedFlow() ?? ConnectionLog.beginFlow()
         history.append(.user(clean))
         entries.append(AgentLogEntry(kind: .user(clean)))
         requestsThisMessage = 0
@@ -309,7 +314,22 @@ final class AgentSession: ObservableObject {
         requestTask = nil
         isWaiting = false
         if Self.isCancellation(error) { return }
+        noteMessage(Self.failureWord(for: error), .failed)
         endTurn(with: Self.line(for: error))
+    }
+
+    /// One packet for a model request that ended: fixed words only, never the raw error.
+    private func noteMessage(_ summary: String, _ status: ConnectionStatus) {
+        connections.record(from: .besir, to: .museSpark, kind: .agentMessage, summary: summary, status: status, flowID: flow)
+    }
+
+    private static func failureWord(for error: Error) -> String {
+        switch error as? AgentTransportError {
+        case .offline?: return "Offline"
+        case .timedOut?: return "Timed out"
+        case .http(let status, let body)?: return status == 401 && isWorkerUnauthorized(body) ? "Rejected" : "Unexpected"
+        default: return "Unexpected"
+        }
     }
 
     private static func isCancellation(_ error: Error) -> Bool {
@@ -349,9 +369,11 @@ final class AgentSession: ObservableObject {
         requestTask = nil
         isWaiting = false
         guard turn.isUsable else {
+            noteMessage("Unexpected", .failed)
             endTurn(with: Line.unexpected)
             return
         }
+        noteMessage("Reply received", .ok)
 
         let items = turn.replayItems
         history.append(.assistant(items, responseID: turn.responseID))
@@ -419,12 +441,21 @@ final class AgentSession: ObservableObject {
     private func record(_ calls: (first: AgentCall, extras: [AgentCall]), firstResult: String, notice: String?) {
         history.append(.callOutput(callID: calls.first.callID, result: firstResult))
         entries.append(AgentLogEntry(kind: .result(Self.status(of: firstResult))))
+        noteToolCall(calls.first.name, status: Self.status(of: firstResult))
         if let notice { entries.append(AgentLogEntry(kind: .notice(notice))) }
         for extra in calls.extras {
             entries.append(AgentLogEntry(kind: .tool(name: extra.name, arguments: extra.arguments)))
             history.append(.callOutput(callID: extra.callID, result: Line.oneAtATime))
             entries.append(AgentLogEntry(kind: .result("rejected")))
         }
+    }
+
+    /// The first call of a response, once its result is final. `ok` and `applied` are `ok`, `declined` is `declined`,
+    /// anything else (`rejected`, `not_found`, `stale`, an unknown word) is `failed`.
+    private func noteToolCall(_ name: String, status: String) {
+        let mapped: ConnectionStatus = (status == "ok" || status == "applied") ? .ok : (status == "declined" ? .declined : .failed)
+        connections.record(from: .museSpark, to: .besir, kind: .agentToolCall,
+                           summary: name.replacingOccurrences(of: "_", with: " "), status: mapped, flowID: flow)
     }
 
     /// The `status` of a tool result, or `ok` for a result that has none (a list answer).

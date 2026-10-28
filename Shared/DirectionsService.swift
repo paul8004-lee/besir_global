@@ -7,6 +7,14 @@ import CoreLocation
 struct DirectionsService {
     let config: AppConfig
     var transport: GoogleRoutes.Transport = GoogleRoutes.urlSession
+    /// Where a request that was sent is noted. It never changes what a lookup returns.
+    var connections: ConnectionLog = ConnectionLog.shared
+
+    /// One packet for a request that was sent. A cancelled lookup records nothing.
+    private func note(_ summary: String, _ status: ConnectionStatus, flow: UUID? = nil) {
+        guard !Task.isCancelled else { return }
+        connections.record(from: .besir, to: .googleRoutes, kind: .route, summary: summary, status: status, flowID: flow)
+    }
 
     /// What the detail screen of an event looks up for its mode.
     enum DetailLookup: Equatable {
@@ -29,9 +37,10 @@ struct DirectionsService {
     /// Every mode comes from TransportMode.allCases, so a hand-written list can never silently miss a new case.
     func estimateAll(from origin: CLLocationCoordinate2D,
                      to dest: CLLocationCoordinate2D) async -> [TransportMode: TravelEstimate] {
-        await withTaskGroup(of: TravelEstimate.self) { group in
+        let flow = ConnectionLog.beginFlow()
+        return await withTaskGroup(of: TravelEstimate.self) { group in
             for mode in TransportMode.allCases {
-                group.addTask { await self.estimate(mode, from: origin, to: dest) }
+                group.addTask { await self.estimate(mode, from: origin, to: dest, flow: flow) }
             }
             var map: [TransportMode: TravelEstimate] = [:]
             for await e in group { map[e.mode] = e }
@@ -45,7 +54,8 @@ struct DirectionsService {
     /// The one place a reason is attached is the catch below.
     func estimate(_ mode: TransportMode,
                   from origin: CLLocationCoordinate2D,
-                  to dest: CLLocationCoordinate2D) async -> TravelEstimate {
+                  to dest: CLLocationCoordinate2D,
+                  flow: UUID? = nil) async -> TravelEstimate {
         // Without a proxy nothing goes on the network and the reason is fixed at once.
         guard config.hasProxy,
               let request = GoogleRoutes.request(mode: mode, from: origin, to: dest,
@@ -53,14 +63,17 @@ struct DirectionsService {
             return TravelEstimate(mode: mode, duration: nil, distance: nil, source: Self.source,
                                   failure: .notConfigured)
         }
+        let summary = "\(mode.rawValue.capitalized) route"
         do {
             let route = try GoogleRoutes.parse(try await GoogleRoutes.fetch(request, transport: transport))
+            note(summary, .ok, flow: flow)
             return TravelEstimate(mode: mode, duration: route.duration, distance: route.distance,
                                   source: Self.source, warnings: route.warnings)
         } catch {
             // A cancelled lookup has no failure, so the caller does not draw it as one.
-            return TravelEstimate(mode: mode, duration: nil, distance: nil, source: Self.source,
-                                  failure: GoogleRoutes.failure(for: error, hasProxy: config.hasProxy))
+            let failure = GoogleRoutes.failure(for: error, hasProxy: config.hasProxy)
+            if failure != nil { note(summary, .failed, flow: flow) }
+            return TravelEstimate(mode: mode, duration: nil, distance: nil, source: Self.source, failure: failure)
         }
     }
 
@@ -89,9 +102,12 @@ struct DirectionsService {
         do {
             let route = try GoogleRoutes.parse(try await GoogleRoutes.fetch(request, transport: transport))
             let converted = GoogleRoutes.transitSteps(from: route)
+            note("Transit steps", .ok)
             return TransitPlan(steps: converted.steps, extraMinutes: converted.extraMinutes)
         } catch {
-            return TransitPlan(failure: GoogleRoutes.failure(for: error, hasProxy: config.hasProxy))
+            let failure = GoogleRoutes.failure(for: error, hasProxy: config.hasProxy)
+            if failure != nil { note("Transit steps", .failed) }
+            return TransitPlan(failure: failure)
         }
     }
 }
