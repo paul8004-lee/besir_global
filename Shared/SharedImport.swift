@@ -36,6 +36,9 @@ final class SharedImport: ObservableObject {
     private var inFlight = false
     /// The composed message of an item whose hand-off was refused, so the retry does not call `/vision` again.
     private var kept: [UUID: String] = [:]
+    /// The flow of an item whose hand-off was refused, so its retry joins the same flow.
+    private var flows: [UUID: UUID] = [:]
+    private let connections: ConnectionLog
 
 #if DEBUG
     /// Debug only: one `vision_call` line per `/vision` request, so a walk-through can count its paid calls. No content, no id.
@@ -43,9 +46,11 @@ final class SharedImport: ObservableObject {
     var logURL = FileManager.default.temporaryDirectory.appendingPathComponent("besir-share-import.log")
 #endif
 
-    init(inbox: SharedInbox = .standard, now: @escaping () -> Date = Date.init) {
+    init(inbox: SharedInbox = .standard, now: @escaping () -> Date = Date.init,
+         connections: ConnectionLog = ConnectionLog.shared) {
         self.inbox = inbox
         self.now = now
+        self.connections = connections
     }
 
     /// One pass handles at most one item. `canHand` says whether the agent can take a message right now; `hand` gives it the
@@ -55,16 +60,20 @@ final class SharedImport: ObservableObject {
         inFlight = true
         defer { inFlight = false; isReading = false }
         guard canHand(), let item = inbox.pending(now: now()).first else { return }
-        if let message = kept[item.id] { deliver(message, for: item, hand: hand); return }
+        if let message = kept[item.id] { deliver(message, for: item, flow: flows[item.id] ?? ConnectionLog.beginFlow(), hand: hand); return }
 
+        let flow = ConnectionLog.beginFlow()
         let caption = SharedMessage.classify(item.text)
         guard let base64 = item.imageBase64 else {
             switch caption {
             case .text:
-                if case .message(let message) = SharedMessage.compose(fields: nil, text: item.text) { deliver(message, for: item, hand: hand) }
+                noteShare("Text shared", .ok, item, flow)
+                if case .message(let message) = SharedMessage.compose(fields: nil, text: item.text) { deliver(message, for: item, flow: flow, hand: hand) }
             case .link:
+                noteShare("Link shared", .ok, item, flow)
                 finish(item, line: SharedLine.linkOnly)
             case .none:
+                noteShare("Empty share", .failed, item, flow)
                 finish(item, line: SharedLine.unreadable)
             }
             return
@@ -72,19 +81,43 @@ final class SharedImport: ObservableObject {
 
         guard vision.isConfigured else { alertLine = SharedLine.notSetUp; return }
         guard SharedImage.decodedByteCount(ofBase64: base64) <= SharedImage.maxBytes else {
+            noteShare("Image shared", .failed, item, flow)
             finish(item, line: SharedLine.unreadable)
             return
         }
+        noteShare("Image shared", .ok, item, flow)
         isReading = true
 #if DEBUG
         logVisionCall()
 #endif
         switch await vision.read(imageBase64: base64, mime: item.mimeType ?? "image/jpeg") {
         case .failure(let failure):
+            noteRead(failure, flow)
             finish(item, line: SharedLine.line(for: failure))
         case .success(let fields):
+            noteRead(nil, flow)
             if fields.isEmpty { finish(item, line: SharedLine.nothingFound); return }
-            if case .message(let message) = SharedMessage.compose(fields: fields, text: item.text) { deliver(message, for: item, hand: hand) }
+            if case .message(let message) = SharedMessage.compose(fields: fields, text: item.text) { deliver(message, for: item, flow: flow, hand: hand) }
+        }
+    }
+
+    /// The receipt of one queue item. The words are fixed: nothing of the shared text or image is ever recorded.
+    private func noteShare(_ summary: String, _ status: ConnectionStatus, _ item: SharedInbox.Item, _ flow: UUID) {
+        connections.record(from: ConnectionParty.forSharedText(item.text), to: .besir, kind: .share,
+                           summary: summary, status: status, flowID: flow)
+    }
+
+    /// The image reading, once the reader has answered. Nothing was sent for `notSetUp` and `imageUnreadable`, and a
+    /// cancelled pass records nothing.
+    private func noteRead(_ failure: VisionFailure?, _ flow: UUID) {
+        guard !Task.isCancelled else { return }
+        switch failure {
+        case .notSetUp?, .imageUnreadable?:
+            return
+        case nil:
+            connections.record(from: .besir, to: .imageReader, kind: .imageRead, summary: "Image read", status: .ok, flowID: flow)
+        default:
+            connections.record(from: .besir, to: .imageReader, kind: .imageRead, summary: "Image read failed", status: .failed, flowID: flow)
         }
     }
 
@@ -94,12 +127,18 @@ final class SharedImport: ObservableObject {
         inbox.remove(item.id)
     }
 
-    private func deliver(_ message: String, for item: SharedInbox.Item, hand: (String) -> Bool) {
-        if hand(message) {
+    /// The flow is on offer to the log only while `hand` runs, so the agent's packets for this message join it.
+    private func deliver(_ message: String, for item: SharedInbox.Item, flow: UUID, hand: (String) -> Bool) {
+        connections.offerFlow(flow)
+        let accepted = hand(message)
+        connections.withdrawOffer()
+        if accepted {
             inbox.remove(item.id)
             kept[item.id] = nil
+            flows[item.id] = nil
         } else {
             kept[item.id] = message
+            flows[item.id] = flow
         }
     }
 
