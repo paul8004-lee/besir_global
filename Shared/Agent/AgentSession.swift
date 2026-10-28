@@ -219,6 +219,13 @@ final class AgentSession: ObservableObject {
         startRequest()
     }
 
+    // SPEC-PLANDAY-001 signatures only (red).
+    var onNewChat: (() -> Void)?
+
+    func sendPlan(message: String, shown: String?, context: DayPlanContext) -> Bool { false }
+
+    func prepareDayPlan(events: [PlanMyDay.Event]) -> [PlanMyDay.Event] { events }
+
     func confirmCard() async { await resolve(.confirm) }
 
     func cancelCard() async { await resolve(.cancel) }

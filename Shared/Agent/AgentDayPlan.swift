@@ -109,6 +109,16 @@ enum AgentDayPlan {
         static func leftOut(_ title: String) -> String { "Left out: \(title)." }
     }
 
+    /// A refusal of the stop gate: one fixed `Say` string.
+    struct Refusal: Error {
+        let message: String
+    }
+
+    /// The strict stop gate of REQ-PLANDAY-008 (signature only in the red commit).
+    static func parse(_ text: String, context: DayPlanContext, registry: AgentPlaceRegistry, now: Date, zone: TimeZone) throws -> [Stop] {
+        throw Refusal(message: "")
+    }
+
     // MARK: Effective stops, overlaps and legs (REQ-PLANDAY-009)
 
     /// Every event of the app's list plus the model's new stops, sorted by start; on a tie an event comes before a new stop,

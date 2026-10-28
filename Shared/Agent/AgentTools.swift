@@ -6,7 +6,7 @@ import CoreLocation
 // validated values and Store records only.
 
 enum AgentTools {
-    /// JSON array of the seven function declarations sent with every request.
+    /// JSON array of the nine function declarations sent with every request.
     static func declarationsJSON() -> Data { Data(declarations.utf8) }
 
     private static let declarations = #"""
@@ -97,6 +97,32 @@ enum AgentTools {
             "arrive_by": {"type": "string", "description": "Optional arrival time as a local date-time, YYYY-MM-DDTHH:MM. When given, the result also states when to leave."}
           },
           "required": ["place_id", "mode"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "check_day_plan",
+        "description": "Check the stops of a day plan against the user's schedule. The app finds overlaps and late arrivals and works out every travel time. Returns a plan_id.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "stops": {"type": "string", "description": "A JSON array of 1 to 8 stops. A new stop is an object with title, start and end as local date-times (YYYY-MM-DDTHH:MM) and optionally a place_id returned by search_places. An existing event is an object with event set to its id from the plan message; it may also have a place_id."}
+          },
+          "required": ["stops"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "show_day_plan",
+        "description": "Show the user a checked day plan to add to their schedule. The user confirms before anything is added.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "plan_id": {"type": "string", "description": "The plan_id returned by check_day_plan."}
+          },
+          "required": ["plan_id"],
           "additionalProperties": false
         }
       },
@@ -352,6 +378,12 @@ final class AgentToolbox {
 
     /// New chat: forgets the handles; the counters keep counting up, so an old handle never names a new entry.
     func resetConversation() { registry.clear() }
+
+    // SPEC-PLANDAY-001 signatures only (red): the plan-turn state comes with the implementation.
+    var currentFlow: UUID?
+    private(set) var checks: [AgentDayPlan.Check] = []
+    func beginDayPlan(_ context: DayPlanContext) {}
+    func endDayPlan() {}
 
     /// The formatters for the zone as it is now; rebuilt only when the zone differs from the last use.
     private var formats: Formats {
