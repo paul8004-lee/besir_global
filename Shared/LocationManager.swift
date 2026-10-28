@@ -70,6 +70,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// replaced or cancelled wait (and the IP lookup it started) that its answer is no longer wanted.
     private var waitTask: Task<Void, Never>?
     private var waitGeneration = 0
+    private var nameTask: Task<Void, Never>?
+    private var fixGeneration = 0
     /// Whether the app is in the foreground. It starts true; REQ-010 moves it.
     private var isForeground = true
 
@@ -92,6 +94,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         self.nameResolver = nameResolver ?? { await LocationManager.geocodedName($0) }
         self.waitSeconds = waitSeconds ?? Self.locateTimeoutSeconds
         super.init()
+        // Updates stay on while the app is open, so a fix is only delivered after 100 m of movement.
+        source.distanceFilter = Self.updateDistanceFilter
         (source as? CoreLocationSource)?.manager.delegate = self
         authorizationStatus = source.authorizationStatus
     }
@@ -107,8 +111,25 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// The position from a real fix, nil while only the IP guess is held.
     var realFixLocation: CLLocationCoordinate2D? { isApproximate ? nil : currentLocation }
 
-    /// Tells the manager whether the app is in the foreground.
-    func setForeground(_ foreground: Bool) {}
+    /// Metres a fix has to differ from the last delivered one before CoreLocation reports it again.
+    static let updateDistanceFilter: CLLocationDistance = 100
+
+    /// Tells the manager whether the app is in the foreground. Becoming active begins positioning when no real
+    /// fix is held and resumes the updates otherwise; the background cancels the wait and stops the updates.
+    func setForeground(_ foreground: Bool) {
+        isForeground = foreground
+        if foreground {
+            let status = source.authorizationStatus
+            guard isAuthorized(status) else { return }
+            if realFixLocation == nil {
+                beginPositioning(status: status)
+            } else {
+                source.startUpdatingLocation()
+            }
+        } else {
+            stopPositioning()
+        }
+    }
 
     /// 현재 위치를 출발지로 쓰겠다고 요청한다. 권한이 없으면 프롬프트를 띄운다.
     func useCurrentLocation() {
@@ -122,7 +143,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         // 이미 확보된 최신 위치가 있으면 즉시 사용 (재요청 시 콜백이 안 와 멈추는 문제 방지).
         if let loc = source.cachedLocation {
             applyFix(loc)
-            source.startUpdatingLocation()   // 백그라운드 갱신(첫 콜백 후 자동 정지)
+            if isForeground { source.startUpdatingLocation() }   // updates keep running in the foreground
             return
         }
         // 캐시가 없으면 새로 측위.
@@ -242,11 +263,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     /// 실패하면 새 좌표에 옛 "(approx.)" 이름이 붙어 남는다.
     func applyFix(_ location: CLLocation) {
         cancelWait()
-        if isApproximate {
-            currentPlaceName = nil
-            isApproximate = false
-        }
+        isApproximate = false
         currentLocation = location.coordinate
+        // The old name belongs to the old fix: show none until this fix's own name arrives.
+        currentPlaceName = nil
         lastError = nil
         isLocating = false
         reverseGeocode(location)
@@ -283,8 +303,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         }
     }
 
+    /// A fix never stops the updates: the position follows the device while the app is open.
     func handleUpdate(_ location: CLLocation) {
-        source.stopUpdatingLocation()
         applyFix(location)
     }
 
@@ -312,18 +332,30 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         Task { @MainActor in self.handleFailure(error) }
     }
 
+    /// At most one name lookup is in flight: a newer fix cancels the older one, and an answer that still
+    /// arrives for a fix that is no longer the latest is dropped.
     private func reverseGeocode(_ location: CLLocation) {
+        nameTask?.cancel()
+        fixGeneration += 1
+        let generation = fixGeneration
         let resolver = nameResolver
-        Task { @MainActor in
-            if let name = await resolver(location) { self.currentPlaceName = name }
+        nameTask = Task { @MainActor in
+            let name = await resolver(location)
+            guard !Task.isCancelled, generation == self.fixGeneration else { return }
+            if let name { self.currentPlaceName = name }
         }
     }
 
     /// The production name lookup.
     nonisolated static func geocodedName(_ location: CLLocation) async -> String? {
         let geocoder = CLGeocoder()
-        guard let p = try? await geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "en_US")).first
-        else { return nil }
+        // A cancelled lookup (a newer fix replaced it) cancels the request itself.
+        let found = await withTaskCancellationHandler {
+            try? await geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "en_US"))
+        } onCancel: {
+            geocoder.cancelGeocode()
+        }
+        guard let p = found?.first else { return nil }
         // 시·구가 중복(예: "서울특별시 서울특별시")되면 제거하고 합친다.
         var parts: [String] = []
         for part in [p.administrativeArea, p.locality, p.subLocality, p.thoroughfare].compactMap({ $0 }) {

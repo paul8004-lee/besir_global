@@ -87,6 +87,7 @@ struct BesirApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active {
+                        location.setForeground(true)
                         // 권한은 설정 앱에서 언제 바뀔지 모르니 활성화마다 다시 읽는다 — 느린
                         // 캘린더 동기화를 기다리면 그동안 캡션이 낡은 권한으로 남는다.
                         notifications.refreshPermissionStatus()
@@ -100,6 +101,7 @@ struct BesirApp: App {
                             store.rescheduleNearestNotifications()
                         }
                     } else if phase == .background {
+                        location.setForeground(false)
                         #if os(iOS)
                         // 백그라운드로 갈 때마다 다음 동기화를 예약해둔다(실행 시점은 iOS가 정함).
                         BackgroundSync.schedule()
