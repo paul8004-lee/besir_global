@@ -150,6 +150,113 @@ final class PlaceSearchTests: XCTestCase {
         XCTAssertEqual(good.count, 3)
     }
 
+    // MARK: - SPEC-PLACEFAIL-001: lookup tells a failure from an empty answer
+
+    func testPLACEFAIL_LookupSeparatesFailureFromEmpty() async throws {
+        for status in [400, 401, 403, 429, 500, 502, 503] {
+            let stub = try threePlacesStub(status: status)
+            let result = await makeSearch(stub).lookup("cafe", near: nil)
+            XCTAssertEqual(result, .failed, "status \(status)")
+            XCTAssertEqual(stub.callCount, 1, "status \(status)")
+        }
+        let body = try Support.fixture("places-search-three")
+        let plain = PlacesTransportStub { request in
+            (body, URLResponse(url: request.url ?? URL(fileURLWithPath: "/"), mimeType: "application/json",
+                               expectedContentLength: body.count, textEncodingName: nil))
+        }
+        let nonHTTP = await makeSearch(plain).lookup("cafe", near: nil)
+        XCTAssertEqual(nonHTTP, .failed)
+
+        let offline = PlacesTransportStub { _ in throw URLError(.notConnectedToInternet) }
+        let thrown = await makeSearch(offline).lookup("cafe", near: nil)
+        XCTAssertEqual(thrown, .failed)
+        XCTAssertEqual(offline.callCount, 1)
+
+        let unconfiguredStub = try threePlacesStub()
+        let unconfigured = await makeSearch(unconfiguredStub, config: AppConfig()).lookup("cafe", near: nil)
+        XCTAssertEqual(unconfigured, .failed)
+        XCTAssertEqual(unconfiguredStub.callCount, 0, "no proxy: nothing can be sent")
+
+        // Counterparts: an answer that came back is `.found`, empty or not.
+        let good = await makeSearch(try threePlacesStub()).lookup("cafe", near: nil)
+        guard case .found(let places) = good else { return XCTFail("a good answer is found, got \(good)") }
+        XCTAssertEqual(places.count, 3)
+        let empty = await makeSearch(PlacesTransportStub.answering(with: try Support.fixture("places-empty")))
+            .lookup("cafe", near: nil)
+        XCTAssertEqual(empty, .found([]))
+        let garbled = await makeSearch(PlacesTransportStub.answering(with: Data("not json".utf8))).lookup("cafe", near: nil)
+        XCTAssertEqual(garbled, .found([]), "a 200 with an unreadable body stays an empty answer (L3)")
+
+        let shortStub = try threePlacesStub()
+        let short = await makeSearch(shortStub).lookup("a", near: nil)
+        XCTAssertEqual(short, .found([]))
+        XCTAssertEqual(shortStub.callCount, 0, "a query under 2 characters sends nothing")
+    }
+
+    func testPLACEFAIL_LookupRecordsTheSamePacketsAsSearch() async throws {
+        func logged(_ log: ConnectionLog) async -> [String] {
+            await log.flush()
+            return log.packets.map { "\($0.from.rawValue)>\($0.to.rawValue) \($0.kind.rawValue) \($0.status.rawValue) \($0.summary)" }
+        }
+        func makeLog() -> ConnectionLog {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("placefail-\(UUID().uuidString)", isDirectory: true)
+            addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+            return ConnectionLog(fileURL: folder.appendingPathComponent(ConnectionLog.fileName))
+        }
+        let failedLine = "besir>googlePlaces placeSearch failed Search failed"
+        let goodLine = "besir>googlePlaces placeSearch ok Searched “cafe” · 3 results"
+        let failing: [(String, PlacesTransportStub)] = [
+            ("status 500", try threePlacesStub(status: 500)),
+            ("thrown", PlacesTransportStub { _ in throw URLError(.notConnectedToInternet) })]
+        for (label, stub) in failing {
+            let flow = UUID()
+            let lookLog = makeLog()
+            var lookSearch = makeSearch(stub)
+            lookSearch.connections = lookLog
+            let looked = await lookSearch.lookup("cafe", near: nil, flow: flow)
+            XCTAssertEqual(looked, .failed, label)
+            let linesLookLog = await logged(lookLog)
+            XCTAssertEqual(linesLookLog, [failedLine], label)
+            XCTAssertEqual(lookLog.packets.first?.flowID, flow, label)
+
+            let searchLog = makeLog()
+            var plainSearch = makeSearch(stub)
+            plainSearch.connections = searchLog
+            let searched = await plainSearch.search("cafe", near: nil, flow: flow)
+            XCTAssertEqual(searched, [], label)
+            let linesSearchLog = await logged(searchLog)
+            XCTAssertEqual(linesSearchLog, [failedLine], label)
+        }
+
+        let goodLog = makeLog()
+        var good = makeSearch(try threePlacesStub())
+        good.connections = goodLog
+        let found = await good.lookup("cafe", near: nil)
+        guard case .found(let places) = found else { return XCTFail("a good answer is found, got \(found)") }
+        XCTAssertEqual(places.count, 3)
+        let linesGoodLog = await logged(goodLog)
+        XCTAssertEqual(linesGoodLog, [goodLine])
+        let searchedLog = makeLog()
+        var searchedGood = makeSearch(try threePlacesStub())
+        searchedGood.connections = searchedLog
+        let searchedPlaces = await searchedGood.search("cafe", near: nil)
+        XCTAssertEqual(searchedPlaces.count, 3)
+        let linesSearchedLog = await logged(searchedLog)
+        XCTAssertEqual(linesSearchedLog, [goodLine])
+
+        let noProxyLog = makeLog()
+        var noProxy = makeSearch(try threePlacesStub(), config: AppConfig())
+        noProxy.connections = noProxyLog
+        let unconfigured = await noProxy.lookup("cafe", near: nil)
+        XCTAssertEqual(unconfigured, .failed)
+        let linesNoProxyLog = await logged(noProxyLog)
+        XCTAssertEqual(linesNoProxyLog, [], "nothing was sent, so nothing is recorded")
+        let unconfiguredSearch = await noProxy.search("cafe", near: nil)
+        XCTAssertEqual(unconfiguredSearch, [])
+        let linesAfterSearch = await logged(noProxyLog)
+        XCTAssertEqual(linesAfterSearch, [])
+    }
+
     func testPLACES_SearchTransportThrowsGivesEmpty() async throws {
         let offline = PlacesTransportStub { _ in throw URLError(.notConnectedToInternet) }
         let offlineResult = await makeSearch(offline).search("blue bottle", near: Support.center)

@@ -929,7 +929,7 @@ final class ConnectionHooksTests: XCTestCase {
                      routes: RoutesTransportStub, status: String)] = [
             ("places 200", "search_places", ["query": "cafe"], try okPlaces(), try okRoutes(), "ok"),
             ("places 500", "search_places", ["query": "cafe"],
-             .answering(status: 500, with: try Places.fixture("places-search-three")), try okRoutes(), "no_results"),
+             .answering(status: 500, with: try Places.fixture("places-search-three")), try okRoutes(), "unavailable"),
             ("routes 200", "get_travel_time", ["place_id": "p1", "mode": "transit"], try okPlaces(), try okRoutes(), "ok"),
             ("routes 403", "get_travel_time", ["place_id": "p1", "mode": "transit"], try okPlaces(),
              .answering(status: 403, with: try Routes.fixture("routes-google-error-403")), "unavailable"),

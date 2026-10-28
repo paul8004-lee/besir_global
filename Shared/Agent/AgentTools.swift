@@ -572,9 +572,13 @@ final class AgentToolbox {
         let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         return .lookup(AgentLookup { [self] in
             let service = placeSearchProvider?() ?? store.placeSearch
-            let found = await service.search(query, near: center, flow: flow)
+            let found = await service.lookup(query, near: center, flow: flow)
             // A cancelled lookup writes nothing: its answer is dropped by the session anyway.
-            return AgentPlaces.searchOutput(Task.isCancelled ? [] : found, registry: &registry)
+            if Task.isCancelled { return AgentPlaces.searchOutput([], registry: &registry) }
+            switch found {
+            case .found(let places): return AgentPlaces.searchOutput(places, registry: &registry)
+            case .failed: return AgentPlaces.searchFailure()
+            }
         })
     }
 
