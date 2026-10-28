@@ -38,6 +38,16 @@ struct RouteMapView: View {
 /// Holds the map and reports its first non-empty layout, so a camera fit never runs on a zero-size map.
 private final class MapHostView: UIView {
     var onLayout: (() -> Void)?
+    var onAppearanceChange: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (view: MapHostView, _) in
+            view.onAppearanceChange?()
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     override func layoutSubviews() {
         super.layoutSubviews()
@@ -52,7 +62,6 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
 
     /// Space kept free at the left and bottom so the caller's rounded clip cannot cut the logo or the copyright text.
     private static let edgePadding: CGFloat = 12
-    private static let fitInset: CGFloat = 48
     private static let maxFitZoom: Float = 16
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -68,6 +77,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
         map.padding = UIEdgeInsets(top: 0, left: Self.edgePadding, bottom: Self.edgePadding, right: 0)
         map.settings.compassButton = false
         map.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        map.delegate = context.coordinator
 
         let host = MapHostView()
         map.frame = host.bounds
@@ -76,6 +86,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.map = map
         host.onLayout = { [weak coordinator] in coordinator?.didLayout() }
+        host.onAppearanceChange = { [weak coordinator] in coordinator?.reselectSoon() }
         coordinator.update(origin: origin, destination: destination, name: destinationName,
                            dark: context.environment.colorScheme == .dark)
         coordinator.sync()
@@ -99,7 +110,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
         }
     }
 
-    final class Coordinator {
+    final class Coordinator: NSObject, GMSMapViewDelegate {
         var map: GMSMapView?
         private var hasSize = false
 
@@ -112,6 +123,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
         private var destination: CLLocationCoordinate2D?
         private var name = ""
         private var dark = false
+        private var destinationMarker: GMSMarker?
 
         func update(origin: CLLocationCoordinate2D?, destination: CLLocationCoordinate2D?, name: String, dark: Bool) {
             self.origin = origin
@@ -136,6 +148,8 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
                 lastDark = dark
             }
 
+            reselect()
+
             guard hasSize else { return }
             let plan = MapFraming.plan(origin: origin, destination: destination)
             if plan != lastFraming {
@@ -147,7 +161,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
         private func replaceMarkers(_ specs: [MapMarkerSpec], on map: GMSMapView) {
             let traits = UITraitCollection(userInterfaceStyle: dark ? .dark : .light)
             map.clear()
-            var destinationMarker: GMSMarker?
+            destinationMarker = nil
             for spec in specs {
                 let marker = GMSMarker(position: CLLocationCoordinate2D(latitude: spec.latitude, longitude: spec.longitude))
                 marker.title = spec.title
@@ -156,8 +170,32 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
                 marker.map = map
                 if spec.role == .destination { destinationMarker = marker }
             }
-            // The name label shows on the destination marker, as the old map showed it.
             map.selectedMarker = destinationMarker
+        }
+
+        /// The name label is the info window of the selected destination marker. The SDK drops the selection
+        /// on a tap on the map and when the style changes, so it is put back whenever nothing is selected;
+        /// a tap on the origin marker keeps showing its own title.
+        func reselect() {
+            guard let map, let destinationMarker, map.selectedMarker == nil else { return }
+            map.selectedMarker = destinationMarker
+        }
+
+        /// One run-loop turn later, so it runs after the SDK has finished its own change.
+        func reselectSoon() {
+            DispatchQueue.main.async { [weak self] in self?.reselect() }
+        }
+
+        func mapViewDidIdle(_ mapView: GMSMapView) { reselect() }
+
+        func mapView(_ mapView: GMSMapView, didTapAt coordinate: CLLocationCoordinate2D) { reselectSoon() }
+
+        /// Width of the destination's name label: the title in the info window's text size plus its own padding.
+        private func labelWidth() -> CGFloat {
+            let title = MapMarkerSpec.markers(origin: origin, destination: destination, destinationName: name)
+                .first { $0.role == .destination }?.title ?? ""
+            let text = (title as NSString).size(withAttributes: [.font: UIFont.systemFont(ofSize: 17)]).width
+            return ceil(text) + 32
         }
 
         private func apply(_ plan: MapFraming, to map: GMSMapView) {
@@ -166,8 +204,8 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
                 let bounds = GMSCoordinateBounds(
                     coordinate: CLLocationCoordinate2D(latitude: south, longitude: west),
                     coordinate: CLLocationCoordinate2D(latitude: north, longitude: east))
-                let inset = GoogleMapRepresentable.fitInset
-                map.moveCamera(GMSCameraUpdate.fit(bounds, with: UIEdgeInsets(top: inset, left: inset, bottom: inset, right: inset)))
+                let insets = MapFitInsets.make(labelWidth: labelWidth(), mapWidth: map.bounds.width, mapHeight: map.bounds.height)
+                map.moveCamera(GMSCameraUpdate.fit(bounds, with: UIEdgeInsets(top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right)))
                 if map.camera.zoom > GoogleMapRepresentable.maxFitZoom {
                     map.moveCamera(GMSCameraUpdate.zoom(to: GoogleMapRepresentable.maxFitZoom))
                 }

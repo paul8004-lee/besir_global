@@ -160,4 +160,46 @@ final class GoogleMapsSetupTests: XCTestCase {
                           MapMarkerSpec.markers(origin: o, destination: d, destinationName: "B"))
         XCTAssertEqual(MapFraming.plan(origin: o, destination: d), MapFraming.plan(origin: o, destination: d))
     }
+
+    // MARK: - fit insets that keep the name label inside the map
+
+    func testGMAPS_FitInsetsShortNameKeepBaseSidesAndClearTheLabelAbove() {
+        let insets = MapFitInsets.make(labelWidth: 60, mapWidth: 353, mapHeight: 280)
+        XCTAssertEqual(insets.left, 48)
+        XCTAssertEqual(insets.right, 48)
+        XCTAssertEqual(insets.bottom, 48)
+        XCTAssertGreaterThanOrEqual(insets.top, MapFitInsets.labelClearanceAbove)
+    }
+
+    func testGMAPS_FitInsetsSidesCoverHalfTheLabelWidthPlusMargin() {
+        let insets = MapFitInsets.make(labelWidth: 148, mapWidth: 353, mapHeight: 280)
+        XCTAssertGreaterThanOrEqual(insets.left, 148 / 2 + MapFitInsets.labelSideMargin)
+        XCTAssertEqual(insets.left, insets.right)
+    }
+
+    func testGMAPS_FitInsetsSidesGrowWithALongerName() {
+        let short = MapFitInsets.make(labelWidth: 120, mapWidth: 353, mapHeight: 280)
+        let long = MapFitInsets.make(labelWidth: 180, mapWidth: 353, mapHeight: 280)
+        XCTAssertGreaterThan(long.left, short.left)
+    }
+
+    func testGMAPS_FitInsetsSidesAreCappedSoAFitAreaRemains() {
+        let insets = MapFitInsets.make(labelWidth: 900, mapWidth: 353, mapHeight: 280)
+        XCTAssertLessThanOrEqual(insets.left + insets.right, 353 * MapFitInsets.maxShare + 0.001)
+        XCTAssertGreaterThan(insets.left, 48)
+    }
+
+    func testGMAPS_FitInsetsOnATinyMapNeverTakeMoreThanTheShareAllowed() {
+        let insets = MapFitInsets.make(labelWidth: 148, mapWidth: 100, mapHeight: 100)
+        XCTAssertLessThanOrEqual(insets.left + insets.right, 100 * MapFitInsets.maxShare + 0.001)
+        XCTAssertLessThanOrEqual(insets.top + insets.bottom, 100 * MapFitInsets.maxShare + 0.001)
+        XCTAssertGreaterThan(insets.top, 0)
+        XCTAssertGreaterThan(insets.bottom, 0)
+    }
+
+    func testGMAPS_FitInsetsZeroSizedMapGivesTheBaseOnAllSides() {
+        let base = MapFitInsets(top: 48, left: 48, bottom: 48, right: 48)
+        XCTAssertEqual(MapFitInsets.make(labelWidth: 148, mapWidth: 0, mapHeight: 280), base)
+        XCTAssertEqual(MapFitInsets.make(labelWidth: 148, mapWidth: 353, mapHeight: 0), base)
+    }
 }

@@ -84,6 +84,32 @@ enum MapFraming: Equatable {
     }
 }
 
+/// How far the camera fit keeps the markers from each edge so the destination's name label
+/// (the SDK's info window above the pin) stays inside the map.
+struct MapFitInsets: Equatable {
+    var top: CGFloat
+    var left: CGFloat
+    var bottom: CGFloat
+    var right: CGFloat
+
+    static let base: CGFloat = 48
+    /// Pin height + info window + its pointer + a margin, measured on the iPhone 17 Pro walk.
+    static let labelClearanceAbove: CGFloat = 85
+    static let labelSideMargin: CGFloat = 8
+    /// Opposite sides together may take at most this share of the map, so a fit area always remains.
+    static let maxShare: CGFloat = 0.6
+
+    static func make(labelWidth: CGFloat, mapWidth: CGFloat, mapHeight: CGFloat) -> MapFitInsets {
+        guard mapWidth > 0, mapHeight > 0 else {
+            return MapFitInsets(top: base, left: base, bottom: base, right: base)
+        }
+        let side = min(max(base, labelWidth / 2 + labelSideMargin), mapWidth * maxShare / 2)
+        let bottom = min(base, mapHeight * maxShare / 2)
+        let top = min(max(base, labelClearanceAbove), mapHeight * maxShare - bottom)
+        return MapFitInsets(top: top, left: side, bottom: bottom, right: side)
+    }
+}
+
 /// One marker the map shows, as plain values so the list can be compared before the map is touched.
 struct MapMarkerSpec: Equatable {
     enum Role { case origin, destination }
