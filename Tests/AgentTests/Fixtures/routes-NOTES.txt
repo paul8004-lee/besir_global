@@ -5,8 +5,10 @@ Every value in routes-*.json is synthetic. The files keep Google's key names and
 transitDetails, stopDetails, transitLine, vehicle, stopCount, error) and carry invented values:
 stop names "Example Stop A" and "Example Stop B", line names "Example Rapid" and "38R",
 warning texts "WARNING-FIXTURE-1" to "WARNING-FIXTURE-3", error messages "Example ... message".
-No raw Google answer is stored in the repository (the raw answers of the live block stay in
-the git-excluded evidence folder).
+Exception: routes-transit-many-walks.json keeps the step durations (seconds) of one real transit
+answer, so the walk-merge rule is tested on the pattern Google really sent; every name in it is
+invented. No raw Google answer is stored in the repository (the raw answers of the live block
+stay in the git-excluded evidence folder).
 
 live-{transit,walk,bicycle,noroute}-body.json and -mask.txt are the exact requests the app
 builds for the four requests of the live block; a unit test compares them with the app output.
