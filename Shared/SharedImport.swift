@@ -10,6 +10,12 @@ enum SharedLine {
     static let busy = "The image reader is busy. Share the image again in a minute."
     static let other = "Couldn't read the shared image. Share it again."
     static let nothingFound = "Nothing that looks like an event was found in that image."
+    static let planNothingRead = "Nothing in the shared items could be read."
+
+    /// After a Plan my day hand-off in which some shared items were dropped.
+    static func planSkipped(_ count: Int) -> String {
+        count == 1 ? "1 shared item couldn't be used and was skipped." : "\(count) shared items couldn't be used and were skipped."
+    }
 
     static func line(for failure: VisionFailure) -> String {
         switch failure {
@@ -64,7 +70,15 @@ final class SharedImport: ObservableObject {
         guard !inFlight else { return }
         inFlight = true
         defer { inFlight = false; isReading = false }
-        guard canHand(), let item = inbox.pending(now: now()).first else { return }
+        guard canHand() else { return }
+        let items = inbox.pending(now: now())
+        if holdForPlan {
+            // Two or more waiting items, or a held plan, belong to Plan my day: the automatic pass takes none of them, unless
+            // a one-item message is held for its retry.
+            waitingCount = items.count
+            if items.count >= 2 || held != nil, kept.isEmpty { return }
+        }
+        guard let item = items.first else { return }
         if let held = kept[item.id] {
             deliver(held.message, shown: held.shown, for: item, flow: flows[item.id] ?? ConnectionLog.beginFlow(), hand: hand)
             return
@@ -155,14 +169,149 @@ final class SharedImport: ObservableObject {
         }
     }
 
-    /// Plan my day for the waiting items (SPEC-PLANDAY-001). Signature stub: the body comes with the implementation.
+    /// Plan my day (SPEC-PLANDAY-001): the five oldest waiting items become usable shared items (images are read by `/vision`,
+    /// three at a time), today's events are read after the mode was chosen, and the agent gets one message. `activities` and
+    /// `mirror` are the two sources of today's events; `prepare` registers the Store places in the agent session and gives the
+    /// events their place handles. Dropped items leave the queue at once, usable ones when `hand` accepts the message. A refused
+    /// hand-off keeps the usable fields (not the message) as `held`, so the next tap composes again with its own mode and time.
     func planPass(mode: TransportMode, vision: VisionReading, activities: () -> [ActivityBlock], mirror: CalendarMirroring,
                   calendar: Calendar = .current, prepare: ([PlanMyDay.Event]) -> [PlanMyDay.Event], canHand: () -> Bool,
                   hand: (_ message: String, _ shown: String, _ context: DayPlanContext) -> Bool) async {
+        guard !inFlight else { return }
+        inFlight = true
+        // Every exit leaves the count equal to the queue, so no state shows the button over an empty queue.
+        defer { inFlight = false; isReading = false; waitingCount = inbox.pending(now: now()).count }
+        guard canHand() else { return }
+
+        let flow: UUID
+        let usable: [PlanMyDay.Shared]
+        let usableIDs: [UUID]
+        let skipped: Int
+        if let held {
+            flow = held.flow
+            usable = held.shared
+            usableIDs = held.ids
+            skipped = held.skipped
+        } else {
+            let items = Array(inbox.pending(now: now()).prefix(PlanMyDay.takeCount))
+            if !vision.isConfigured, items.contains(where: { $0.imageBase64 != nil }) {
+                alertLine = SharedLine.notSetUp
+                return
+            }
+            flow = ConnectionLog.beginFlow()
+            let gathered = await gather(items, vision: vision, flow: flow)
+            usable = gathered.shared
+            usableIDs = gathered.usableIDs
+            skipped = gathered.droppedIDs.count
+            // A dropped item is over: it leaves the queue now, whatever happens to the rest.
+            for id in gathered.droppedIDs { inbox.remove(id) }
+            guard !usable.isEmpty else {
+                alertLine = SharedLine.planNothingRead
+                return
+            }
+        }
+
+        isReading = true
+        let entries = await PlanMyDay.todaysEntries(from: mirror, now: now(), calendar: calendar)
+        let current = now()
+        let today = PlanMyDay.events(activities: activities(), entries: entries ?? [], now: current, calendar: calendar)
+        let events = prepare(today.events)
+        let message = PlanMyDay.compose(now: current, zone: calendar.timeZone, mode: mode, events: events, shared: usable)
+        let shown = PlanMyDay.shownLine(sharedCount: usable.count, eventCount: events.count, calendarAvailable: entries != nil, cut: today.cut)
+        let dayEnd = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: current)) ?? current
+        let context = DayPlanContext(mode: mode, events: events, checkWindowEnd: dayEnd)
+
+        connections.offerFlow(flow)
+        let accepted = hand(message, shown, context)
+        connections.withdrawOffer()
+        if accepted {
+            for id in usableIDs { inbox.remove(id) }
+            held = nil
+            if skipped > 0 { alertLine = SharedLine.planSkipped(skipped) }
+        } else {
+            held = PlanMyDay.Held(shared: usable, ids: usableIDs, skipped: skipped, flow: flow)
+        }
     }
 
     /// A new chat starts: a held plan must not outlive the conversation that its handles belong to.
     func dropHeld() {
+        held = nil
+    }
+
+    /// Turns the taken items into usable shared items, in queue order, and names the ones that were dropped. The receipts are
+    /// the baseline's fixed words, all in the flow of the tap; an image goes to `/vision` once, never more than
+    /// `visionParallel` reads at a time.
+    private func gather(_ items: [SharedInbox.Item], vision: VisionReading, flow: UUID)
+        async -> (shared: [PlanMyDay.Shared], usableIDs: [UUID], droppedIDs: [UUID]) {
+        var texts: [Int: String] = [:]
+        var reads: [(index: Int, base64: String, mime: String)] = []
+        var dropped = Set<Int>()
+        for (index, item) in items.enumerated() {
+            guard let base64 = item.imageBase64 else {
+                switch SharedMessage.classify(item.text) {
+                case .text(let text):
+                    noteShare("Text shared", .ok, item, flow)
+                    texts[index] = text
+                case .link:
+                    noteShare("Link shared", .ok, item, flow)
+                    dropped.insert(index)
+                case .none:
+                    noteShare("Empty share", .failed, item, flow)
+                    dropped.insert(index)
+                }
+                continue
+            }
+            guard SharedImage.decodedByteCount(ofBase64: base64) <= SharedImage.maxBytes else {
+                noteShare("Image shared", .failed, item, flow)
+                dropped.insert(index)
+                continue
+            }
+            noteShare("Image shared", .ok, item, flow)
+            reads.append((index, base64, item.mimeType ?? "image/jpeg"))
+        }
+
+        var readings: [Int: Result<VisionFields, VisionFailure>] = [:]
+        if !reads.isEmpty {
+            isReading = true
+            await withTaskGroup(of: (Int, Result<VisionFields, VisionFailure>).self) { group in
+                var running = 0
+                for read in reads {
+                    if running == PlanMyDay.visionParallel, let done = await group.next() {
+                        readings[done.0] = done.1
+                        running -= 1
+                    }
+#if DEBUG
+                    logVisionCall()
+#endif
+                    group.addTask { (read.index, await vision.read(imageBase64: read.base64, mime: read.mime)) }
+                    running += 1
+                }
+                for await done in group { readings[done.0] = done.1 }
+            }
+        }
+
+        var shared: [PlanMyDay.Shared] = []
+        var usableIDs: [UUID] = []
+        for (index, item) in items.enumerated() where !dropped.contains(index) {
+            if let text = texts[index] {
+                shared.append(.text(text))
+                usableIDs.append(item.id)
+                continue
+            }
+            switch readings[index] {
+            case .success(let fields)?:
+                noteRead(nil, flow)
+                if fields.isEmpty { dropped.insert(index); continue }
+                shared.append(.image(fields))
+                usableIDs.append(item.id)
+            case .failure(let failure)?:
+                noteRead(failure, flow)
+                dropped.insert(index)
+            case nil:
+                dropped.insert(index)
+            }
+        }
+        return (shared, usableIDs, items.indices.filter { dropped.contains($0) }.map { items[$0].id })
     }
 
     /// The one place that decides what a share puts into the chat: the model gets `message`, the chat draws `shown`.

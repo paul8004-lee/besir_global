@@ -43,6 +43,7 @@ struct RootView: View {
     // @State optional as nil (a blank sheet); the holder is the same object in every copy.
     @State private var chatHolder = AgentChatHolder()
     @State private var showingChat = false
+    @State private var choosingMode = false
     @StateObject private var shareImport = SharedImport()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -68,17 +69,41 @@ struct RootView: View {
         }
         .overlay(alignment: .bottomTrailing) {
             if store.config.hasAI {
-                Button {
-                    openChat()
-                } label: {
-                    BesirMark(size: 28)
-                        .floatingCircle()
+                VStack(alignment: .trailing, spacing: 12) {
+                    if !choosingMode, let label = PlanMyDay.buttonLabel(count: shareImport.waitingCount, held: shareImport.held != nil) {
+                        Button {
+                            planTapped()
+                        } label: {
+                            Text(label)
+                                .font(.subheadline)
+                                .foregroundStyle(Theme.ink)
+                                .padding(.horizontal, 16)
+                                .frame(height: 40)
+                                .background(Capsule().fill(Theme.bg))
+                                .overlay(Capsule().stroke(Theme.line))
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    Button {
+                        openChat()
+                    } label: {
+                        BesirMark(size: 28)
+                            .floatingCircle()
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("besir AI")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("besir AI")
                 .padding(.trailing, FloatingCircle.inset)
                 .padding(.bottom, FloatingCircle.inset)
             }
+        }
+        // Cancelling or dismissing reads no item, asks for no calendar access and makes no call.
+        .confirmationDialog("How will you travel today?", isPresented: $choosingMode, titleVisibility: .visible) {
+            ForEach(PlanMyDay.modeChoices) { mode in
+                Button(mode.title) { Task { await runPlan(mode: mode) } }
+            }
+            Button("Cancel", role: .cancel) {}
         }
         .overlay { if shareImport.isReading { ProgressView().controlSize(.large) } }
         .alert(shareImport.alertLine ?? "", isPresented: Binding(get: { shareImport.alertLine != nil },
@@ -98,20 +123,49 @@ struct RootView: View {
     /// (SPEC-SHARE-001, SPEC-SHAREBUBBLE-001).
     private func runShareImport() async {
         let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
-        await shareImport.pass(vision: client, canHand: { chatHolder.session?.canSend ?? true }, hand: { text, shown in
+        await shareImport.pass(vision: client, canHand: { chatHolder.session?.canSend ?? true }, holdForPlan: true, hand: { text, shown in
             openChat()
             return SharedImport.give(message: text, shown: shown, to: chatHolder.session)
         })
     }
 
-    private func openChat() {
+    /// The Plan my day button: with a session that cannot take a message the tap only opens the chat (SPEC-PLANDAY-001).
+    private func planTapped() {
+        switch PlanMyDay.tapAction(canSend: chatHolder.session?.canSend ?? true) {
+        case .chooseMode: choosingMode = true
+        case .openChatOnly: openChat()
+        }
+    }
+
+    /// The mode was chosen: gather the waiting items and today's schedule and hand the agent one plan message.
+    private func runPlan(mode: TransportMode) async {
+        ensureSession()
+        guard let session = chatHolder.session else { return }
+        let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
+        await shareImport.planPass(mode: mode, vision: client, activities: { store.activities }, mirror: store.calendarMirror,
+                                   prepare: { session.prepareDayPlan(events: $0) }, canHand: { session.canSend },
+                                   hand: { message, shown, context in
+            openChat()
+            return session.sendPlan(message: message, shown: shown, context: context)
+        })
+    }
+
+    private func ensureSession() {
         if chatHolder.session == nil {
             let location = location
             let origin = { AgentPlaces.devicePlace(manual: location.manualOrigin, current: location.realFixLocation) }
-            chatHolder.session = AgentSession(toolbox: AgentToolbox(store: store, now: { Date() }, timeZone: { TimeZone.current },
-                                                                    deviceOrigin: origin),
-                                              transport: AgentClient(config: store.config, now: { Date() }, timeZone: { TimeZone.current }))
+            let session = AgentSession(toolbox: AgentToolbox(store: store, now: { Date() }, timeZone: { TimeZone.current },
+                                                             deviceOrigin: origin),
+                                       transport: AgentClient(config: store.config, now: { Date() }, timeZone: { TimeZone.current }))
+            // A held plan carries place handles of this conversation, so a new chat drops it.
+            let shareImport = shareImport
+            session.onNewChat = { shareImport.dropHeld() }
+            chatHolder.session = session
         }
+    }
+
+    private func openChat() {
+        ensureSession()
         showingChat = true
     }
 

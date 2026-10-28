@@ -64,9 +64,9 @@ enum PlanMyDay {
         case openChatOnly
     }
 
-    /// Signature stub: the decision comes with the implementation.
+    /// A tap while the session cannot take a message (it is waiting or a card is open) only opens the chat.
     static func tapAction(canSend: Bool) -> TapAction {
-        .chooseMode
+        canSend ? .chooseMode : .openChatOnly
     }
 
     // MARK: Today's events (REQ-PLANDAY-005)
