@@ -13,6 +13,7 @@ enum ConnectionParty: String, Codable, CaseIterable {
     case googlePlaces
     case googleRoutes
     case appleCalendar
+    case bookingPartner
 
     var displayName: String {
         switch self {
@@ -24,6 +25,7 @@ enum ConnectionParty: String, Codable, CaseIterable {
         case .googlePlaces: return "Google Places"
         case .googleRoutes: return "Google Routes"
         case .appleCalendar: return "Apple Calendar"
+        case .bookingPartner: return BookingClient.partnerName + " (Simulated)"
         }
     }
 
@@ -52,6 +54,7 @@ enum ConnectionKind: String, Codable, CaseIterable {
     case agentMessage
     case agentToolCall
     case calendarSave
+    case booking
 
     var displayName: String {
         switch self {
@@ -62,6 +65,7 @@ enum ConnectionKind: String, Codable, CaseIterable {
         case .agentMessage: return "Message"
         case .agentToolCall: return "Tool call"
         case .calendarSave: return "Calendar save"
+        case .booking: return "Booking"
         }
     }
 
@@ -75,6 +79,7 @@ enum ConnectionKind: String, Codable, CaseIterable {
         case .agentMessage: return "Message"
         case .agentToolCall: return "Tool call"
         case .calendarSave: return "Event saved"
+        case .booking: return "Reservation"
         }
     }
 }
@@ -84,12 +89,15 @@ enum ConnectionStatus: String, Codable, CaseIterable {
     case ok
     case failed
     case declined
+    /// A normal answer, not a failure: the lookup worked and there is no route.
+    case noRoute
 
     var word: String {
         switch self {
         case .ok: return "OK"
         case .failed: return "Failed"
         case .declined: return "Declined"
+        case .noRoute: return "No route"
         }
     }
 }

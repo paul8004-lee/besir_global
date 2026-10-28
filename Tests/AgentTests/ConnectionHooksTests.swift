@@ -328,7 +328,8 @@ final class ConnectionHooksTests: XCTestCase {
             XCTAssertTrue(sent.contains(token), token)
             XCTAssertTrue(sent.contains(FakeTransport.host), token)
 
-            XCTAssertEqual(made.log.packets.map(\.summary), ["Reply received", ConnectionLog.hiddenText, "Unexpected"], token)
+            // The call name is model text: it is not a declared name, so it is stored as `Unknown tool`, never as itself.
+            XCTAssertEqual(made.log.packets.map(\.summary), ["Reply received", "Unknown tool", "Unexpected"], token)
             let bytes = String(decoding: try Data(contentsOf: made.file), as: UTF8.self)
             XCTAssertFalse(bytes.contains(token), token)
             XCTAssertFalse(bytes.contains(FakeTransport.host), token)
@@ -551,7 +552,7 @@ final class ConnectionHooksTests: XCTestCase {
         enqueue(rig, image: imageBase64)
         var offered: [UUID?] = []
         var accepts = false
-        let hand: (String) -> Bool = { _ in
+        let hand: (String, String) -> Bool = { _, _ in
             let flow = rig.log.takeOfferedFlow()
             offered.append(flow)
             if let flow { rig.log.offerFlow(flow) }
@@ -574,7 +575,7 @@ final class ConnectionHooksTests: XCTestCase {
             let rig = try makeShare()
             enqueue(rig, image: imageBase64)
             var inside: UUID?
-            await rig.importer.pass(vision: rig.reader, canHand: { true }, hand: { _ in
+            await rig.importer.pass(vision: rig.reader, canHand: { true }, hand: { _, _ in
                 inside = rig.log.takeOfferedFlow()
                 if let inside { rig.log.offerFlow(inside) }
                 return accepts
@@ -591,9 +592,8 @@ final class ConnectionHooksTests: XCTestCase {
         enqueue(rig, image: imageBase64)
         let session = AgentSession(toolbox: ToolHarness.make().tools, transport: FakeTransport([.turn(Turns.text("Noted."))]),
                                    connections: rig.log)
-        await rig.importer.pass(vision: rig.reader, canHand: { session.canSend }, hand: { message in
-            session.send(message)
-            return true
+        await rig.importer.pass(vision: rig.reader, canHand: { session.canSend }, hand: { message, shown in
+            SharedImport.give(message: message, shown: shown, to: session)
         })
         await session.settle()
         await rig.log.flush()
@@ -680,11 +680,11 @@ final class ConnectionHooksTests: XCTestCase {
     }
 
     func testCONNECT_T59_AFailedLookupIsRecordedAndReturnsTheSameFailure() async throws {
-        let cases: [(name: String, stub: RoutesTransportStub)] = [
-            ("500", .answering(status: 500, with: Data("{}".utf8))),
-            ("offline", .throwing(URLError(.notConnectedToInternet))),
-            ("empty routes", .answering(with: try Routes.fixture("routes-empty-routes"))),
-            ("worker 401", .answering(status: 401, with: try Routes.fixture("routes-worker-unauthorized")))
+        let cases: [(name: String, stub: RoutesTransportStub, status: String)] = [
+            ("500", .answering(status: 500, with: Data("{}".utf8)), "failed"),
+            ("offline", .throwing(URLError(.notConnectedToInternet)), "failed"),
+            ("empty routes", .answering(with: try Routes.fixture("routes-empty-routes")), "noRoute"),
+            ("worker 401", .answering(status: 401, with: try Routes.fixture("routes-worker-unauthorized")), "failed")
         ]
         for item in cases {
             let log = makeLog()
@@ -693,7 +693,7 @@ final class ConnectionHooksTests: XCTestCase {
             XCTAssertNotNil(estimate.failure, item.name)
             XCTAssertEqual(estimate.failure, silent.failure, item.name)
             await log.flush()
-            XCTAssertEqual(lines(log), ["besir>googleRoutes route failed Car route"], item.name)
+            XCTAssertEqual(lines(log), ["besir>googleRoutes route \(item.status) Car route"], item.name)
         }
     }
 
@@ -750,9 +750,19 @@ final class ConnectionHooksTests: XCTestCase {
         await bad.flush()
         await silent.flush()
         XCTAssertEqual(lines(ok), ["besir>googleRoutes route ok Transit steps"])
-        XCTAssertEqual(lines(bad), ["besir>googleRoutes route failed Transit steps"])
+        XCTAssertEqual(lines(bad), ["besir>googleRoutes route noRoute Transit steps"])
         XCTAssertNil(ok.packets[0].flowID)
         XCTAssertEqual(silent.packets, [])
+
+        // The plan is the same whether or not the log can write (TransitPlan has no `==`: compare its fields).
+        for fixture in ["routes-transit-steps", "routes-empty-object"] {
+            let answer = try Routes.fixture(fixture)
+            let logged = await directions(.answering(with: answer), makeLog()).transitPlan(from: Routes.origin, to: Routes.dest)
+            let unlogged = await directions(.answering(with: answer), makeLog(failing: true)).transitPlan(from: Routes.origin, to: Routes.dest)
+            XCTAssertEqual(logged.steps.count, unlogged.steps.count, fixture)
+            XCTAssertEqual(logged.extraMinutes, unlogged.extraMinutes, fixture)
+            XCTAssertEqual(logged.failure, unlogged.failure, fixture)
+        }
     }
 
     func testCONNECT_T63_AnUnwritableLogChangesNothingARouteReturns() async throws {
@@ -776,5 +786,142 @@ final class ConnectionHooksTests: XCTestCase {
         XCTAssertEqual(stub.callCount, 1)
         await log.flush()
         XCTAssertEqual(log.packets, [])
+    }
+
+    // MARK: - SPEC-CONNECT-002 (card t47): known tool names, "no route" as its own status
+
+    /// A session whose model asks for one transit trip to the place `p1`, over a toolbox whose route lookup is stubbed
+    /// and writes to the same log as the session.
+    @MainActor private struct TravelRig {
+        let fake: FakeTransport
+        let session: AgentSession
+
+        func say(_ text: String) async {
+            session.send(text)
+            await session.settle()
+        }
+
+        var resultStatuses: [String] {
+            session.entries.compactMap { if case .result(let status) = $0.kind { return status } else { return nil } }
+        }
+    }
+
+    /// The place search that registers `p1` writes to a throwaway log, so `log` holds only the session's packets and
+    /// the route lookup's.
+    private func travelRig(routes: RoutesTransportStub, log: ConnectionLog) async throws -> TravelRig {
+        let store = EmptyStore.make()
+        store.config = AppConfig()
+        let instant = TestClock.date(TestClock.nowString)
+        let found = PlacesTransportStub.answering(with: try Places.fixture("places-search-three"))
+        let scratch = makeLog()
+        let tools = AgentToolbox(store: store, now: { instant }, timeZone: { TestClock.zone },
+                                 deviceOrigin: { PlaceFixture.device },
+                                 places: { PlaceSearch(config: Places.config, transport: found.transport, connections: scratch) },
+                                 directions: { DirectionsService(config: Routes.config, transport: routes.transport, connections: log) })
+        let search = tools.handle(name: "search_places", arguments: PlaceTurns.arguments(["query": "cafe"]))
+        let lookup = try XCTUnwrap(search.lookup, "search_places did not answer with a lookup")
+        _ = await lookup.run()
+        let fake = FakeTransport([.turn(PlaceTurns.travel("p1", mode: "transit", id: "c1")),
+                                  .turn(Turns.text("I cannot answer that."))])
+        return TravelRig(fake: fake, session: AgentSession(toolbox: tools, transport: fake, connections: log))
+    }
+
+    private func routeLines(_ log: ConnectionLog) -> [String] {
+        lines(log).filter { $0.hasPrefix("besir>googleRoutes") }
+    }
+
+    func testCONNECT2_T01_EveryDeclaredNameIsKnownAndHandled() throws {
+        let list = try XCTUnwrap(JSONSerialization.jsonObject(with: AgentTools.declarationsJSON()) as? [[String: Any]])
+        let declared = list.compactMap { $0["name"] as? String }
+        XCTAssertFalse(declared.isEmpty)
+        XCTAssertEqual(AgentSession.knownToolNames(), Set(declared))
+        XCTAssertEqual(AgentSession.knownToolNames(from: Data("not json".utf8)), [])
+        XCTAssertEqual(AgentSession.knownToolNames(from: Data("[]".utf8)), [])
+
+        let harness = ToolHarness.make()
+        for name in declared {
+            XCTAssertEqual(AgentSession.toolCallSummary(name), name.replacingOccurrences(of: "_", with: " "), name)
+            XCTAssertNotEqual(harness.call(name, raw: "{}").message, ToolText.unknownTool, "\(name) is declared but not handled")
+        }
+
+        // A name outside the set is `Unknown tool` and the toolbox answers it with the re-ask.
+        XCTAssertFalse(declared.contains("drop_everything"))
+        XCTAssertEqual(AgentSession.toolCallSummary("drop_everything"), "Unknown tool")
+        XCTAssertEqual(harness.call("drop_everything", raw: "{}").message, ToolText.unknownTool)
+    }
+
+    func testCONNECT2_T02_AContentLikeToolNameIsStoredAsUnknownTool() async throws {
+        let name = "Dinner with Sam Friday 7pm at Blue Note"
+        let made = makeLog(secrets: [])
+        let rig = HookRig([.turn(Turns.turn(Turns.call(name, "{}", id: "c1"))), .turn(Turns.text("Sorry."))], log: made.log)
+        await rig.say("Add dinner")
+        await made.log.flush()
+
+        XCTAssertEqual(rig.resultStatuses, ["rejected"])
+        XCTAssertEqual(toolPackets(made.log), ["Unknown tool failed"])
+        // The next model request was still sent, so the chat went on.
+        XCTAssertEqual(rig.fake.request(2).isEmpty, false)
+        let bytes = String(decoding: try Data(contentsOf: made.file), as: UTF8.self)
+        for word in ["Dinner", "Sam", "Friday", "Blue", "Note"] {
+            XCTAssertFalse(bytes.contains(word), word)
+        }
+    }
+
+    func testCONNECT2_T03_NearMissNamesAreUnknown() {
+        XCTAssertEqual(AgentSession.toolCallSummary("list_activities"), "list activities")
+        let names = ["List_Activities", " list_activities", "list_activities ", "list-activities", "list activities",
+                     String(repeating: "a", count: 200), ""]
+        for name in names {
+            XCTAssertEqual(AgentSession.toolCallSummary(name), "Unknown tool", "'\(name)'")
+        }
+    }
+
+    func testCONNECT2_T04_ToolCallStatusTable() {
+        let table: [(String, ConnectionStatus)] = [
+            ("ok", .ok), ("applied", .ok), ("no_results", .failed), ("declined", .declined), ("no_route", .noRoute),
+            ("rejected", .failed), ("not_found", .failed), ("stale", .failed), ("unavailable", .failed),
+            ("something_else", .failed), ("", .failed)
+        ]
+        for (word, expected) in table {
+            XCTAssertEqual(AgentSession.toolCallStatus(word), expected, "'\(word)'")
+        }
+    }
+
+    func testCONNECT2_T05_ANoRouteAnswerIsNotAFailure() async throws {
+        let log = makeLog()
+        let rig = try await travelRig(routes: .answering(with: try Routes.fixture("routes-empty-object")), log: log)
+        await rig.say("How long by transit?")
+        await log.flush()
+        XCTAssertEqual(rig.resultStatuses, ["no_route"])
+        XCTAssertEqual(toolPackets(log), ["get travel time noRoute"])
+        XCTAssertEqual(routeLines(log), ["besir>googleRoutes route noRoute Transit route"])
+    }
+
+    func testCONNECT2_T06_AnUnavailableAnswerIsStillAFailure() async throws {
+        let log = makeLog()
+        let rig = try await travelRig(routes: .answering(status: 403, with: try Routes.fixture("routes-google-error-403")), log: log)
+        await rig.say("How long by transit?")
+        await log.flush()
+        XCTAssertEqual(rig.resultStatuses, ["unavailable"])
+        XCTAssertEqual(toolPackets(log), ["get travel time failed"])
+        XCTAssertEqual(routeLines(log), ["besir>googleRoutes route failed Transit route"])
+    }
+
+    func testCONNECT2_T07_EstimateAllNoRouteIsFourNoRoutePackets() async throws {
+        let answer = try Routes.fixture("routes-empty-routes")
+        let log = makeLog()
+        let all = await directions(.answering(with: answer), log).estimateAll(from: Routes.origin, to: Routes.dest)
+        let silent = await directions(.answering(with: answer), makeLog(failing: true)).estimateAll(from: Routes.origin, to: Routes.dest)
+        await log.flush()
+        XCTAssertEqual(log.packets.count, 4)
+        XCTAssertEqual(Set(log.packets.map(\.status)), [.noRoute])
+        XCTAssertEqual(Set(log.packets.map(\.flowID)).count, 1)
+        XCTAssertNotNil(log.packets[0].flowID)
+        XCTAssertEqual(chains(log), ["besir → Google Routes"])
+        for mode in TransportMode.allCases {
+            XCTAssertEqual(all[mode]?.failure, .noRoute, "\(mode)")
+            XCTAssertEqual(all[mode]?.duration, silent[mode]?.duration, "\(mode)")
+            XCTAssertEqual(all[mode]?.failure, silent[mode]?.failure, "\(mode)")
+        }
     }
 }

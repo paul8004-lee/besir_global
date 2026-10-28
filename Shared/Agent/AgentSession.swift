@@ -205,12 +205,15 @@ final class AgentSession: ObservableObject {
 
     // MARK: Entry points
 
-    func send(_ text: String) {
+    /// `text` is what the model gets. `shown`, when it is not blank, is what the chat draws instead (a share's short line);
+    /// it never enters `history` or a request.
+    func send(_ text: String, shown: String? = nil) {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend, !clean.isEmpty else { return }
+        let line = shown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         flow = connections.takeOfferedFlow() ?? ConnectionLog.beginFlow()
         history.append(.user(clean))
-        entries.append(AgentLogEntry(kind: .user(clean)))
+        entries.append(AgentLogEntry(kind: .user(line.isEmpty ? clean : line)))
         requestsThisMessage = 0
         googleDataThisMessage = false
         startRequest()
@@ -450,12 +453,35 @@ final class AgentSession: ObservableObject {
         }
     }
 
-    /// The first call of a response, once its result is final. `ok` and `applied` are `ok`, `declined` is `declined`,
-    /// anything else (`rejected`, `not_found`, `stale`, an unknown word) is `failed`.
+    /// The first call of a response, once its result is final. The name is shown only when the app declared it to the
+    /// model; a tool name is model text, so any other name is stored as `Unknown tool`.
     private func noteToolCall(_ name: String, status: String) {
-        let mapped: ConnectionStatus = (status == "ok" || status == "applied") ? .ok : (status == "declined" ? .declined : .failed)
         connections.record(from: .museSpark, to: .besir, kind: .agentToolCall,
-                           summary: name.replacingOccurrences(of: "_", with: " "), status: mapped, flowID: flow)
+                           summary: Self.toolCallSummary(name), status: Self.toolCallStatus(status), flowID: flow)
+    }
+
+    /// The `name` of every declaration in `declarations`; a list that cannot be read gives the empty set.
+    static func knownToolNames(from declarations: Data = AgentTools.declarationsJSON()) -> Set<String> {
+        guard let list = try? JSONSerialization.jsonObject(with: declarations) as? [[String: Any]] else { return [] }
+        return Set(list.compactMap { $0["name"] as? String })
+    }
+
+    private static let declaredToolNames = knownToolNames()
+
+    /// The tool name with each `_` as a space when it is exactly a declared name, else `Unknown tool`.
+    static func toolCallSummary(_ name: String) -> String {
+        declaredToolNames.contains(name) ? name.replacingOccurrences(of: "_", with: " ") : "Unknown tool"
+    }
+
+    /// `ok` and `applied` are `ok`, `declined` is `declined`, `no_route` is `noRoute` (a normal answer), anything else
+    /// (`rejected`, `not_found`, `stale`, `unavailable`, an unknown word) is `failed`.
+    static func toolCallStatus(_ status: String) -> ConnectionStatus {
+        switch status {
+        case "ok", "applied": return .ok
+        case "declined": return .declined
+        case "no_route": return .noRoute
+        default: return .failed
+        }
     }
 
     /// The `status` of a tool result, or `ok` for a result that has none (a list answer).

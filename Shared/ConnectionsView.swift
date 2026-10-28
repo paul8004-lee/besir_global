@@ -19,6 +19,8 @@ struct ConnectionsView: View {
                             Text(ConnectionFlows.chainText(flow))
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(Theme.ink)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
                             ForEach(flow.packets) { packet in
                                 packetLine(packet)
                             }
@@ -31,34 +33,44 @@ struct ConnectionsView: View {
         }
     }
 
+    /// One line. The summary has the lowest layout priority, so it is cut with `…` before the kind, the status or the time.
     private func packetLine(_ packet: ConnectionPacket) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(packet.kind.displayName)
                 .foregroundStyle(Theme.muted)
+                .lineLimit(1)
+                .layoutPriority(1)
             Text(packet.summary)
                 .foregroundStyle(Theme.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer(minLength: 4)
             Label(packet.status.word, systemImage: Self.symbol(packet.status))
                 .foregroundStyle(Self.color(packet.status))
+                .lineLimit(1)
+                .layoutPriority(1)
             Text(ConnectionLog.timeText(packet.at, now: Date()))
                 .foregroundStyle(Theme.muted)
+                .lineLimit(1)
+                .layoutPriority(1)
         }
         .font(.footnote)
     }
 
-    private static func symbol(_ status: ConnectionStatus) -> String {
+    static func symbol(_ status: ConnectionStatus) -> String {
         switch status {
         case .ok: return "checkmark.circle"
         case .failed: return "xmark.circle"
         case .declined: return "minus.circle"
+        case .noRoute: return "location.slash"
         }
     }
 
-    private static func color(_ status: ConnectionStatus) -> Color {
+    static func color(_ status: ConnectionStatus) -> Color {
         switch status {
         case .ok: return Theme.travel
         case .failed: return Theme.warn
-        case .declined: return Theme.muted
+        case .declined, .noRoute: return Theme.muted
         }
     }
 }

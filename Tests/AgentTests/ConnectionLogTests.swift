@@ -1,5 +1,9 @@
 import XCTest
 import Combine
+import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 @testable import besir
 
 /// SPEC-CONNECT-001: the packet, the cleaning, the storage, the flows and the time text. Every log here is built with a
@@ -73,10 +77,10 @@ final class ConnectionLogTests: XCTestCase {
 
     func testCONNECT_T03_EnumsHaveExactlyTheSpecifiedCasesAndEnglishNames() {
         XCTAssertEqual(Set(ConnectionParty.allCases.map(\.rawValue)),
-                       ["instagram", "shareSheet", "besir", "museSpark", "imageReader", "googlePlaces", "googleRoutes", "appleCalendar"])
+                       ["instagram", "shareSheet", "besir", "museSpark", "imageReader", "googlePlaces", "googleRoutes", "appleCalendar", "bookingPartner"])
         XCTAssertEqual(Set(ConnectionKind.allCases.map(\.rawValue)),
-                       ["share", "imageRead", "placeSearch", "route", "agentMessage", "agentToolCall", "calendarSave"])
-        XCTAssertEqual(Set(ConnectionStatus.allCases.map(\.rawValue)), ["ok", "failed", "declined"])
+                       ["share", "imageRead", "placeSearch", "route", "agentMessage", "agentToolCall", "calendarSave", "booking"])
+        XCTAssertEqual(ConnectionStatus.allCases.map(\.rawValue), ["ok", "failed", "declined", "noRoute"])
         let names = ConnectionParty.allCases.map(\.displayName) + ConnectionKind.allCases.map(\.displayName)
             + ConnectionKind.allCases.map(\.defaultSummary) + ConnectionStatus.allCases.map(\.word)
         for name in names {
@@ -327,11 +331,47 @@ final class ConnectionLogTests: XCTestCase {
 
     func testCONNECT_T38_EmptyTextStatusWordsAndTheShareChain() {
         XCTAssertEqual(ConnectionLog.emptyText, "No connections yet")
-        XCTAssertEqual(ConnectionStatus.allCases.map(\.word), ["OK", "Failed", "Declined"])
+        XCTAssertEqual(ConnectionStatus.allCases.map(\.word), ["OK", "Failed", "Declined", "No route"])
         let flow = UUID()
         let share = packet(flow, .shareSheet, .besir, at: 1, kind: .share)
         let read = packet(flow, .besir, .imageReader, at: 2, kind: .imageRead)
         XCTAssertEqual(ConnectionFlows.chainText(ConnectionFlows.group([share, read])[0]), "Share sheet → besir → Image reader")
+    }
+
+    // SPEC-CONNECT-002 (card t47): the status of a "no route" answer.
+    func testCONNECT2_T08_ANoRoutePacketSurvivesTheFile() async throws {
+        let file = makeFileURL()
+        let log = makeLog(file: file)
+        log.record(from: .besir, to: .googleRoutes, kind: .route, summary: "Transit route", status: .noRoute)
+        await log.flush()
+        let again = makeLog(file: file)
+        XCTAssertEqual(again.packets, log.packets)
+        XCTAssertEqual(again.packets.map(\.status), [.noRoute])
+
+        // A build that does not know a status word loses that packet only (REQ-CONNECT-029).
+        let kept = ConnectionPacket(id: UUID(), flowID: nil, at: Date(timeIntervalSince1970: 100), from: .besir, to: .googleRoutes,
+                                    kind: .route, summary: "Car route", status: .noRoute)
+        var objects = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode([kept, kept])) as? [[String: Any]])
+        objects[1]["id"] = UUID().uuidString
+        objects[1]["status"] = "mystery"
+        let mixed = makeFileURL()
+        try FileManager.default.createDirectory(at: mixed.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: objects).write(to: mixed)
+        XCTAssertEqual(makeLog(file: mixed).packets, [kept])
+
+        // Every status has its own symbol; `noRoute` is the muted slashed location, `failed` alone is the warning color.
+        XCTAssertEqual(ConnectionsView.symbol(.noRoute), "location.slash")
+        XCTAssertEqual(Set(ConnectionStatus.allCases.map(ConnectionsView.symbol)).count, ConnectionStatus.allCases.count)
+        XCTAssertEqual(ConnectionsView.color(.noRoute), Theme.muted)
+        XCTAssertEqual(ConnectionsView.color(.declined), Theme.muted)
+        XCTAssertNotEqual(ConnectionsView.color(.ok), Theme.muted)
+        XCTAssertNotEqual(ConnectionsView.color(.failed), Theme.muted)
+        XCTAssertNotEqual(ConnectionsView.color(.ok), ConnectionsView.color(.failed))
+        #if canImport(UIKit)
+        for status in ConnectionStatus.allCases {
+            XCTAssertNotNil(UIImage(systemName: ConnectionsView.symbol(status)), "\(status)")
+        }
+        #endif
     }
 
     func testCONNECT_T39_FiftyOneFlowsShowFifty() async {
