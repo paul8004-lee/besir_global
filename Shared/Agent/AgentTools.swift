@@ -80,12 +80,17 @@ final class AgentCard {
     let actions = ["Confirm", "Cancel"]
     /// Nil while the card is pending.
     private(set) var mark: AgentCardMark?
+    /// True when the card carries Google place or route data, so the chat draws the Google Maps mark inside it
+    /// (SPEC-AGENTPLACE-001).
+    let showsGoogleMark: Bool
 
     private var taken = false
     private let onConfirm: @MainActor () async -> (AgentResolution, AgentCardMark)
 
-    init(lines: [String], onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
+    init(lines: [String], showsGoogleMark: Bool = false,
+         onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         self.lines = lines
+        self.showsGoogleMark = showsGoogleMark
         self.onConfirm = onConfirm
     }
 
@@ -233,16 +238,36 @@ final class AgentToolbox {
     private let zone: () -> TimeZone
     private var cachedFormats: Formats?
 
+    /// SPEC-AGENTPLACE-001: the handles of places and routes the model may use, and the injected sources of a lookup.
+    /// All three providers default to the Store's own services; tests inject stub transports through them.
+    var registry = AgentPlaceRegistry()
+    let deviceOrigin: () -> Place?
+    let placeSearchProvider: (() -> PlaceSearch)?
+    let directionsProvider: (() -> DirectionsService)?
+
     /// `timeZone` is read on every use, so a zone change while the app runs reaches dates, cards and the gate.
-    init(store: Store, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone) {
+    init(store: Store, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone,
+         deviceOrigin: @escaping () -> Place? = { nil },
+         places: (() -> PlaceSearch)? = nil,
+         directions: (() -> DirectionsService)? = nil) {
         self.store = store
         self.now = now
         zone = timeZone
+        self.deviceOrigin = deviceOrigin
+        placeSearchProvider = places
+        directionsProvider = directions
     }
 
-    convenience init(store: Store, now: @escaping () -> Date, timeZone: TimeZone) {
-        self.init(store: store, now: now, timeZone: { timeZone })
+    convenience init(store: Store, now: @escaping () -> Date, timeZone: TimeZone,
+                     deviceOrigin: @escaping () -> Place? = { nil },
+                     places: (() -> PlaceSearch)? = nil,
+                     directions: (() -> DirectionsService)? = nil) {
+        self.init(store: store, now: now, timeZone: { timeZone }, deviceOrigin: deviceOrigin,
+                  places: places, directions: directions)
     }
+
+    /// New chat: forgets the handles (M4 wires this in; the counters keep counting up).
+    func resetConversation() {}
 
     /// The formatters for the zone as it is now; rebuilt only when the zone differs from the last use.
     private var formats: Formats {
@@ -297,8 +322,8 @@ final class AgentToolbox {
         return values
     }
 
-    /// Removes the categories Cc, Cf, Zl and Zp, then trims.
-    private static func sanitized(_ title: String) -> String {
+    /// Removes the categories Cc, Cf, Zl and Zp, then trims. Shared with `AgentPlaces` so there is one sanitizer.
+    static func sanitized(_ title: String) -> String {
         var scalars = String.UnicodeScalarView()
         for scalar in title.unicodeScalars {
             switch scalar.properties.generalCategory {

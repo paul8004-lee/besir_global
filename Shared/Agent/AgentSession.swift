@@ -111,6 +111,8 @@ struct AgentLogEntry: Identifiable {
         case card(AgentCard)
         case notice(String)
         case error(String)
+        /// The Google Maps mark row after an answer that used place or route data (log only, never in the history).
+        case attribution
     }
 
     let id = UUID()
@@ -135,6 +137,7 @@ final class AgentSession: ObservableObject {
 
         static let stepLimit = #"{"status":"rejected","message":"Not executed. The step limit was reached."}"#
         static let oneAtATime = #"{"status":"rejected","message":"Not executed. Make one tool call at a time."}"#
+        static let lookupStub = #"{"status":"unavailable"}"#
     }
 
     /// What the chat draws, and what the transcript prints.
@@ -360,6 +363,11 @@ final class AgentSession: ObservableObject {
             pendingCard = card
             pendingCalls = (first, extras)
             entries.append(AgentLogEntry(kind: .card(card)))
+        case .lookup:
+            // Stub (SPEC-AGENTPLACE-001 M1a): the asynchronous lookup path arrives in M4. Until then a lookup is
+            // answered as unavailable so the history stays valid.
+            record((first, extras), firstResult: Line.lookupStub, notice: nil)
+            startRequest()
         }
     }
 
@@ -415,6 +423,7 @@ extension AgentSession {
             case .card(let card): return "CARD \(card.lines.first ?? "") \(card.mark?.rawValue ?? "Pending")"
             case .notice(let line): return "NOTICE \(line)"
             case .error(let line): return "ERROR \(line)"
+            case .attribution: return "ATTRIBUTION"
             }
         }.joined(separator: "\n")
     }

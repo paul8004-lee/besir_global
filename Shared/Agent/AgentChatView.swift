@@ -105,6 +105,9 @@ struct AgentChatView: View {
                 .foregroundStyle(Theme.warn)
         case .tool, .result:
             EmptyView()
+        case .attribution:
+            // Placeholder: M4 draws the Google Maps mark here (SPEC-AGENTPLACE-001).
+            EmptyView()
         }
     }
 
