@@ -175,11 +175,11 @@ final class ReplanStoreTests: XCTestCase {
 
     func testREPLAN_PostAlertTargetsTable() {
         let now = TestClock.now
-        func make(_ arrivalIn: TimeInterval, travel: TimeInterval? = 18 * 60, origin: Place? = F.home,
+        func make(_ arrivalIn: TimeInterval, travel: TimeInterval? = 18 * 60, withOrigin: Bool = true,
                   anchor: ScheduleAnchor? = nil, lead: Int = 10, name: String) -> ScheduledEvent {
             var e = F.event(now: now, arrivalIn: arrivalIn, lead: lead, name: name)
             e.travelSeconds = travel
-            e.origin = origin
+            if !withOrigin { e.origin = nil }
             e.anchor = anchor
             return e
         }
@@ -189,7 +189,7 @@ final class ReplanStoreTests: XCTestCase {
         let anchored = make(30 * 60, anchor: .departure, name: "anchored")
         let baseline = make(95 * 60, name: "baseline")
         let far = make(300 * 60, name: "far")
-        let noOrigin = make(20 * 60, origin: nil, name: "noOrigin")
+        let noOrigin = make(20 * 60, withOrigin: false, name: "noOrigin")
         let noTravel = make(20 * 60, travel: nil, name: "noTravel")
         let all = [baseline, far, noOrigin, noTravel, anchored, arrivalPassed, fired, passed]
         let ids = Store.selectPostAlertTargets(events: all, now: now, withinMinutes: 120)
