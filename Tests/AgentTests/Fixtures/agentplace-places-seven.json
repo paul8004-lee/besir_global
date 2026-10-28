@@ -1,0 +1,60 @@
+{
+  "places": [
+    {
+      "id": "fixture-seven-0001",
+      "displayName": { "text": "Example Place One", "languageCode": "en" },
+      "formattedAddress": "1 Invented Street, Exampleton, EX 94101, USA",
+      "location": { "latitude": 37.7011, "longitude": -122.4011 },
+      "primaryTypeDisplayName": { "text": "Cafe", "languageCode": "en" },
+      "googleMapsUri": "https://maps.example.invalid/seven/0001"
+    },
+    {
+      "id": "fixture-seven-0002",
+      "displayName": { "text": "Example Place Two", "languageCode": "en" },
+      "formattedAddress": "2 Invented Street, Exampleton, EX 94101, USA",
+      "location": { "latitude": 37.7022, "longitude": -122.4022 },
+      "primaryTypeDisplayName": { "text": "Cafe", "languageCode": "en" },
+      "googleMapsUri": "https://maps.example.invalid/seven/0002"
+    },
+    {
+      "id": "fixture-seven-0003",
+      "displayName": { "text": "Example Place Three", "languageCode": "en" },
+      "formattedAddress": "3 Invented Street, Exampleton, EX 94101, USA",
+      "location": { "latitude": 37.7033, "longitude": -122.4033 },
+      "primaryTypeDisplayName": { "text": "Cafe", "languageCode": "en" },
+      "googleMapsUri": "https://maps.example.invalid/seven/0003"
+    },
+    {
+      "id": "fixture-seven-0004",
+      "displayName": { "text": "Example Place Four", "languageCode": "en" },
+      "formattedAddress": "4 Invented Street, Exampleton, EX 94101, USA",
+      "location": { "latitude": 37.7044, "longitude": -122.4044 },
+      "primaryTypeDisplayName": { "text": "Cafe", "languageCode": "en" },
+      "googleMapsUri": "https://maps.example.invalid/seven/0004"
+    },
+    {
+      "id": "fixture-seven-0005",
+      "displayName": { "text": "Example Place Five", "languageCode": "en" },
+      "formattedAddress": "5 Invented Street, Exampleton, EX 94101, USA",
+      "location": { "latitude": 37.7055, "longitude": -122.4055 },
+      "primaryTypeDisplayName": { "text": "Cafe", "languageCode": "en" },
+      "googleMapsUri": "https://maps.example.invalid/seven/0005"
+    },
+    {
+      "id": "fixture-seven-0006",
+      "displayName": { "text": "Example Place Six", "languageCode": "en" },
+      "formattedAddress": "6 Invented Street, Exampleton, EX 94101, USA",
+      "location": { "latitude": 37.7066, "longitude": -122.4066 },
+      "primaryTypeDisplayName": { "text": "Cafe", "languageCode": "en" },
+      "googleMapsUri": "https://maps.example.invalid/seven/0006"
+    },
+    {
+      "id": "fixture-seven-0007",
+      "displayName": { "text": "Example Place Seven", "languageCode": "en" },
+      "formattedAddress": "7 Invented Street, Exampleton, EX 94101, USA",
+      "location": { "latitude": 37.7077, "longitude": -122.4077 },
+      "primaryTypeDisplayName": { "text": "Cafe", "languageCode": "en" },
+      "googleMapsUri": "https://maps.example.invalid/seven/0007"
+    }
+  ]
+}

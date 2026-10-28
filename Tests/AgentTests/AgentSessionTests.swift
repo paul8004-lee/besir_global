@@ -50,6 +50,7 @@ extension AgentSession {
             case .card: return "CARD"
             case .notice(let line): return "NOTICE \(line)"
             case .error(let line): return "ERROR \(line)"
+            case .attribution: return "ATTRIBUTION"
             }
         }
     }

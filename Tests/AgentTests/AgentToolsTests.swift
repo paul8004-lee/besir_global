@@ -4,17 +4,22 @@ import XCTest
 /// AC-AGENT-002, declarations: exactly the four flat function tools of spec.md section 3.2.
 @MainActor
 final class AgentToolsTests: XCTestCase {
+    // SPEC-AGENTPLACE-001: six tools; create_activity gains place_id and route_id, search_places and get_travel_time are new.
     private static let expectedParams: [String: [String]] = [
         "list_activities": ["from", "to"],
-        "create_activity": ["title", "start", "end"],
+        "create_activity": ["title", "start", "end", "place_id", "route_id"],
         "update_activity": ["id", "title", "start", "end"],
         "delete_activity": ["id"],
+        "search_places": ["query"],
+        "get_travel_time": ["place_id", "mode", "origin_place_id", "arrive_by"],
     ]
     private static let expectedRequired: [String: [String]] = [
         "list_activities": ["from", "to"],
         "create_activity": ["title", "start", "end"],
         "update_activity": ["id"],
         "delete_activity": ["id"],
+        "search_places": ["query"],
+        "get_travel_time": ["place_id", "mode"],
     ]
 
     private func declarations() -> [[String: Any]] {
@@ -27,21 +32,26 @@ final class AgentToolsTests: XCTestCase {
     }
 
     /// Names that must never be declared: anything that confirms, approves or forces a write, or carries a place.
+    /// SPEC-AGENTPLACE-001: the handle names `place_id` and `origin_place_id` are the only allowed names with `place`.
     private func forbiddenNames(in names: [String]) -> [String] {
         let contains = ["confirm", "approv", "yes", "force", "skip", "authoriz", "accept", "location", "place",
                         "address", "coord", "latitude", "longitude", "geo"]
         let exact = ["lat", "lng", "lon"]
+        let allowed = ["place_id", "origin_place_id"]
         return names.filter { name in
             let n = name.lowercased()
+            if allowed.contains(n) { return false }
             return contains.contains { n.contains($0) } || exact.contains(n)
         }
     }
 
     func testAG002_ExactlyFourFlatFunctionTools() {
+        // SPEC-AGENTPLACE-001 supersedes REQ-AGENT-005: six tools now (the name is kept for the SPEC-AGENT trace).
         let decls = declarations()
-        XCTAssertEqual(decls.count, 4)
+        XCTAssertEqual(decls.count, 6)
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
-                       ["list_activities", "create_activity", "update_activity", "delete_activity"])
+                       ["list_activities", "create_activity", "update_activity", "delete_activity",
+                        "search_places", "get_travel_time"])
         for decl in decls {
             XCTAssertEqual(decl["type"] as? String, "function")
             // Flat: the name and the parameters sit at the top level, not under a "function" key.
@@ -53,8 +63,9 @@ final class AgentToolsTests: XCTestCase {
     }
 
     func testAG002_ParametersMatchArgumentContract() {
+        // SPEC-AGENTPLACE-001: the contract covers six tools and the two new create_activity arguments.
         let decls = declarations()
-        XCTAssertEqual(decls.count, 4)
+        XCTAssertEqual(decls.count, 6)
         for decl in decls {
             let name = decl["name"] as? String ?? "?"
             let props = properties(decl)
@@ -68,9 +79,11 @@ final class AgentToolsTests: XCTestCase {
     }
 
     func testAG002_NoConfirmLikeOrLocationParameter() {
+        // SPEC-AGENTPLACE-001: "no location parameter" is superseded for handles only; `place` stays forbidden
+        // except in exactly `place_id` and `origin_place_id`.
         let decls = declarations()
-        // First: the four tools and at least one parameter each are present, so an empty declaration fails.
-        XCTAssertEqual(decls.count, 4)
+        // First: the six tools and at least one parameter each are present, so an empty declaration fails.
+        XCTAssertEqual(decls.count, 6)
         var names: [String] = []
         for decl in decls {
             let params = Array(properties(decl).keys)
@@ -81,6 +94,8 @@ final class AgentToolsTests: XCTestCase {
         XCTAssertEqual(forbiddenNames(in: names), [])
         // The scan can fire: planted declarations that do contain such names.
         XCTAssertEqual(forbiddenNames(in: ["title", "start", "end", "confirm"]), ["confirm"])
+        XCTAssertEqual(forbiddenNames(in: ["place_id", "origin_place_id", "route_id", "place_name", "placeholder"]),
+                       ["place_name", "placeholder"])
         XCTAssertEqual(forbiddenNames(in: ["id", "approved", "force", "skip_confirmation", "location", "place_name"]).count, 5)
         XCTAssertEqual(forbiddenNames(in: ["id", "title", "start", "end", "from", "to"]), [])
     }
@@ -88,14 +103,17 @@ final class AgentToolsTests: XCTestCase {
     func testAG002_DeclarationsEqualRecordedFixture() throws {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
-        // The fixture is itself the four tools, so an empty fixture cannot match an empty encoding.
-        XCTAssertEqual((recorded as? [Any])?.count, 4)
+        // SPEC-AGENTPLACE-001: the fixture is the amended six declarations, so an empty fixture cannot match an empty encoding.
+        XCTAssertEqual((recorded as? [Any])?.count, 6)
         let encoded = try JSONSerialization.jsonObject(with: AgentTools.declarationsJSON())
         XCTAssertTrue((encoded as AnyObject).isEqual(recorded), "encoded declarations differ from Fixtures/tools.json")
     }
 
     /// The gate reads exactly the declared parameters: each declared one is read (a wrong type is refused naming it)
     /// and an undeclared key is not (a wrong type there changes nothing).
+    /// SPEC-AGENTPLACE-001: the loop covers the four original tools, with the five-parameter create_activity; the two
+    /// new lookup tools are skipped here because the baseline call helper expects a card or a list answer (they are
+    /// covered by testAGPLACE_WrongTypeIsRefusedOnEveryNewParameter).
     func testAG002_GateReadSetEqualsDeclaredParameters() {
         let h = ToolHarness.make()
         let record = h.seed("Review", "2026-10-28T10:00", "2026-10-28T11:00")
@@ -107,10 +125,11 @@ final class AgentToolsTests: XCTestCase {
             "delete_activity": ["id": id],
         ]
         let decls = declarations()
-        XCTAssertEqual(decls.count, 4)
+        XCTAssertEqual(decls.count, 6)
         var checked = 0
         for decl in decls {
             let tool = decl["name"] as? String ?? "?"
+            if tool == "search_places" || tool == "get_travel_time" { continue }
             let base = valid[tool] ?? [:]
             XCTAssertFalse(base.isEmpty, tool)
             // The baseline call is accepted: a list answer or a card, never a rejection.
@@ -131,6 +150,6 @@ final class AgentToolsTests: XCTestCase {
             let outcome = h.call(tool, extra)
             XCTAssertTrue(outcome.accepted, "undeclared key read by \(tool)")
         }
-        XCTAssertEqual(checked, 10)
+        XCTAssertEqual(checked, 12)
     }
 }

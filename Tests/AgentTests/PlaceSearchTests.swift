@@ -278,3 +278,33 @@ final class PlaceSearchTests: XCTestCase {
         XCTAssertNotEqual(lightData, darkData, "the light and dark renderings must differ")
     }
 }
+
+/// Card t39: an IP-based approximate origin must not outlive the real fix.
+@MainActor
+final class OriginLocationTests: XCTestCase {
+    func testORIGIN_ApproximateStillStartsUpdatesWhenPermissionIsGranted() {
+        let lm = LocationManager()
+        XCTAssertFalse(lm.shouldStartUpdatesWhenAuthorized, "a fresh manager has nothing to start")
+        lm.applyApproximate(latitude: 37.5661369, longitude: 126.9783785, region: "Seoul", city: "Seoul")
+        XCTAssertFalse(lm.isLocating, "the fallback ends the locating state")
+        XCTAssertTrue(lm.isApproximate)
+        XCTAssertTrue(lm.shouldStartUpdatesWhenAuthorized, "granting permission after the fallback must start real positioning")
+    }
+
+    func testORIGIN_RealFixReplacesApproximateCoordinateAndName() {
+        let lm = LocationManager()
+        lm.applyApproximate(latitude: 37.5661369, longitude: 126.9783785, region: "Seoul", city: "Seoul")
+        XCTAssertEqual(lm.currentPlaceName, "Seoul (approx.)")
+        lm.applyFix(CLLocation(latitude: 37.7849, longitude: -122.4094))
+        XCTAssertEqual(lm.currentLocation?.latitude, 37.7849)
+        XCTAssertEqual(lm.currentLocation?.longitude, -122.4094)
+        XCTAssertFalse(lm.isApproximate)
+        XCTAssertFalse(lm.shouldStartUpdatesWhenAuthorized, "a real fix needs no further start")
+        XCTAssertNotEqual(lm.currentPlaceName, "Seoul (approx.)", "the approximate name must not stay on the real coordinate")
+    }
+
+    func testORIGIN_ApproximateNameJoinsRegionAndCity() {
+        XCTAssertEqual(LocationManager.joinedApproxName(region: "Seoul", city: "Seoul"), "Seoul")
+        XCTAssertEqual(LocationManager.joinedApproxName(region: "California", city: "San Francisco"), "California San Francisco")
+    }
+}

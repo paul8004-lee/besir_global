@@ -105,6 +105,8 @@ struct AgentChatView: View {
                 .foregroundStyle(Theme.warn)
         case .tool, .result:
             EmptyView()
+        case .attribution:
+            GoogleMapsAttribution()
         }
     }
 
@@ -115,6 +117,9 @@ struct AgentChatView: View {
                 Text(verbatim: line)
                     .font(index == 0 ? .headline : .body)
                     .foregroundStyle(Theme.ink)
+            }
+            if card.showsGoogleMark {
+                GoogleMapsAttribution()
             }
             if pending {
                 HStack(spacing: 12) {

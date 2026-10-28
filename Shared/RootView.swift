@@ -34,6 +34,7 @@ struct RootView: View {
     }
 
     @EnvironmentObject var store: Store
+    @EnvironmentObject var location: LocationManager
     @State private var service: Service?
     @State private var showingSettings = false
     // The session lives here, not in the sheet, so the conversation survives closing the sheet. It sits in a reference
@@ -101,7 +102,10 @@ struct RootView: View {
 
     private func openChat() {
         if chatHolder.session == nil {
-            chatHolder.session = AgentSession(toolbox: AgentToolbox(store: store, now: { Date() }, timeZone: { TimeZone.current }),
+            let location = location
+            let origin = { AgentPlaces.devicePlace(manual: location.manualOrigin, current: location.currentLocation) }
+            chatHolder.session = AgentSession(toolbox: AgentToolbox(store: store, now: { Date() }, timeZone: { TimeZone.current },
+                                                                    deviceOrigin: origin),
                                               transport: AgentClient(config: store.config, now: { Date() }, timeZone: { TimeZone.current }))
         }
         showingChat = true
