@@ -640,7 +640,7 @@ struct EditCardView: View {
     /// 후보 한 줄. 탭하면 그 순간 좌표까지 확정된다 — 확인 뒤에 실패할 자리가 사라진다.
     private func suggestionRow(_ field: EditField, _ place: Place) -> some View {
         Button {
-            actions.choosePlace(field.id, place)
+            (actions.chooseCandidate ?? actions.choosePlace)(field.id, place)
             // 특수·즐겨찾기 행과 같은 정리 폭으로 맞춘다 — 행 종류에 따라 닫히는 폭이 다르면
             // 같은 목록 안에서 두 가지 닫기 법이 생긴다.
             collapseOtherEditors()

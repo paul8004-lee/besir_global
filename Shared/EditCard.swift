@@ -361,11 +361,16 @@ enum PlaceLine {
     /// 이긴다 — 즐겨찾기 행을 눌렀으면 '회사' 라벨을 보여야 하는데 저장값은 place.name 그대로라
     /// 표시만 라벨로 바꾸는 것이다(R-3, 기록 형식은 무변경). 라벨을 못 찾으면 후보 행에서 골랐다는
     /// 뜻이므로 place.name, 그 밖(좌표 없는 옛 옵션)은 값이 곧 라벨이다.
+    // @MX:NOTE: `pickedFromCandidate` is true only for a value tapped in a search-result row of this editing
+    // session. Its default (false) keeps the rule above for every other value (a favorite row, a saved
+    // activity that was reopened, a restored origin), so a favorite with the same place still shows its label there.
     static func closedSearchText(chosen: String?, confirmedPlace: Place?,
-                                 favorites: [EditField.Option]) -> String {
+                                 favorites: [EditField.Option],
+                                 pickedFromCandidate: Bool = false) -> String {
         guard let chosen else { return "" }
         if PlaceTokens.isInternalToken(chosen) { return PlaceTokens.displayText(chosen) }
         if let confirmedPlace {
+            if pickedFromCandidate { return confirmedPlace.name }
             if let label = favorites.first(where: { $0.place == confirmedPlace })?.label { return label }
             return confirmedPlace.name
         }
@@ -846,6 +851,10 @@ extension EndWheelSpec {
     /// 찍히므로 두 줄이 겹칠 수가 없다. 지연 해석 함수는 만들지 않는다(계약 5: 만들면
     /// resolvePlace의 세 번째 구현이 된다).
     var confirmedPlaces: [UUID: Place] = [:]
+    /// Place rows whose present value was tapped in a search-result row (not a favorite row). Only
+    /// `markCandidatePick` adds a row; every write of the row's value (`choose`, `abandonPlaceRow`,
+    /// `forgetPlaces`) removes it, so the memory can never outlive the value it describes.
+    var candidatePickedFields: Set<UUID> = []
     /// 즐겨찾기 칩의 옵션과 라벨 → 좌표 씨앗. 칩 탭은 Place를 들고 오지 않고 라벨만 주므로 그
     /// 라벨을 좌표로 푸는 씨앗이 전이에 필요하다 — 카드를 띄우는 화면이 시트가 뜰 때 채워 넣는다.
     var favoriteOptions: [EditField.Option] = []
@@ -906,6 +915,7 @@ extension EndWheelSpec {
     /// `place`는 검색 후보를 탭해 지점까지 특정된 경우에만 실려 온다(choosePlace) — 칩 탭은
     /// nil로 들어와 라벨을 즐겨찾기 씨앗에서 푼다.
     mutating func choose(field: UUID, value: String, place: Place? = nil) {
+        candidatePickedFields.remove(field)
         guard let i = card.fields.firstIndex(where: { $0.id == field }) else { return }
         let key = card.fields[i].key
         card.fields[i].chosen = value
@@ -1105,7 +1115,17 @@ extension EndWheelSpec {
         guard let f = card.fields.first(where: { $0.id == field }) else { return "" }
         return PlaceLine.closedSearchText(chosen: f.chosen,
                                           confirmedPlace: f.chosen == nil ? nil : confirmedPlaces[field],
-                                          favorites: f.options)
+                                          favorites: f.options,
+                                          pickedFromCandidate: candidatePickedFields.contains(field))
+    }
+
+    /// Records that the value just written to this place row came from a search-result row, so the closed
+    /// field shows the place's own name even when a saved favorite holds the same place. The caller runs it
+    /// right after `choose`; a row without a chosen value or a confirmed place is not marked.
+    mutating func markCandidatePick(field: UUID) {
+        guard let f = card.fields.first(where: { $0.id == field }), f.kind == .place,
+              f.chosen != nil, confirmedPlaces[field] != nil else { return }
+        candidatePickedFields.insert(field)
     }
 
     /// '현재 위치' 행을 골랐는데 위치를 얻지 못했을 때(권한 거부·시한 초과) 그 장소 줄을 비운다 — 앞서 고른 값('집')이 남으면
@@ -1115,6 +1135,7 @@ extension EndWheelSpec {
         card.fields[i].chosen = nil
         card.fields[i].note = note
         confirmedPlaces[field] = nil
+        candidatePickedFields.remove(field)
     }
 
     /// 장소가 사라질 때(장소 없음 칩) 다리 줄 전부의 값을 기억해 둔다 — 다시 실제 장소를 고르면
@@ -1154,7 +1175,10 @@ extension EndWheelSpec {
     /// 줄이 배열에서 빠질 때 그 줄에 걸린 좌표도 놓는다 — 신원이 사라진 좌표는 아무도 되찾지
     /// 못하는데, 놓지 않으면 카드가 사는 동안 사전만 자란다.
     private mutating func forgetPlaces(_ keys: [String]) {
-        for f in card.fields where keys.contains(f.key) { confirmedPlaces[f.id] = nil }
+        for f in card.fields where keys.contains(f.key) {
+            confirmedPlaces[f.id] = nil
+            candidatePickedFields.remove(f.id)
+        }
     }
 
     /// 다리가 하나라도 켜지면 알림 줄이 필요해진다 — 캘린더 줄이 있다면 그 앞에, 없으면 '반복' 줄 앞에, 그것도 없으면
@@ -1710,6 +1734,9 @@ struct EditCardActions {
     /// 부른다. setTitleText와 같은 이유로 옵셔널이다: nil이면 뷰가 chosenLabel 폴백으로 옛 동작을
     /// 유지해 대상 밖 화면(AddEventView, O-B1)이 고장 나지 않는다.
     var closedSearchText: (@MainActor (UUID) -> String)? = nil
+    /// A tap on a search-result row. nil means the row takes the `choosePlace` path (Add Event supplies none);
+    /// the screens that show the closed text through `closedSearchText` also record that the value came from a search.
+    var chooseCandidate: (@MainActor (UUID, Place) -> Void)? = nil
     /// 다이얼 닫기 확정(REQ-006 F1·REQ-010) — basis 인자는 기준 있는 줄의 것이다(뷰의
     /// currentBasis). nil이면 뷰는 다이얼을 접기만 한다: 옛 화면(O-B1)은 확정 없이 접히는 옛
     /// 동작이 그대로 남는다. 셋째 인자는 다이얼이 열린 순간 뷰가 한 번 잡은 'now'다(R3, AC-012) —
