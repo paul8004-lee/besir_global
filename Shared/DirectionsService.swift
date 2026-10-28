@@ -16,6 +16,11 @@ struct DirectionsService {
         connections.record(from: .besir, to: .googleRoutes, kind: .route, summary: summary, status: status, flowID: flow)
     }
 
+    /// An answer of "no route" is a normal answer, so it is not shown as a failure; every other failure is.
+    private static func status(for failure: TravelFailure) -> ConnectionStatus {
+        failure == .noRoute ? .noRoute : .failed
+    }
+
     /// What the detail screen of an event looks up for its mode.
     enum DetailLookup: Equatable {
         /// Transit: the steps of one route.
@@ -72,7 +77,7 @@ struct DirectionsService {
         } catch {
             // A cancelled lookup has no failure, so the caller does not draw it as one.
             let failure = GoogleRoutes.failure(for: error, hasProxy: config.hasProxy)
-            if failure != nil { note(summary, .failed, flow: flow) }
+            if let failure { note(summary, Self.status(for: failure), flow: flow) }
             return TravelEstimate(mode: mode, duration: nil, distance: nil, source: Self.source, failure: failure)
         }
     }
@@ -106,7 +111,7 @@ struct DirectionsService {
             return TransitPlan(steps: converted.steps, extraMinutes: converted.extraMinutes)
         } catch {
             let failure = GoogleRoutes.failure(for: error, hasProxy: config.hasProxy)
-            if failure != nil { note("Transit steps", .failed) }
+            if let failure { note("Transit steps", Self.status(for: failure)) }
             return TransitPlan(failure: failure)
         }
     }

@@ -89,12 +89,15 @@ enum ConnectionStatus: String, Codable, CaseIterable {
     case ok
     case failed
     case declined
+    /// A normal answer, not a failure: the lookup worked and there is no route.
+    case noRoute
 
     var word: String {
         switch self {
         case .ok: return "OK"
         case .failed: return "Failed"
         case .declined: return "Declined"
+        case .noRoute: return "No route"
         }
     }
 }
