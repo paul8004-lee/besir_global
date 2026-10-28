@@ -51,6 +51,8 @@ struct ReplanOutcome: Equatable {
     let arrivalEstimate: Date?
     /// Late only: the message draft (the fixed text first, a checked Muse Spark text when one arrives).
     var draft: String?
+    /// True for a later live departure found after the alert fired (SPEC-REPLAN-002): shown, never stored.
+    var afterAlert: Bool = false
 }
 
 enum Replan {
@@ -62,6 +64,8 @@ enum Replan {
     static let debounce: TimeInterval = 300
     /// The late lines and the draft are shown this long after the check.
     static let lateLinesLifetime: TimeInterval = 15 * 60
+    /// The after-alert line (a live departure later than the stored one) is shown this long after the check.
+    static let afterAlertLinesLifetime: TimeInterval = 15 * 60
     /// An app-open pass checks at most this many events beyond the baseline window.
     static let maxPostAlertEvents = 5
     static let draftMaxLength = 280
@@ -99,6 +103,23 @@ enum Replan {
                              liveTravel: liveTravel, noTrafficTravel: noTrafficTravel,
                              newDeparture: newDeparture, kind: kind, minutes: minutes,
                              arrivalEstimate: estimate, draft: nil)
+    }
+
+    /// The outcome of a check made after the alert fired when the live departure is later than the stored one (SPEC-REPLAN-002).
+    /// Nothing is stored for it; it compares with the stored pair. nil for a late outcome and for less than `changeThreshold`.
+    static func afterAlert(_ outcome: ReplanOutcome, storedDeparture: Date, storedTravel: TimeInterval) -> ReplanOutcome? {
+        let difference = outcome.newDeparture.timeIntervalSince(storedDeparture)
+        guard outcome.kind != .late, difference >= changeThreshold else { return nil }
+        return ReplanOutcome(eventID: outcome.eventID, trigger: outcome.trigger, checkedAt: outcome.checkedAt, inputs: outcome.inputs,
+                             referenceDeparture: storedDeparture, referenceTravel: storedTravel, liveTravel: outcome.liveTravel,
+                             noTrafficTravel: outcome.noTrafficTravel, newDeparture: outcome.newDeparture, kind: .later,
+                             minutes: roundedMinutes(fromSeconds: difference), arrivalEstimate: nil, draft: nil, afterAlert: true)
+    }
+
+    /// Whether the departure card shows the passed-departure warning and tint: the departure is behind `now` and no
+    /// after-alert line says the trip still fits (REQ-REPLAN-106).
+    static func showsPassed(departure: Date, now: Date, afterAlertLine: Bool) -> Bool {
+        departure < now && !afterAlertLine
     }
 
     /// The pair a new check compares with: the first plan of the event's cycle (REQ-REPLAN-004). It is the pair of the
@@ -150,20 +171,27 @@ enum Replan {
     /// What the departure card shows for an event (REQ-REPLAN-012); nil shows nothing.
     static func displayLines(for outcome: ReplanOutcome?, event: ScheduledEvent, now: Date,
                              timeZone: TimeZone = .current)
-        -> (headline: String, reason: String, draft: String?, kind: ReplanKind)? {
+        -> (headline: String, reason: String, draft: String?, kind: ReplanKind, afterAlert: Bool)? {
         guard let outcome, outcome.kind != .unchanged,
               event.arrivalDate > now,
               outcome.inputs.arrivalDate == event.arrivalDate, outcome.inputs.mode == event.mode,
               let headline = headline(for: outcome, timeZone: timeZone) else { return nil }
         switch outcome.kind {
         case .earlier, .later:
-            guard let departure = event.departureDate,
-                  abs(departure.timeIntervalSince(outcome.newDeparture)) < 1 else { return nil }
-            return (headline, reason(for: outcome), nil, outcome.kind)
+            guard let departure = event.departureDate else { return nil }
+            if outcome.afterAlert {
+                // The stored departure is the one the check compared with; the live one is ahead and the reading is young.
+                guard abs(departure.timeIntervalSince(outcome.referenceDeparture)) < 1,
+                      now < outcome.newDeparture,
+                      now.timeIntervalSince(outcome.checkedAt) < afterAlertLinesLifetime else { return nil }
+                return (headline, reason(for: outcome), nil, .later, true)
+            }
+            guard abs(departure.timeIntervalSince(outcome.newDeparture)) < 1 else { return nil }
+            return (headline, reason(for: outcome), nil, outcome.kind, false)
         case .late:
             let age = now.timeIntervalSince(outcome.checkedAt)
             guard age < lateLinesLifetime else { return nil }
-            return (headline, reason(for: outcome), outcome.draft, .late)
+            return (headline, reason(for: outcome), outcome.draft, .late, false)
         case .unchanged:
             return nil
         }

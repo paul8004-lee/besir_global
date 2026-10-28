@@ -176,7 +176,9 @@ struct EventDetailView: View {
     private var departureCard: some View {
         if let dep = event.departureDate, let travel = event.travelSeconds {
             let minutes = roundedMinutes(fromSeconds: travel)
-            let isPast = dep < Date()
+            let now = Date()
+            let lines = Replan.displayLines(for: store.replanOutcomes[event.id], event: event, now: now)
+            let passed = Replan.showsPassed(departure: dep, now: now, afterAlertLine: lines?.afterAlert == true)
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Image(systemName: event.mode.systemImage)
@@ -193,12 +195,12 @@ struct EventDetailView: View {
                         Spacer()
                         Text(BesirTime.clock.string(from: dep))
                             .font(.system(size: departureTimeSize, weight: .bold, design: .rounded))
-                            .foregroundStyle(isPast ? Theme.nowLine : Theme.travel)
+                            .foregroundStyle(passed ? Theme.nowLine : Theme.travel)
                     }
-                    if isPast {
+                    if passed {
                         Text("⚠️ The departure time has already passed.")
                             .font(.caption).foregroundStyle(Theme.warn)
-                    } else {
+                    } else if dep >= now {
                         // 알림 상태는 사실대로 — 꺼졌거나, 예약돼 있거나, 아니라면 그 이유까지
                         // (판정식은 alarmStatus에). "예약됨"이라고만 쓰면 울리지 않을 약속을
                         // 화면이 한다(D-3).
@@ -211,7 +213,7 @@ struct EventDetailView: View {
                 .accessibilityElement(children: .combine)
                 // The result of the last live check (SPEC-REPLAN-001): what changed and why, and for a late arrival the
                 // message draft with one share control. It shows nothing when nothing changed.
-                if let lines = Replan.displayLines(for: store.replanOutcomes[event.id], event: event, now: Date()) {
+                if let lines {
                     Divider()
                     VStack(alignment: .leading, spacing: 6) {
                         Text(lines.headline)
