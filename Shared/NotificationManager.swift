@@ -31,6 +31,25 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
     @Published private(set) var permissionStatus: AlarmPermission = .unknown
     @Published var lastError: String?
 
+    /// The event of the departure alert the user tapped, until a screen consumes it (SPEC-REPLAN-001 REQ-REPLAN-013).
+    @Published private(set) var tappedEventID: UUID?
+    /// Set by the store: a tap on an alert that carries an event id starts the live check of that event.
+    var onAlertTap: ((UUID) -> Void)?
+    /// How many requests `schedule` and `deliverNow` handed to the center. Tests read it; the app does not.
+    private(set) var requestCount = 0
+    /// The event id the last handed-over request carried. Tests read it; the app does not.
+    private(set) var lastRequestEventID: UUID?
+
+    /// The payload key that carries the event id of an alert.
+    nonisolated static let eventIDKey = "besirEventID"
+
+    override init() {
+        super.init()
+        // The delegate is set here, not only in `bootstrap()`: a tap that launches the app is delivered only to a
+        // delegate that exists before the app finishes launching, and this object is made in `BesirApp.init`.
+        center?.delegate = self
+    }
+
     private var center: UNUserNotificationCenter? {
         // 번들 식별자가 없으면(예: 비번들 실행) UNUserNotificationCenter 접근이 크래시 나므로 가드.
         guard Bundle.main.bundleIdentifier != nil else { return nil }
@@ -67,14 +86,14 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
 
     /// 지정 시각에 알림을 예약하고 식별자를 반환한다. 실패 시 nil.
     @discardableResult
-    func schedule(title: String, body: String, at date: Date, id: String = UUID().uuidString) -> String? {
+    func schedule(title: String, body: String, at date: Date, id: String = UUID().uuidString,
+                  eventID: UUID? = nil) -> String? {
         guard let center else { return nil }
         guard date > Date() else { return nil }   // 과거 시각은 예약하지 않음
+        requestCount += 1
+        lastRequestEventID = eventID
 
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
+        let content = Self.content(title: title, body: body, eventID: eventID)
 
         let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute, .second], from: date)
         let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: false)
@@ -94,12 +113,11 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
     /// rescheduleNearestNotifications의 cancelAll()에 지워지지 않는다(M10). 식별자는 호출처가
     /// "catchup-"+일정 id로 결정적으로 만든다(기본 UUID 인자를 두지 않는다, AC-003).
     @discardableResult
-    func deliverNow(title: String, body: String, id: String) -> String? {
+    func deliverNow(title: String, body: String, id: String, eventID: UUID? = nil) -> String? {
         guard let center else { return nil }
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
+        requestCount += 1
+        lastRequestEventID = eventID
+        let content = Self.content(title: title, body: body, eventID: eventID)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: nil)
         center.add(request) { error in
             if let error { Task { @MainActor in self.lastError = error.localizedDescription } }
@@ -120,11 +138,53 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
                                             withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .list, .sound])
     }
+
+    // A tap on an alert: forward the payload to `handleTap`. Only strings cross to the main actor.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                            didReceive response: UNNotificationResponse,
+                                            withCompletionHandler completionHandler: @escaping () -> Void) {
+        var payload: [String: String] = [:]
+        if let value = response.notification.request.content.userInfo[NotificationManager.eventIDKey] as? String {
+            payload[NotificationManager.eventIDKey] = value
+        }
+        completionHandler()
+        Task { @MainActor in self.handleTap(userInfo: payload) }
+    }
+
+    /// Publishes the tapped event id and starts the live check. A payload without a valid id changes nothing.
+    func handleTap(userInfo: [AnyHashable: Any]) {
+        guard let id = Self.eventID(from: userInfo) else { return }
+        tappedEventID = id
+        onAlertTap?(id)
+    }
+
+    /// The tapped id, once: a screen that took it opens the event and the id is gone.
+    func consumeTappedEventID() -> UUID? {
+        guard let id = tappedEventID else { return nil }
+        tappedEventID = nil
+        return id
+    }
 }
 
 // MARK: - 알림 진실성 판정(SPEC-ONTIME-002) — 전부 순수 함수, 센터를 건드리지 않는다
 
 extension NotificationManager {
+
+    /// The content of an alert; the event id rides in the payload when there is one (SPEC-REPLAN-001 REQ-REPLAN-010).
+    static func content(title: String, body: String, eventID: UUID?) -> UNMutableNotificationContent {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        if let eventID { content.userInfo = [eventIDKey: eventID.uuidString] }
+        return content
+    }
+
+    /// The event id of a tapped alert: nil for a missing key, a value that is not a string, or a string that is not a UUID.
+    static func eventID(from userInfo: [AnyHashable: Any]) -> UUID? {
+        guard let text = userInfo[eventIDKey] as? String else { return nil }
+        return UUID(uuidString: text)
+    }
 
     /// 알림 시각(출발 − 리드×60). 운영 소스 전체에서 리드 값에 60을 곱해 알림 시각을 만드는 곳은
     /// 이 본문 하나다(계약 5) — 실제 예약·64건 창 정렬·일정 추가 폼 노트가 전부 이 함수를 거친다.
