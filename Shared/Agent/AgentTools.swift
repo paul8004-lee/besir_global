@@ -363,7 +363,8 @@ final class AgentToolbox {
     }
 
     /// Reads one function call (tool name and the raw arguments string the model sent).
-    func handle(name: String, arguments: String) -> AgentToolOutcome {
+    /// - `flow`: the Connections flow of the user message that caused the call. Only the two Google lookups read it.
+    func handle(name: String, arguments: String, flow: UUID? = nil) -> AgentToolOutcome {
         guard let tool = Tool(rawValue: name) else { return reject(Say.unknownTool) }
         guard let data = arguments.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -375,8 +376,8 @@ final class AgentToolbox {
             case .create: return try create(values)
             case .update: return try update(values)
             case .delete: return try delete(values)
-            case .search: return try search(values)
-            case .travel: return try travel(values)
+            case .search: return try search(values, flow: flow)
+            case .travel: return try travel(values, flow: flow)
             case .booking: return try book(values)
             }
         } catch {
@@ -565,19 +566,19 @@ final class AgentToolbox {
 
     // MARK: - Lookups (SPEC-AGENTPLACE-001)
 
-    private func search(_ values: [String: String]) throws -> AgentToolOutcome {
+    private func search(_ values: [String: String], flow: UUID?) throws -> AgentToolOutcome {
         guard let query = values["query"], query.count >= AgentPlaces.queryMin else { throw Rejection(Say.queryMissing) }
         if query.count > AgentPlaces.queryMax { throw Rejection(Say.queryLong) }
         let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         return .lookup(AgentLookup { [self] in
             let service = placeSearchProvider?() ?? store.placeSearch
-            let found = await service.search(query, near: center)
+            let found = await service.search(query, near: center, flow: flow)
             // A cancelled lookup writes nothing: its answer is dropped by the session anyway.
             return AgentPlaces.searchOutput(Task.isCancelled ? [] : found, registry: &registry)
         })
     }
 
-    private func travel(_ values: [String: String]) throws -> AgentToolOutcome {
+    private func travel(_ values: [String: String], flow: UUID?) throws -> AgentToolOutcome {
         guard let destinationId = values["place_id"], AgentPlaces.isPlaceHandle(destinationId),
               let destination = registry.place(destinationId) else { throw Rejection(Say.findPlace) }
         guard let modeText = values["mode"], let mode = TransportMode(rawValue: modeText) else { throw Rejection(Say.mode) }
@@ -602,7 +603,8 @@ final class AgentToolbox {
             let service = directionsProvider?() ?? store.directions
             let estimate = await service.estimate(
                 mode, from: CLLocationCoordinate2D(latitude: origin.latitude, longitude: origin.longitude),
-                to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude))
+                to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude),
+                flow: flow)
             guard let seconds = estimate.duration else { return AgentPlaces.travelFailure(estimate.failure) }
             guard !Task.isCancelled else { return AgentPlaces.travelFailure(nil) }
             let route = AgentRoute(mode: mode, seconds: seconds, origin: origin, destination: destination,
