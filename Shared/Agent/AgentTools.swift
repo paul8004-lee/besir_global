@@ -1,10 +1,12 @@
 import Foundation
+import CoreLocation
 
-// SPEC-AGENT-001: the four schedule tools. The app, not the model, decides: every argument goes through one
-// gate, every write waits for the user's Confirm, and the card shows validated values and Store records only.
+// SPEC-AGENT-001: the four schedule tools, SPEC-AGENTPLACE-001: the place and travel-time tools. The app, not the
+// model, decides: every argument goes through one gate, every write waits for the user's Confirm, and the card shows
+// validated values and Store records only.
 
 enum AgentTools {
-    /// JSON array of the four function declarations sent with every request.
+    /// JSON array of the six function declarations sent with every request.
     static func declarationsJSON() -> Data { Data(declarations.utf8) }
 
     private static let declarations = #"""
@@ -32,7 +34,9 @@ enum AgentTools {
           "properties": {
             "title": {"type": "string", "description": "Event title, at most 80 characters."},
             "start": {"type": "string", "description": "Start as a local date-time, YYYY-MM-DDTHH:MM."},
-            "end": {"type": "string", "description": "End as a local date-time, YYYY-MM-DDTHH:MM. After start, at most 24 hours later."}
+            "end": {"type": "string", "description": "End as a local date-time, YYYY-MM-DDTHH:MM. After start, at most 24 hours later."},
+            "place_id": {"type": "string", "description": "Optional. A place_id returned by search_places, for where the event takes place."},
+            "route_id": {"type": "string", "description": "Optional. The route_id returned by get_travel_time for the trip to that place."}
           },
           "required": ["title", "start", "end"],
           "additionalProperties": false
@@ -66,6 +70,35 @@ enum AgentTools {
           "required": ["id"],
           "additionalProperties": false
         }
+      },
+      {
+        "type": "function",
+        "name": "search_places",
+        "description": "Look up places by name or kind. Returns up to five places with a place_id for each.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "query": {"type": "string", "description": "What to look for, such as a business name or a kind of place, 2 to 80 characters."}
+          },
+          "required": ["query"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "get_travel_time",
+        "description": "Look up the travel time to a place found with search_places. Returns a route_id and the minutes.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "place_id": {"type": "string", "description": "The destination: a place_id returned by search_places."},
+            "mode": {"type": "string", "description": "How the user travels: car, transit, walk or bicycle. The user chooses; ask them if they have not said."},
+            "origin_place_id": {"type": "string", "description": "Optional starting point: a place_id returned by search_places. Omit it to start from the user's current location."},
+            "arrive_by": {"type": "string", "description": "Optional arrival time as a local date-time, YYYY-MM-DDTHH:MM. When given, the result also states when to leave."}
+          },
+          "required": ["place_id", "mode"],
+          "additionalProperties": false
+        }
       }
     ]
     """#
@@ -80,12 +113,17 @@ final class AgentCard {
     let actions = ["Confirm", "Cancel"]
     /// Nil while the card is pending.
     private(set) var mark: AgentCardMark?
+    /// True when the card carries Google place or route data, so the chat draws the Google Maps mark inside it
+    /// (SPEC-AGENTPLACE-001).
+    let showsGoogleMark: Bool
 
     private var taken = false
     private let onConfirm: @MainActor () async -> (AgentResolution, AgentCardMark)
 
-    init(lines: [String], onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
+    init(lines: [String], showsGoogleMark: Bool = false,
+         onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         self.lines = lines
+        self.showsGoogleMark = showsGoogleMark
         self.onConfirm = onConfirm
     }
 
@@ -116,14 +154,18 @@ private enum Tool: String {
     case create = "create_activity"
     case update = "update_activity"
     case delete = "delete_activity"
+    case search = "search_places"
+    case travel = "get_travel_time"
 
     /// The declared parameters, in declaration order. Nothing else is ever read.
     var params: [String] {
         switch self {
         case .list: return ["from", "to"]
-        case .create: return ["title", "start", "end"]
+        case .create: return ["title", "start", "end", "place_id", "route_id"]
         case .update: return ["id", "title", "start", "end"]
         case .delete: return ["id"]
+        case .search: return ["query"]
+        case .travel: return ["place_id", "mode", "origin_place_id", "arrive_by"]
         }
     }
 }
@@ -161,6 +203,20 @@ private enum Say {
         "Call \(tool.rawValue) again with a valid JSON object of arguments."
     }
     static let unknownTool = "That tool does not exist. Answer the user without a tool, or call one of the declared tools."
+
+    // SPEC-AGENTPLACE-001, spec.md section 2.3.
+    static let queryMissing = "Ask the user what place to look for, then call search_places again. Do not guess it."
+    static let queryLong = "Call search_places again with a shorter query, or ask the user for a shorter one."
+    static let findPlace = "Call search_places to find the place, then call get_travel_time again with the place_id it returns."
+    static let mode = "Call get_travel_time again with mode set to how the user wants to travel, or ask the user."
+    static let originPlace = "Call search_places to find the starting place, then call get_travel_time again with its place_id as origin_place_id, or omit origin_place_id to start from the user's current location."
+    static let arriveWindow = "Ask the user to confirm the date, then call get_travel_time again. The arrival time must be within the past day or the next 366 days."
+    static let noOrigin = "Ask the user to turn on location access or to name a starting place, search for it with search_places, then call get_travel_time again with its place_id as origin_place_id."
+    static let createPlace = "Call search_places to find the place, then call create_activity again with the place_id it returns, or omit place_id."
+    static let createRoute = "Call get_travel_time again for this place and mode, then call create_activity again with the route_id it returns, or omit route_id."
+    static let createMismatch = "Call create_activity again with a place_id that matches the route_id, or omit place_id."
+    static let routeExpired = "Call get_travel_time again, then call create_activity again with the new route_id."
+    static let routeExpiredNotice = "The travel time is out of date. Nothing was added."
 
     static let declined = "The user cancelled. Do not retry the change unless the user asks again."
     static let notFound = "That event no longer exists. Tell the user and ask what to do next."
@@ -233,16 +289,36 @@ final class AgentToolbox {
     private let zone: () -> TimeZone
     private var cachedFormats: Formats?
 
+    /// SPEC-AGENTPLACE-001: the handles of places and routes the model may use, and the injected sources of a lookup.
+    /// All three providers default to the Store's own services; tests inject stub transports through them.
+    var registry = AgentPlaceRegistry()
+    let deviceOrigin: () -> Place?
+    let placeSearchProvider: (() -> PlaceSearch)?
+    let directionsProvider: (() -> DirectionsService)?
+
     /// `timeZone` is read on every use, so a zone change while the app runs reaches dates, cards and the gate.
-    init(store: Store, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone) {
+    init(store: Store, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone,
+         deviceOrigin: @escaping () -> Place? = { nil },
+         places: (() -> PlaceSearch)? = nil,
+         directions: (() -> DirectionsService)? = nil) {
         self.store = store
         self.now = now
         zone = timeZone
+        self.deviceOrigin = deviceOrigin
+        placeSearchProvider = places
+        directionsProvider = directions
     }
 
-    convenience init(store: Store, now: @escaping () -> Date, timeZone: TimeZone) {
-        self.init(store: store, now: now, timeZone: { timeZone })
+    convenience init(store: Store, now: @escaping () -> Date, timeZone: TimeZone,
+                     deviceOrigin: @escaping () -> Place? = { nil },
+                     places: (() -> PlaceSearch)? = nil,
+                     directions: (() -> DirectionsService)? = nil) {
+        self.init(store: store, now: now, timeZone: { timeZone }, deviceOrigin: deviceOrigin,
+                  places: places, directions: directions)
     }
+
+    /// New chat: forgets the handles; the counters keep counting up, so an old handle never names a new entry.
+    func resetConversation() { registry.clear() }
 
     /// The formatters for the zone as it is now; rebuilt only when the zone differs from the last use.
     private var formats: Formats {
@@ -266,6 +342,8 @@ final class AgentToolbox {
             case .create: return try create(values)
             case .update: return try update(values)
             case .delete: return try delete(values)
+            case .search: return try search(values)
+            case .travel: return try travel(values)
             }
         } catch {
             return reject((error as? Rejection)?.message ?? Say.notObject(tool))
@@ -278,7 +356,7 @@ final class AgentToolbox {
         .result(Self.encode(["status": "rejected", "message": message]))
     }
 
-    private static func encode(_ object: [String: Any]) -> String {
+    nonisolated static func encode(_ object: [String: Any]) -> String {
         let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes])
         return data.map { String(decoding: $0, as: UTF8.self) } ?? "{}"
     }
@@ -290,15 +368,15 @@ final class AgentToolbox {
         for param in tool.params {
             guard let raw = object[param] else { continue }
             guard let text = raw as? String else { throw Rejection(Say.wrongType(tool, param)) }
-            let clean = param == "title" ? Self.sanitized(text) : text
+            let clean = param == "title" || param == "query" ? Self.sanitized(text) : text
             if clean.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
             values[param] = clean
         }
         return values
     }
 
-    /// Removes the categories Cc, Cf, Zl and Zp, then trims.
-    private static func sanitized(_ title: String) -> String {
+    /// Removes the categories Cc, Cf, Zl and Zp, then trims. Shared with `AgentPlaces` so there is one sanitizer.
+    nonisolated static func sanitized(_ title: String) -> String {
         var scalars = String.UnicodeScalarView()
         for scalar in title.unicodeScalars {
             switch scalar.properties.generalCategory {
@@ -336,11 +414,15 @@ final class AgentToolbox {
         if let title, title.count > Self.maxTitle { throw Rejection(Say.titleTooLong(tool)) }
     }
 
-    private func checkWindow(_ start: Date, _ tool: Tool) throws {
+    private func withinWindow(_ date: Date) -> Bool {
         let minute = (now().timeIntervalSince1970 / 60).rounded(.down) * 60
         let earliest = Date(timeIntervalSince1970: minute - Self.pastWindow)
         let latest = Date(timeIntervalSince1970: minute + Self.futureWindow)
-        if start < earliest || start > latest { throw Rejection(Say.window(tool)) }
+        return date >= earliest && date <= latest
+    }
+
+    private func checkWindow(_ start: Date, _ tool: Tool) throws {
+        if !withinWindow(start) { throw Rejection(Say.window(tool)) }
     }
 
     private func checkSpan(from start: Date, to end: Date, _ tool: Tool) throws {
@@ -380,26 +462,121 @@ final class AgentToolbox {
     }
 
     private func create(_ values: [String: String]) throws -> AgentToolOutcome {
-        for param in Tool.create.params where values[param] == nil { throw Rejection(Say.missing(param)) }
+        for param in ["title", "start", "end"] where values[param] == nil { throw Rejection(Say.missing(param)) }
         guard let title = values["title"], let start = try time(values, .create, "start"),
               let end = try time(values, .create, "end")
         else { throw Rejection(Say.missing("title")) }
         try checkSpan(from: start, to: end, .create)
         try checkWindow(start, .create)
         try checkTitle(title, .create)
+        let trip = try resolveTrip(values)
 
-        let lines = ["Add event", title, range(start, end)]
-        return .card(AgentCard(lines: lines) { [self] in
+        var lines = ["Add event", title, range(start, end)]
+        if let place = trip.place { lines.append("At \(AgentPlaces.displayName(place.name))") }
+        if let route = trip.route { lines += routeLines(route, start: start) }
+        // The card keeps the place and route as they were when it was built; Confirm never reads the registry.
+        return .card(AgentCard(lines: lines, showsGoogleMark: trip.place != nil) { [self] in
             // The card may have waited a long time: the start must still be inside the window the gate allows.
             do { try checkWindow(start, .create) } catch {
                 let result = Self.encode(["status": "rejected", "message": Say.window(.create)])
                 return (AgentResolution(result: result, notice: Say.startPassed), .notApplied)
             }
+            if let route = trip.route, !AgentPlaces.isFresh(route, now: now()) {
+                let result = Self.encode(["status": "rejected", "message": Say.routeExpired])
+                return (AgentResolution(result: result, notice: Say.routeExpiredNotice), .notApplied)
+            }
+            let route = trip.route
             let made = await store.addActivityWithTravel(
-                title: title, location: nil, startDate: start, endDate: end, travelFrom: nil, returnTo: nil,
-                outboundMode: .walk, returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0,
-                syncToCalendar: store.calendarSyncDefault)
-            return applied(made.activityId)
+                title: title, location: trip.place, startDate: start, endDate: end, travelFrom: route?.origin, returnTo: nil,
+                outboundMode: route?.mode ?? .walk, returnMode: route?.mode ?? .walk,
+                bufferMinutes: route == nil ? 0 : AgentPlaces.legBufferMinutes,
+                notifyLeadMinutes: route == nil ? 0 : AgentPlaces.legNotifyLeadMinutes,
+                syncToCalendar: store.calendarSyncDefault, travelSecondsHint: route?.seconds)
+            return applied(made.activityId, withPlace: trip.place != nil)
+        })
+    }
+
+    /// The place and route a create call points at, checked in the order of spec.md section 2.3. With a route and no
+    /// place the place is the route's destination.
+    private func resolveTrip(_ values: [String: String]) throws -> (place: Place?, route: AgentRoute?) {
+        var place: Place?
+        if let id = values["place_id"] {
+            guard AgentPlaces.isPlaceHandle(id), let found = registry.place(id) else { throw Rejection(Say.createPlace) }
+            place = found
+        }
+        var route: AgentRoute?
+        if let id = values["route_id"] {
+            guard AgentPlaces.isRouteHandle(id), let found = registry.route(id, now: now()) else {
+                throw Rejection(Say.createRoute)
+            }
+            if let place, found.destination != place { throw Rejection(Say.createMismatch) }
+            route = found
+            place = found.destination
+        }
+        return (place, route)
+    }
+
+    /// `From`, `Leave`, Google's warnings and the verification line. Every number is the app's: the leave time comes
+    /// from the call's start, the route's exact seconds and the leg buffer.
+    private func routeLines(_ route: AgentRoute, start: Date) -> [String] {
+        let f = formats
+        let leave = Store.departureTime(arrival: start, travelSeconds: route.seconds, bufferMinutes: AgentPlaces.legBufferMinutes)
+        let leaveText = (f.calendar.isDate(leave, inSameDayAs: start) ? f.time : f.day).string(from: leave)
+        let duration = TravelEstimate(mode: route.mode, duration: route.seconds, distance: nil, source: "Google").durationText
+        let warnings = route.warnings.map { Self.sanitized($0) }.filter { !$0.isEmpty }
+        return ["From \(AgentPlaces.displayName(route.origin.name))",
+                "Leave \(leaveText) - \(duration) \(AgentPlaces.modePhrase(route.mode))"]
+            + warnings + [AgentPlaces.verifiedLine]
+    }
+
+    // MARK: - Lookups (SPEC-AGENTPLACE-001)
+
+    private func search(_ values: [String: String]) throws -> AgentToolOutcome {
+        guard let query = values["query"], query.count >= AgentPlaces.queryMin else { throw Rejection(Say.queryMissing) }
+        if query.count > AgentPlaces.queryMax { throw Rejection(Say.queryLong) }
+        let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        return .lookup(AgentLookup { [self] in
+            let service = placeSearchProvider?() ?? store.placeSearch
+            let found = await service.search(query, near: center)
+            // A cancelled lookup writes nothing: its answer is dropped by the session anyway.
+            return AgentPlaces.searchOutput(Task.isCancelled ? [] : found, registry: &registry)
+        })
+    }
+
+    private func travel(_ values: [String: String]) throws -> AgentToolOutcome {
+        guard let destinationId = values["place_id"], AgentPlaces.isPlaceHandle(destinationId),
+              let destination = registry.place(destinationId) else { throw Rejection(Say.findPlace) }
+        guard let modeText = values["mode"], let mode = TransportMode(rawValue: modeText) else { throw Rejection(Say.mode) }
+        let origin: Place
+        if let originId = values["origin_place_id"] {
+            guard AgentPlaces.isPlaceHandle(originId), let named = registry.place(originId) else {
+                throw Rejection(Say.originPlace)
+            }
+            origin = named
+        } else {
+            guard let device = deviceOrigin() else { throw Rejection(Say.noOrigin) }
+            origin = device
+        }
+        var arrival: Date?
+        if let text = values["arrive_by"] {
+            guard let date = localDate(text) else { throw Rejection(Say.timeForm(.travel, "arrive_by")) }
+            guard withinWindow(date) else { throw Rejection(Say.arriveWindow) }
+            arrival = date
+        }
+        let local = formats.local
+        return .lookup(AgentLookup { [self] in
+            let service = directionsProvider?() ?? store.directions
+            let estimate = await service.estimate(
+                mode, from: CLLocationCoordinate2D(latitude: origin.latitude, longitude: origin.longitude),
+                to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude))
+            guard let seconds = estimate.duration else { return AgentPlaces.travelFailure(estimate.failure) }
+            guard !Task.isCancelled else { return AgentPlaces.travelFailure(nil) }
+            let route = AgentRoute(mode: mode, seconds: seconds, origin: origin, destination: destination,
+                                   warnings: estimate.warnings, createdAt: now())
+            let leaveBy = arrival.map {
+                local.string(from: Store.departureTime(arrival: $0, travelSeconds: seconds, bufferMinutes: AgentPlaces.legBufferMinutes))
+            }
+            return AgentPlaces.travelOutput(route, leaveBy: leaveBy, registry: &registry)
         })
     }
 
@@ -485,13 +662,22 @@ final class AgentToolbox {
         return nil
     }
 
-    /// `applied`, with the values read back from the Store.
-    private func applied(_ id: UUID) -> (AgentResolution, AgentCardMark) {
+    /// `applied`, with the values read back from the Store. A created record with a place adds its location and, when a
+    /// leg was stored, the leg's leave time and minutes.
+    private func applied(_ id: UUID, withPlace: Bool = false) -> (AgentResolution, AgentCardMark) {
         guard let stored = store.activities.first(where: { $0.id == id }) else { return (notFound(), .notApplied) }
         let local = formats.local
-        let result = Self.encode(["status": "applied", "id": stored.id.uuidString, "title": Self.sanitized(stored.title),
-                                  "start": local.string(from: stored.startDate),
-                                  "end": local.string(from: stored.endDate)])
-        return (AgentResolution(result: result, notice: nil), .confirmed)
+        var object: [String: Any] = ["status": "applied", "id": stored.id.uuidString, "title": Self.sanitized(stored.title),
+                                     "start": local.string(from: stored.startDate),
+                                     "end": local.string(from: stored.endDate)]
+        if withPlace {
+            if let place = stored.location { object["location"] = AgentPlaces.displayName(place.name) }
+            if let leg = store.events.first(where: { $0.linkedActivityId == id }),
+               let departure = leg.departureDate, let seconds = leg.travelSeconds {
+                object["leave_by"] = local.string(from: departure)
+                object["minutes"] = roundedMinutes(fromSeconds: seconds)
+            }
+        }
+        return (AgentResolution(result: Self.encode(object), notice: nil), .confirmed)
     }
 }

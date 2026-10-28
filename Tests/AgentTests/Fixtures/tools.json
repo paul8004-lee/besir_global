@@ -37,6 +37,14 @@
         "end": {
           "type": "string",
           "description": "End as a local date-time, YYYY-MM-DDTHH:MM. After start, at most 24 hours later."
+        },
+        "place_id": {
+          "type": "string",
+          "description": "Optional. A place_id returned by search_places, for where the event takes place."
+        },
+        "route_id": {
+          "type": "string",
+          "description": "Optional. The route_id returned by get_travel_time for the trip to that place."
         }
       },
       "required": ["title", "start", "end"],
@@ -84,6 +92,50 @@
         }
       },
       "required": ["id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "search_places",
+    "description": "Look up places by name or kind. Returns up to five places with a place_id for each.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "What to look for, such as a business name or a kind of place, 2 to 80 characters."
+        }
+      },
+      "required": ["query"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "get_travel_time",
+    "description": "Look up the travel time to a place found with search_places. Returns a route_id and the minutes.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "place_id": {
+          "type": "string",
+          "description": "The destination: a place_id returned by search_places."
+        },
+        "mode": {
+          "type": "string",
+          "description": "How the user travels: car, transit, walk or bicycle. The user chooses; ask them if they have not said."
+        },
+        "origin_place_id": {
+          "type": "string",
+          "description": "Optional starting point: a place_id returned by search_places. Omit it to start from the user's current location."
+        },
+        "arrive_by": {
+          "type": "string",
+          "description": "Optional arrival time as a local date-time, YYYY-MM-DDTHH:MM. When given, the result also states when to leave."
+        }
+      },
+      "required": ["place_id", "mode"],
       "additionalProperties": false
     }
   }

@@ -20,8 +20,10 @@ struct AgentResolution {
     let notice: String?
 }
 
-/// The gate's answer to one function call: a result for the model now, or a card that waits for the user.
+/// The gate's answer to one function call: a result for the model now, a card that waits for the user, or a network
+/// lookup the session runs as the request in flight (SPEC-AGENTPLACE-001).
 enum AgentToolOutcome {
     case result(String)
     case card(AgentCard)
+    case lookup(AgentLookup)
 }
