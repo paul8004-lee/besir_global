@@ -91,6 +91,8 @@ targets:
     sources:
       - ShareExtension
       - path: Shared/SharedInbox.swift
+      - path: Shared/ImageShrink.swift
+      - path: Shared/ShareObservation.swift
     info:
       path: Generated/Info-ShareExtension.plist
       properties:
