@@ -106,8 +106,7 @@ struct AgentChatView: View {
         case .tool, .result:
             EmptyView()
         case .attribution:
-            // Placeholder: M4 draws the Google Maps mark here (SPEC-AGENTPLACE-001).
-            EmptyView()
+            GoogleMapsAttribution()
         }
     }
 
@@ -118,6 +117,9 @@ struct AgentChatView: View {
                 Text(verbatim: line)
                     .font(index == 0 ? .headline : .body)
                     .foregroundStyle(Theme.ink)
+            }
+            if card.showsGoogleMark {
+                GoogleMapsAttribution()
             }
             if pending {
                 HStack(spacing: 12) {
