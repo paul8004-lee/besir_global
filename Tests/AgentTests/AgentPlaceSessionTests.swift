@@ -388,6 +388,21 @@ final class AgentPlaceSessionTests: XCTestCase {
         XCTAssertEqual(shown.attributionCount, 1)
     }
 
+    func testPLACEFAIL_AFailedSearchInAChatIsUnavailableAndNotNoResults() async {
+        let failing = PlacesTransportStub.answering(status: 500, with: Data("{}".utf8))
+        let rig = await chat([.turn(PlaceTurns.search(id: "c1")), .turn(Turns.text("I could not look that up."))],
+                             places: failing)
+        XCTAssertEqual(rig.resultStatuses, ["unavailable"])
+        XCTAssertEqual(rig.attributionCount, 0)
+        XCTAssertFalse(rig.session.chatLines.contains("ATTRIBUTION"))
+        XCTAssertEqual(rig.session.chatLines, ["USER Go", "ASSISTANT I could not look that up."],
+                       "the follow-up model turn is shown: the session continued")
+        let outputs = callOutputs(rig.session.history)
+        XCTAssertEqual(outputs.first.flatMap { TestClock.object($0.result) as NSDictionary? },
+                       PlaceText.placesUnavailable as NSDictionary)
+        await rig.finish()
+    }
+
     func testAGPLACE_AttributionAppearsOncePerUserMessageAndResetsOnNewChat() async {
         // Two ok lookups in one message give one row.
         let rig = PlaceSessionRig([

@@ -1,6 +1,12 @@
 import Foundation
 import CoreLocation
 
+/// What a typed place search came to: the places Google returned (possibly none), or a search that failed.
+enum PlaceLookup: Equatable {
+    case found([Place])
+    case failed
+}
+
 /// Place search through Google Places (New), by way of the Worker route `/places`.
 /// This is a thin caller: `GooglePlaces` builds the request and parses the answer, and any failure gives an empty list.
 struct PlaceSearch {
@@ -30,18 +36,27 @@ struct PlaceSearch {
     /// - `center`: the device or base location, used as a bias circle; nil sends no bias.
     /// - `flow`: the Connections flow the packet joins (the chat agent passes its message's flow); nil is a flow of none.
     // @MX:ANCHOR fan_in 5 - add event, activity card, activity detail, favorites and the place field all call this
-    // @MX:REASON the failure contract is an empty list: no proxy, a bad status, a thrown error or an undecodable body
+    // @MX:REASON the failure contract of search is an empty list; lookup is where a failure is told from an empty answer
     func search(_ query: String, near center: CLLocationCoordinate2D?, flow: UUID? = nil) async -> [Place] {
+        switch await lookup(query, near: center, flow: flow) {
+        case .found(let places): return places
+        case .failed: return []
+        }
+    }
+
+    /// Typed search that tells a failure from an empty answer. `.failed` is no proxy or no 200 answer; a 200 with an
+    /// empty or unreadable body is `.found([])`, and so is a query under 2 characters (nothing was asked).
+    func lookup(_ query: String, near center: CLLocationCoordinate2D?, flow: UUID? = nil) async -> PlaceLookup {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 2,
-              let request = GooglePlaces.searchRequest(query: trimmed, near: center, config: config) else { return [] }
+        guard trimmed.count >= 2 else { return .found([]) }
+        guard let request = GooglePlaces.searchRequest(query: trimmed, near: center, config: config) else { return .failed }
         guard let data = await GooglePlaces.fetch(request, transport: transport) else {
             note("Search failed", .failed, flow: flow)
-            return []
+            return .failed
         }
         let places = GooglePlaces.parsePlaces(data)
         note("Searched “\(trimmed)” · \(Self.results(places.count))", .ok, flow: flow)
-        return places
+        return .found(places)
     }
 
     /// Restaurants and cafes around a point, nearest first by default.
