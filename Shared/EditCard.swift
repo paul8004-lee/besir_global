@@ -427,12 +427,13 @@ enum PlaceLine {
 
     /// 위치를 얻을 때까지 기다려 Place를 돌린다(권한 거부·시한 초과면 nil). sleep은 취소되면 즉시
     /// 반환하므로 0.2초마다 취소와 좌표를 함께 재확인한다(대기가 빠르게 도는 것을 막는다).
-    static func waitForCurrentPlace(_ location: LocationManager) async -> Place? {
+    static func waitForCurrentPlace(_ location: LocationManager, maxSeconds: Double? = nil) async -> Place? {
         guard !isLocationBlocked(location) else { return nil }
         if location.currentLocation == nil { location.useCurrentLocation() }
         // 시한은 LocationManager의 측위 시한에서 파생한다(계약 5) — 여기가 짧으면 시한 직후에 오는
         // 위치가 빈 줄을 채우지 못한다(t11 sync N5). max(5, ·)는 측위 시한이 짧은 맥의 행동을 지킨다.
-        let waitSeconds = max(5, LocationManager.locateTimeoutSeconds + 1)
+        // A test passes a shorter window through `maxSeconds`.
+        let waitSeconds = maxSeconds ?? max(5, LocationManager.locateTimeoutSeconds + 1)
         for _ in 0..<Int(waitSeconds / 0.2) {
             if Task.isCancelled { break }
             if let place = availablePlace(location) { return place }

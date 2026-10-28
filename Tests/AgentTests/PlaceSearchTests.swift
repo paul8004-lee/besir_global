@@ -279,16 +279,37 @@ final class PlaceSearchTests: XCTestCase {
     }
 }
 
+/// Card t48: a location source with no CoreLocation behind it. It counts what the manager asks of it.
+@MainActor
+final class FakeLocationSource: LocationSource {
+    var authorizationStatus: CLAuthorizationStatus
+    var cachedLocation: CLLocation?
+    var distanceFilter: CLLocationDistance = 0
+    private(set) var requestCount = 0
+    private(set) var startCount = 0
+    private(set) var stopCount = 0
+
+    init(status: CLAuthorizationStatus) { authorizationStatus = status }
+
+    func requestWhenInUseAuthorization() { requestCount += 1 }
+    func startUpdatingLocation() { startCount += 1 }
+    func stopUpdatingLocation() { stopCount += 1 }
+}
+
 /// Card t39: an IP-based approximate origin must not outlive the real fix.
 @MainActor
 final class OriginLocationTests: XCTestCase {
     func testORIGIN_ApproximateStillStartsUpdatesWhenPermissionIsGranted() {
-        let lm = LocationManager()
-        XCTAssertFalse(lm.shouldStartUpdatesWhenAuthorized, "a fresh manager has nothing to start")
+        let source = FakeLocationSource(status: .notDetermined)
+        let lm = LocationManager(source: source, ipLookup: { nil }, nameResolver: { _ in nil }, waitSeconds: 0.05)
+        lm.handleAuthorization(.notDetermined)
+        XCTAssertEqual(source.startCount, 0, "a fresh manager has nothing to start")
         lm.applyApproximate(latitude: 37.5661369, longitude: 126.9783785, region: "Seoul", city: "Seoul")
         XCTAssertFalse(lm.isLocating, "the fallback ends the locating state")
         XCTAssertTrue(lm.isApproximate)
-        XCTAssertTrue(lm.shouldStartUpdatesWhenAuthorized, "granting permission after the fallback must start real positioning")
+        source.authorizationStatus = .authorizedWhenInUse
+        lm.handleAuthorization(.authorizedWhenInUse)
+        XCTAssertEqual(source.startCount, 1, "granting permission after the fallback must start real positioning")
     }
 
     func testORIGIN_RealFixReplacesApproximateCoordinateAndName() {
@@ -299,7 +320,6 @@ final class OriginLocationTests: XCTestCase {
         XCTAssertEqual(lm.currentLocation?.latitude, 37.7849)
         XCTAssertEqual(lm.currentLocation?.longitude, -122.4094)
         XCTAssertFalse(lm.isApproximate)
-        XCTAssertFalse(lm.shouldStartUpdatesWhenAuthorized, "a real fix needs no further start")
         XCTAssertNotEqual(lm.currentPlaceName, "Seoul (approx.)", "the approximate name must not stay on the real coordinate")
     }
 
