@@ -20,6 +20,9 @@ enum AgentWire {
         "Reply in plain text with no markdown: no asterisks, bold, bullet symbols or headings; put each event on its own line.",
         "Write every time of day in 12-hour form with AM or PM, such as 3:00 PM, never in 24-hour form.",
         "Never show event ids to the user; they are for tool calls only.",
+        "A travel time or a leave-by time may be stated only from a get_travel_time result; never estimate or guess one.",
+        "To use a place, call search_places first and use only the place_id values it returns; never invent a place_id or route_id, and never show them to the user.",
+        "If the user has not said how they will travel, ask them; never choose a travel mode for them.",
     ]
 
     private static func formatter(_ pattern: String, _ timeZone: TimeZone) -> DateFormatter {

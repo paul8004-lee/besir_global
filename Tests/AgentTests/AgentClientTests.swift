@@ -52,6 +52,13 @@ private let polishSentences = [
     "Never show event ids to the user; they are for tool calls only.",
 ]
 
+/// SPEC-AGENTPLACE-001 REQ-AGENTPLACE-018: sentences 10 to 12 of the instructions, exact text.
+private let placeSentences = [
+    "A travel time or a leave-by time may be stated only from a get_travel_time result; never estimate or guess one.",
+    "To use a place, call search_places first and use only the place_id values it returns; never invent a place_id or route_id, and never show them to the user.",
+    "If the user has not said how they will travel, ask them; never choose a travel mode for them.",
+]
+
 /// Sentences 1 to 6 as SPEC-AGENT-002 section 3.2 fixed them.
 private let baseSentences = [
     "Reply in English.",
@@ -86,7 +93,8 @@ final class AgentClientTests: XCTestCase {
     func testLP004_RequestsCarryParallelToolCallsFalse() throws {
         let request = try XCTUnwrap(makeClient().makeRequest(history: [.user("What do I have tomorrow?")]))
         let body = try json(try XCTUnwrap(request.httpBody))
-        XCTAssertEqual((body["tools"] as? [Any])?.count, 4, "the four declarations must travel with the request")
+        // SPEC-AGENTPLACE-001: six declarations travel with every request.
+        XCTAssertEqual((body["tools"] as? [Any])?.count, 6, "the six declarations must travel with the request")
         XCTAssertEqual(body["parallel_tool_calls"] as? Bool, false)
         XCTAssertNil(body["stream"], "no streaming")
         XCTAssertNil(body["tool_choice"], "no forced tool choice")
@@ -155,10 +163,14 @@ final class AgentClientTests: XCTestCase {
             polishSentences[0],
             polishSentences[1],
             polishSentences[2],
+            placeSentences[0],
+            placeSentences[1],
+            placeSentences[2],
         ]
+        // SPEC-AGENTPLACE-001 REQ-AGENTPLACE-018: three more fixed sentences after the nine.
         XCTAssertFalse(rendered.isEmpty)
         let lines = rendered.components(separatedBy: "\n")
-        XCTAssertEqual(lines.count, 10, "one date line and nine fixed sentences")
+        XCTAssertEqual(lines.count, 13, "one date line and twelve fixed sentences")
         for sentence in sentences {
             XCTAssertTrue(lines.contains(sentence), "missing sentence: \(sentence)")
         }
@@ -180,13 +192,14 @@ final class AgentClientTests: XCTestCase {
     }
 
     func testPL001_InstructionsAreADateLineThenNineSentences() {
+        // SPEC-AGENTPLACE-001 REQ-AGENTPLACE-018: now a date line then twelve sentences (the name keeps the SPEC trace).
         let rendered = AgentWire.instructions(now: TestClock.now, timeZone: TestClock.zone)
         XCTAssertFalse(rendered.isEmpty)
         XCTAssertFalse(rendered.hasSuffix("\n"), "no trailing newline")
         let lines = renderedLines()
-        XCTAssertEqual(lines.count, 10, "one date line and nine fixed sentences")
+        XCTAssertEqual(lines.count, 13, "one date line and twelve fixed sentences")
         XCTAssertTrue(lines.first?.hasPrefix("Current local date and time: ") == true)
-        XCTAssertEqual(Array(lines.dropFirst()), baseSentences + polishSentences)
+        XCTAssertEqual(Array(lines.dropFirst()), baseSentences + polishSentences + placeSentences)
     }
 
     /// AC-POLISH-001: the seventh sentence is line 8.
@@ -219,14 +232,15 @@ final class AgentClientTests: XCTestCase {
         XCTAssertEqual(Array(lines.dropFirst().prefix(6)), baseSentences)
     }
 
-    /// AC-POLISH-007: the request body's `instructions` field holds the same ten lines.
+    /// AC-POLISH-007: the request body's `instructions` field holds the same lines as the rendered text.
+    /// SPEC-AGENTPLACE-001 REQ-AGENTPLACE-018: thirteen lines now (a date line and twelve sentences).
     func testPL001_RequestInstructionsCarryTheNineSentences() throws {
         let request = try XCTUnwrap(makeClient().makeRequest(history: [.user("What is on my schedule tomorrow?")]))
         let body = try json(try XCTUnwrap(request.httpBody))
         let instructions = try XCTUnwrap(body["instructions"] as? String)
         let lines = instructions.components(separatedBy: "\n")
-        XCTAssertEqual(lines.count, 10)
-        XCTAssertEqual(Array(lines.dropFirst()), baseSentences + polishSentences)
+        XCTAssertEqual(lines.count, 13)
+        XCTAssertEqual(Array(lines.dropFirst()), baseSentences + polishSentences + placeSentences)
         XCTAssertEqual(instructions, AgentWire.instructions(now: TestClock.now, timeZone: TestClock.zone))
     }
 
@@ -255,9 +269,9 @@ final class AgentClientTests: XCTestCase {
         XCTAssertFalse(keys.contains("model"))
         XCTAssertEqual(keys.subtracting(["model", "reasoning"]).sorted().joined(separator: ","), recorded)
 
-        // The tools are the recorded declarations.
+        // The tools are the recorded declarations (SPEC-AGENTPLACE-001: the amended fixture holds six).
         let tools = try JSONSerialization.jsonObject(with: Fixture.data("tools", "json"))
-        XCTAssertEqual((tools as? [Any])?.count, 4)
+        XCTAssertEqual((tools as? [Any])?.count, 6)
         XCTAssertTrue((body["tools"] as AnyObject).isEqual(tools), "tools differ from Fixtures/tools.json")
     }
 

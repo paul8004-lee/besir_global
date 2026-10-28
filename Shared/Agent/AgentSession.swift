@@ -111,6 +111,8 @@ struct AgentLogEntry: Identifiable {
         case card(AgentCard)
         case notice(String)
         case error(String)
+        /// The Google Maps mark row after an answer that used place or route data (log only, never in the history).
+        case attribution
     }
 
     let id = UUID()
@@ -135,6 +137,7 @@ final class AgentSession: ObservableObject {
 
         static let stepLimit = #"{"status":"rejected","message":"Not executed. The step limit was reached."}"#
         static let oneAtATime = #"{"status":"rejected","message":"Not executed. Make one tool call at a time."}"#
+        static let lookupInterrupted = #"{"status":"unavailable","message":"The lookup was interrupted. Call the tool again if the user still wants it."}"#
     }
 
     /// What the chat draws, and what the transcript prints.
@@ -160,6 +163,10 @@ final class AgentSession: ObservableObject {
     private var pendingCalls: (first: AgentCall, extras: [AgentCall])?
     /// Set when the sheet closes while a tapped card is still being applied: record the result, send nothing.
     private var stopAfterResolve = false
+    /// The calls of a lookup that is running and unanswered; set only while the lookup is in flight.
+    private var lookupCalls: (first: AgentCall, extras: [AgentCall])?
+    /// Set by any `ok` place or route result of the current user message; cleared only by `send` and `newChat`.
+    private var googleDataThisMessage = false
     private let connections: ConnectionLog
     /// The flow the packets of the message being served belong to.
     private var flow = UUID()
@@ -205,6 +212,7 @@ final class AgentSession: ObservableObject {
         history.append(.user(clean))
         entries.append(AgentLogEntry(kind: .user(clean)))
         requestsThisMessage = 0
+        googleDataThisMessage = false
         startRequest()
     }
 
@@ -216,11 +224,14 @@ final class AgentSession: ObservableObject {
     /// is resolved as dismissed (nothing applied).
     func newChat() async {
         invalidateRequest()
+        toolbox.resetConversation()
         let card = pendingCard
         pendingCard = nil
         pendingCalls = nil
+        lookupCalls = nil
         isResolving = false
         stopAfterResolve = false
+        googleDataThisMessage = false
         entries = []
         history = []
         requestsThisMessage = 0
@@ -234,6 +245,11 @@ final class AgentSession: ObservableObject {
         let wasWaiting = isWaiting
         invalidateRequest()
         if wasWaiting { entries.append(AgentLogEntry(kind: .notice(Line.interrupted))) }
+        // A lookup that was running has a call with no output yet: answer it once, and forget it in the same step.
+        if let calls = lookupCalls {
+            lookupCalls = nil
+            record(calls, firstResult: Line.lookupInterrupted, notice: nil)
+        }
         guard let card = pendingCard, let calls = pendingCalls else { return }
         if isResolving {
             stopAfterResolve = true
@@ -365,7 +381,13 @@ final class AgentSession: ObservableObject {
             entries.append(AgentLogEntry(kind: .assistant(text)))
         }
         let calls = turn.calls
-        guard let first = calls.first else { return }
+        guard let first = calls.first else {
+            // The final answer: one Google Maps row after it when place or route data was used and it has text.
+            if googleDataThisMessage, items.contains(where: { if case .message(let text, _) = $0 { return !text.isEmpty } else { return false } }) {
+                entries.append(AgentLogEntry(kind: .attribution))
+            }
+            return
+        }
         let extras = Array(calls.dropFirst())
         entries.append(AgentLogEntry(kind: .tool(name: first.name, arguments: first.arguments)))
 
@@ -382,7 +404,36 @@ final class AgentSession: ObservableObject {
             pendingCard = card
             pendingCalls = (first, extras)
             entries.append(AgentLogEntry(kind: .card(card)))
+        case .lookup(let lookup):
+            // The lookup is the request in flight, under its own identity; it is not a model request, so it does not
+            // count toward `maxRequests` (the step-limit test above already ran).
+            let identity = UUID()
+            currentRequest = identity
+            isWaiting = true
+            let pair = (first: first, extras: extras)
+            lookupCalls = pair
+            // @MX:WARN The lookup closure registers handles in the toolbox registry and runs for a while.
+            // @MX:REASON A late answer must be dropped by request identity and must not write the registry; the
+            // closure checks Task.isCancelled before registering, and `lookupFinished` checks the identity.
+            requestTask = Task { [weak self] in
+                let output = await lookup.run()
+                self?.lookupFinished(output, identity, calls: pair)
+            }
         }
+    }
+
+    private func lookupFinished(_ output: AgentLookupOutput, _ identity: UUID, calls: (first: AgentCall, extras: [AgentCall])) {
+        guard identity == currentRequest else {
+            discardedCount += 1
+            return
+        }
+        currentRequest = nil
+        requestTask = nil
+        isWaiting = false
+        lookupCalls = nil
+        if output.showsGoogleData { googleDataThisMessage = true }
+        record(calls, firstResult: output.result, notice: nil)
+        startRequest()
     }
 
     /// Answers the first call with `firstResult` and every later call of the same response with the one-call
@@ -446,6 +497,7 @@ extension AgentSession {
             case .card(let card): return "CARD \(card.lines.first ?? "") \(card.mark?.rawValue ?? "Pending")"
             case .notice(let line): return "NOTICE \(line)"
             case .error(let line): return "ERROR \(line)"
+            case .attribution: return "ATTRIBUTION"
             }
         }.joined(separator: "\n")
     }
