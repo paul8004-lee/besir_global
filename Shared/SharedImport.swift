@@ -29,6 +29,10 @@ final class SharedImport: ObservableObject {
     /// The fixed line to show, or nil. The view clears it when the alert is dismissed.
     @Published var alertLine: String?
     @Published private(set) var isReading = false
+    /// The number of waiting items as of the last pass that could read the queue (SPEC-PLANDAY-001).
+    @Published private(set) var waitingCount = 0
+    /// A plan whose hand-off was refused, until the next tap on Plan my day or a new chat.
+    @Published private(set) var held: PlanMyDay.Held?
 
     private let inbox: SharedInbox
     private let now: () -> Date
@@ -55,7 +59,8 @@ final class SharedImport: ObservableObject {
 
     /// One pass handles at most one item. `canHand` says whether the agent can take a message right now; `hand` gives it the
     /// message and the short line the chat shows for it, and says whether they were accepted.
-    func pass(vision: VisionReading, canHand: () -> Bool, hand: (_ message: String, _ shown: String) -> Bool) async {
+    func pass(vision: VisionReading, canHand: () -> Bool, holdForPlan: Bool = false,
+              hand: (_ message: String, _ shown: String) -> Bool) async {
         guard !inFlight else { return }
         inFlight = true
         defer { inFlight = false; isReading = false }
@@ -148,6 +153,16 @@ final class SharedImport: ObservableObject {
             kept[item.id] = (message, shown)
             flows[item.id] = flow
         }
+    }
+
+    /// Plan my day for the waiting items (SPEC-PLANDAY-001). Signature stub: the body comes with the implementation.
+    func planPass(mode: TransportMode, vision: VisionReading, activities: () -> [ActivityBlock], mirror: CalendarMirroring,
+                  calendar: Calendar = .current, prepare: ([PlanMyDay.Event]) -> [PlanMyDay.Event], canHand: () -> Bool,
+                  hand: (_ message: String, _ shown: String, _ context: DayPlanContext) -> Bool) async {
+    }
+
+    /// A new chat starts: a held plan must not outlive the conversation that its handles belong to.
+    func dropHeld() {
     }
 
     /// The one place that decides what a share puts into the chat: the model gets `message`, the chat draws `shown`.

@@ -56,6 +56,19 @@ enum PlanMyDay {
         return "Plan my day (\(max(count, held ? 1 : 0)))"
     }
 
+    /// What a tap on the Plan my day button does.
+    enum TapAction: Equatable {
+        /// The mode dialog opens.
+        case chooseMode
+        /// The session cannot take a message now: the chat opens and no dialog shows.
+        case openChatOnly
+    }
+
+    /// Signature stub: the decision comes with the implementation.
+    static func tapAction(canSend: Bool) -> TapAction {
+        .chooseMode
+    }
+
     // MARK: Today's events (REQ-PLANDAY-005)
 
     /// Store activities that overlap the time from `now` to the end of the day, plus the timed calendar entries that besir did
