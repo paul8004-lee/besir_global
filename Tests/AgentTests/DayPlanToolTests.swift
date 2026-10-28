@@ -1078,7 +1078,12 @@ final class DayPlanToolTests: XCTestCase {
         XCTAssertTrue(card.lines.contains("Overlap: Team meeting and Dinner share 10 min."))
         XCTAssertEqual(card.actions, ["Confirm", "Cancel"], "a card with problems still offers Confirm")
 
-        let late = planRig(routes: PlaceStubs.routesSequence([2400, 300]))
+        // Every check asks A to B first (2400 s) and B to C second (300 s).
+        let counter = LockedCounter()
+        let late = planRig(routes: RoutesTransportStub { request in
+            let seconds = counter.next() % 2 == 0 ? 2400 : 300
+            return (PlaceFixture.routes(seconds: seconds), PlaceBody.response(200, for: request))
+        })
         for _ in 1...3 { _ = await check(late, dayStops()) }
         let shownLate = await show(late, "d3")
         let lateCard = try XCTUnwrap(shownLate.card)

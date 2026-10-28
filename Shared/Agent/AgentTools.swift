@@ -740,14 +740,78 @@ final class AgentToolbox {
         })
     }
 
-    /// Milestone M2b builds the card from the stored check here; until then no plan can be shown.
-    private func showDayPlan(_ values: [String: String]) throws -> AgentToolOutcome {
-        throw Rejection(AgentDayPlan.Say.planUnknown)
+    /// True when a verified route of the check is older than the route rule allows at this moment.
+    private func hasStaleRoute(_ check: AgentDayPlan.Check) -> Bool {
+        check.legs.contains { leg in leg.route.map { !AgentPlaces.isFresh($0, now: now()) } ?? false }
     }
 
-    /// The result of a confirmed day plan, read back from the Store (signature stub of milestone M2b).
+    /// The card of the latest check, built from the stored check only. Only the latest handle is shown; a plan with problems
+    /// waits for the third check; a check whose routes have aged out is refused once with one more check allowed, then for good.
+    private func showDayPlan(_ values: [String: String]) throws -> AgentToolOutcome {
+        guard let context = dayPlan else { throw Rejection(AgentDayPlan.Say.notInPlanTurn) }
+        guard let handle = values["plan_id"], let check = checks.first(where: { $0.handle == handle }) else {
+            throw Rejection(AgentDayPlan.Say.planUnknown)
+        }
+        guard check.handle == checks.last?.handle else { throw Rejection(AgentDayPlan.Say.planOld) }
+        if !check.problems.isEmpty, checks.count < AgentDayPlan.checksPerTurn { throw Rejection(AgentDayPlan.Say.planProblems) }
+        if hasStaleRoute(check) {
+            if extraCheckGranted { throw Rejection(AgentDayPlan.Say.planStaleLast) }
+            extraCheckGranted = true
+            throw Rejection(AgentDayPlan.Say.planStale)
+        }
+        // The baseline of "what changed" is the first check of the turn.
+        let lines = AgentDayPlan.cardLines(check, first: checks.first, mode: context.mode, zone: zone())
+        return .card(AgentCard(lines: lines, showsGoogleMark: AgentDayPlan.showsGoogleMark(check)) { [self] in
+            await confirmDayPlan(check, context)
+        })
+    }
+
+    /// One answer for a Confirm that writes nothing: the status and message for the model and the notice for the user.
+    private func nothingAdded(_ status: String, _ message: String) -> (AgentResolution, AgentCardMark) {
+        (AgentResolution(result: Self.encode(["status": status, "message": message]), notice: AgentDayPlan.Say.nothingAdded), .notApplied)
+    }
+
+    /// Confirm of a day plan. Nothing is written until the starts, the route ages and the Store signature all hold; no network
+    /// call is made (the leg of a new stop is stored with the verified seconds as the hint).
+    private func confirmDayPlan(_ check: AgentDayPlan.Check, _ context: DayPlanContext) async -> (AgentResolution, AgentCardMark) {
+        let added = check.stops.enumerated().filter { $0.element.isNew }
+        let minute = Date(timeIntervalSince1970: (now().timeIntervalSince1970 / 60).rounded(.down) * 60)
+        if added.contains(where: { $0.element.start < minute }) {
+            return nothingAdded("rejected", AgentDayPlan.Say.startPassed)
+        }
+        if hasStaleRoute(check) {
+            // The same rule as `show_day_plan`: one more check once per turn, then the plan cannot be completed.
+            if extraCheckGranted || dayPlan == nil { return nothingAdded("rejected", AgentDayPlan.Say.planStaleLast) }
+            extraCheckGranted = true
+            return nothingAdded("rejected", AgentDayPlan.Say.planStale)
+        }
+        if AgentDayPlan.signature(of: store.activities, from: check.createdAt, to: context.checkWindowEnd) != check.signature {
+            return nothingAdded("stale", AgentDayPlan.Say.scheduleChanged)
+        }
+        var ids: [UUID] = []
+        for (position, stop) in added {
+            // The leg into this stop is stored only when Routes verified it; its origin is the place of the stop it starts from.
+            let route = check.legs.first { $0.to == position + 1 }?.route
+            let made = await store.addActivityWithTravel(
+                title: stop.title, location: stop.place, startDate: stop.start, endDate: stop.end, travelFrom: route?.origin,
+                returnTo: nil, outboundMode: context.mode, returnMode: context.mode,
+                bufferMinutes: route == nil ? 0 : AgentPlaces.legBufferMinutes,
+                notifyLeadMinutes: route == nil ? 0 : AgentPlaces.legNotifyLeadMinutes,
+                syncToCalendar: store.calendarSyncDefault, travelSecondsHint: route?.seconds)
+            ids.append(made.activityId)
+        }
+        return dayPlanApplied(ids, listed: added.count)
+    }
+
+    /// The result of a confirmed day plan: how many events and legs the Store holds for the activities just added, read back
+    /// from it. Fewer events than the card listed gives the notice and rolls nothing back. Not private so a test can reach
+    /// the shortfall, which the Store write cannot be made to produce.
     func dayPlanApplied(_ ids: [UUID], listed: Int) -> (AgentResolution, AgentCardMark) {
-        (AgentResolution(result: "{}", notice: nil), .notApplied)
+        let kept = ids.filter { id in store.activities.contains { $0.id == id } }
+        guard !kept.isEmpty else { return nothingAdded("rejected", AgentDayPlan.Say.nothingAdded) }
+        let legs = kept.filter { id in store.events.contains { $0.linkedActivityId == id } }.count
+        let result = Self.encode(["status": "applied", "events": kept.count, "legs": legs])
+        return (AgentResolution(result: result, notice: kept.count < listed ? AgentDayPlan.Say.partialAdded : nil), .confirmed)
     }
 
     // MARK: - Booking (SPEC-BOOKING-001)
