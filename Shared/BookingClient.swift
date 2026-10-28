@@ -1,7 +1,7 @@
 import Foundation
 
 /// The four values of one table request, already cleaned by the caller (SPEC-BOOKING-001).
-/// There is no field for a name, a phone number, a payment detail or a position, on purpose.
+/// There is no field for anything about the person, on purpose: only the table and the place.
 struct BookingRequest: Equatable {
     /// A UUID made when the confirmation card was built.
     let requestID: String
