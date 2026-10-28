@@ -13,6 +13,7 @@ struct SettingsView: View {
     private enum SettingsTab: Hashable {
         case basic
         case favorites
+        case connections
     }
 
     @State private var tab: SettingsTab = .basic
@@ -24,12 +25,14 @@ struct SettingsView: View {
             Picker("Settings Section", selection: $tab) {
                 Text("General").tag(SettingsTab.basic)
                 Text("Favorites").tag(SettingsTab.favorites)
+                Text("Connections").tag(SettingsTab.connections)
             }
             .pickerStyle(.segmented)
 
             switch tab {
             case .basic: basicTab
             case .favorites: favoritesTab
+            case .connections: ConnectionsView()
             }
         }
         .padding(24)
