@@ -89,14 +89,13 @@ struct RootView: View {
         .onChange(of: showingChat) { _, showing in if !showing { Task { await runShareImport() } } }
     }
 
-    /// One pass over the share queue: one item per pass, the agent gets only the composed text (SPEC-SHARE-001).
+    /// One pass over the share queue: one item per pass, the agent gets only the composed text and the chat draws a short line
+    /// (SPEC-SHARE-001, SPEC-SHAREBUBBLE-001).
     private func runShareImport() async {
         let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
-        await shareImport.pass(vision: client, canHand: { chatHolder.session?.canSend ?? true }, hand: { text in
+        await shareImport.pass(vision: client, canHand: { chatHolder.session?.canSend ?? true }, hand: { text, shown in
             openChat()
-            guard let session = chatHolder.session, session.canSend else { return false }
-            session.send(text)
-            return true
+            return SharedImport.give(message: text, shown: shown, to: chatHolder.session)
         })
     }
 
