@@ -100,6 +100,7 @@ struct AddActivityView: View {
             submitCustom: { submitCustom(field: $0, text: $1) },
             setTitleText: { setTitleText(field: $0, text: $1) },
             closedSearchText: { form?.closedSearchText(field: $0) ?? "" },
+            chooseCandidate: { chooseCandidate(field: $0, place: $1) },
             closeDial: { field, _, now in closeDial(field: field, now: now) },
             // 이 카드의 '반복' 줄은 하나라 줄 id가 필요 없다 — 폼이 키로 찾는다.
             commitRecurrence: { _ in await commitRecurrence() },
@@ -249,6 +250,13 @@ struct AddActivityView: View {
     /// 즐겨찾기를 이긴다"가 호출 순서가 아니라 구조로 정해진다.
     private func choosePlace(field: UUID, place: Place) {
         choose(field: field, value: place.name, place: place)
+    }
+
+    /// A tap on a search-result row: the same pick, then the form remembers it came from a search so the
+    /// closed field shows the place's own name. The pick clears the memory first, so the order matters.
+    private func chooseCandidate(field: UUID, place: Place) {
+        choosePlace(field: field, place: place)
+        form?.markCandidatePick(field: field)
     }
 
     /// 직접입력(제목·여유·알림). 범위 밖은 받지 않는다 — 거절 표시는 카드 뷰가 띄운다. 장소 줄은

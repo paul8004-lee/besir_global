@@ -204,6 +204,7 @@ struct ActivityDetailView: View {
             submitCustom: { submitCustom(field: $0, text: $1) },
             setTitleText: { setTitleText(field: $0, text: $1) },
             closedSearchText: { form?.closedSearchText(field: $0) ?? "" },
+            chooseCandidate: { chooseCandidate(field: $0, place: $1) },
             closeDial: { field, _, now in closeDial(field: field, now: now) },
             // 카드 쪽 확인 버튼은 크롬으로 꺼져 있지만 동작 자체는 화면의 저장이 곧 확인이다.
             confirm: { save() }
@@ -337,6 +338,13 @@ struct ActivityDetailView: View {
     /// 검색 후보를 탭했을 때 — 이름은 chosen에, 좌표는 이 순간 확정한다(REQ-021).
     private func choosePlace(field: UUID, place: Place) {
         choose(field: field, value: place.name, place: place)
+    }
+
+    /// A tap on a search-result row: the same pick, then the form remembers it came from a search so the
+    /// closed field shows the place's own name. The pick clears the memory first, so the order matters.
+    private func chooseCandidate(field: UUID, place: Place) {
+        choosePlace(field: field, place: place)
+        form?.markCandidatePick(field: field)
     }
 
     /// 직접입력(제목). 범위 밖은 받지 않는다 — 거절 표시는 카드 뷰가 띄운다. 장소 줄은 검색
@@ -690,7 +698,7 @@ struct ActivityDetailView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Nearby").font(.headline)
             HStack {
-                Label("Restaurant Suggestions", systemImage: "fork.knife")
+                Label(nearbyTitle, systemImage: nearbyCategory.systemImage)
                 Spacer()
                 if loadingNearby { ProgressView().controlSize(.small) }
                 Button(nearbyLoaded ? "Refresh" : "Show Suggestions") {
@@ -723,6 +731,14 @@ struct ActivityDetailView: View {
             }
             // 펼치기 전 캡션은 지웠다 — 무엇을 찾아줄지 예고하는 부연 설명이다(REQ-011 G6).
             // '추천 보기' 버튼이 절의 역할을 이미 말한다.
+        }
+    }
+
+    /// The block title names the chosen type; the switch has no default so a third type fails to compile here.
+    private var nearbyTitle: String {
+        switch nearbyCategory {
+        case .restaurant: return "Restaurant Suggestions"
+        case .cafe: return "Cafe Suggestions"
         }
     }
 
