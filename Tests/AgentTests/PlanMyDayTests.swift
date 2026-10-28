@@ -276,7 +276,8 @@ final class PlanMyDayTests: XCTestCase {
                          placeHandle: "p1", source: .besir)]
     }
 
-    func testPLANDAY_T26_theMessageEqualsTheHandTypedGoldenAndHostileValuesStayInsideTheirJsonStrings() throws {
+    @MainActor
+    func testPLANDAY_T26_theMessageEqualsTheHandTypedGoldenAndHostileValuesStayInsideTheirJsonStrings() async throws {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "plan-message", withExtension: "txt"))
         var golden = try String(contentsOf: url, encoding: .utf8)
         if golden.hasSuffix("\n") { golden.removeLast() }
@@ -306,6 +307,18 @@ final class PlanMyDayTests: XCTestCase {
         XCTAssertTrue(parsedShared[1]["time"] is NSNull)
         XCTAssertEqual(parsedShared[1]["confidence"] as? Double, 0.2)
         XCTAssertFalse(attack.lowercased().contains("base64"), "no image bytes: only the four read fields travel")
+
+        // Through the real pass: a shared image reaches the message as its four read fields, never as its bytes.
+        let bytes = Data((0..<600).map { UInt8(($0 * 7 + 3) % 251) }).base64EncodedString()
+        let rig = try makePlanRig()
+        enqueue(rig, image: bytes)
+        enqueue(rig, text: "Dinner at 7")
+        await plan(rig)
+        let sent = rig.handOff.message(0)
+        XCTAssertTrue(sent.contains(#""title":"Spring Gala""#), "the read fields travel")
+        XCTAssertTrue(sent.contains(#""kind":"image""#))
+        XCTAssertFalse(sent.contains(String(bytes.prefix(60))), "the image bytes do not travel")
+        XCTAssertFalse(sent.lowercased().contains("base64"))
     }
 
     // MARK: the line the chat draws
@@ -322,7 +335,8 @@ final class PlanMyDayTests: XCTestCase {
                        "Plan my day: 2 shared items and 40 events. Only the first 40 were used.")
     }
 
-    func testPLANDAY_T28_noTitleOrSharedTextCanReachTheShownLine() {
+    @MainActor
+    func testPLANDAY_T28_noTitleOrSharedTextCanReachTheShownLine() async throws {
         let sentinel = "SENTINEL-TITLE-7d41"
         let events = gather([activity(sentinel, "2026-10-27T10:00", "2026-10-27T11:00")], [entry(sentinel, "2026-10-27T12:00", "2026-10-27T13:00")]).events
         XCTAssertEqual(events.count, 2)
@@ -331,6 +345,16 @@ final class PlanMyDayTests: XCTestCase {
         XCTAssertEqual(line, "Plan my day: 2 shared items and 2 events.")
         let unavailable = PlanMyDay.shownLine(sharedCount: 2, eventCount: events.count, calendarAvailable: false, cut: false)
         XCTAssertFalse(unavailable.contains(sentinel))
+
+        // Through the real pass: the line handed to the chat is the counts line, whatever the titles and the shared text say.
+        let rig = try makePlanRig()
+        enqueue(rig, text: sentinel)
+        enqueue(rig, text: "second note")
+        rig.mirror.canned = [entry(sentinel, "2026-10-27T12:00", "2026-10-27T13:00")]
+        await plan(rig, activities: [activity(sentinel, "2026-10-27T10:00", "2026-10-27T11:00")])
+        XCTAssertEqual(rig.handOff.shownLines, ["Plan my day: 2 shared items and 2 events."])
+        XCTAssertTrue(rig.handOff.message(0).contains(sentinel), "positive control: the message itself does carry the title")
+        XCTAssertFalse(rig.handOff.shownLines.joined().contains(sentinel))
     }
 
     // MARK: - the passes (milestone M3)
