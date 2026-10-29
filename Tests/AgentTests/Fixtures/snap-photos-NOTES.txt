@@ -1,5 +1,5 @@
 Test media of the t24 camera-snap walk (SPEC-CAMSNAP-001). The media files are NOT in this repository.
-The walk loads them into the iPhone 17e simulator with xcrun simctl addmedia; they live in the scratch folder /private/tmp/besir-t24-photos/.
+The walk loads them into the iPhone 17 simulator (the walk device; the 17e runs only the tests) with xcrun simctl addmedia; they live in the scratch folder /private/tmp/besir-t24-photos/.
 Commons rows read on 2026-10-29 through the Wikimedia Commons API (extmetadata, imageinfo); the downloaded original of each photo matches the sha1 the API returned.
 The SHA-256 of each file is the original as downloaded (photos) or as generated for the walk date 2026-10-29 (own media).
 The demo video shows a real camera on a device, not these files.
