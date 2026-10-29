@@ -91,6 +91,59 @@ final class RepeatSeriesStoreTests: XCTestCase {
         XCTAssertEqual(a.explicitDates, b.explicitDates, "\(label) explicitDates", file: file, line: line)
     }
 
+    // MARK: Forms (AC-001, AC-004, AC-008, AC-009)
+
+    private func rowId(_ f: LegCardForm, _ key: String) -> UUID {
+        f.card.fields.first { $0.key == key }!.id
+    }
+
+    private func note(_ f: LegCardForm) -> String? {
+        f.card.fields.first { $0.key == RecurrenceLine.key }?.note
+    }
+
+    /// The New Activity card as the app builds it: title `Standup`, the given place (none when nil), start, and an end
+    /// (30 minutes after the start unless given); the Repeat row empty and the travel toggles off.
+    private func makeForm(start: Date, end: Date? = nil, place: Place? = nil) -> LegCardForm {
+        let rows = LegCardForm.manualNewActivityRows(favorites: [], defaultDay: start, now: start,
+                                                     presetStart: nil, calendarDefaultOn: nil)
+        var f = LegCardForm(card: EditCard(fields: rows), favoriteOptions: [])
+        f.setTitleText(field: rowId(f, "title"), text: "Standup")
+        if let place {
+            f.choose(field: rowId(f, "location_query"), value: place.name, place: place)
+        } else {
+            f.choose(field: rowId(f, "location_query"), value: PlaceTokens.noPlace)
+        }
+        f.choosePlainTime(field: rowId(f, "start_iso"), date: start)
+        f.choosePlainTime(field: rowId(f, "end_iso"), date: end ?? start.addingTimeInterval(1800))
+        return f
+    }
+
+    /// Types the Repeat text and commits the row (the step the screen runs when the row loses focus).
+    private func commit(_ f: inout LegCardForm, _ text: String) {
+        f.setTitleText(field: rowId(f, RecurrenceLine.key), text: text)
+        f.commitRecurrenceByRules()
+    }
+
+    /// Writes the end field directly, past what the repeat's end wheel offers, to reach the last guard of the save.
+    private func setEnd(_ f: inout LegCardForm, _ date: Date) {
+        let i = f.card.fields.firstIndex { $0.key == "end_iso" }!
+        f.card.fields[i].chosen = BesirTime.isoFormatter.string(from: date)
+    }
+
+    private var fixtureClock: Date { at(2026, 11, 2, 8) }
+
+    /// An empty store whose clock is the fixture clock (Monday 2026-11-02 08:00).
+    private func fixtureStore() -> Store {
+        let store = EmptyStore.make()
+        let clock = fixtureClock
+        store.replanNow = { clock }
+        return store
+    }
+
+    private func standups(in store: Store, _ interval: DateInterval) -> [ActivityBlock] {
+        store.activities(in: interval).filter { $0.title == "Standup" }
+    }
+
     // MARK: AC-002 - own file, old files untouched
 
     func testRECURRULE_SeriesFileLoadsAndOldFilesAreByteIdentical() throws {
@@ -248,8 +301,8 @@ final class RepeatSeriesStoreTests: XCTestCase {
     }
 
     func testRECURRULE_FailedCopyDoesNotOverwriteAndSaveReturnsFalse() throws {
-        // The `saveManualActivity` half of AC-004 row 3 (a repeat returns false and leaves `store.series` empty)
-        // arrives with the card at M3; this test covers `saveSeries` and `addSeries`.
+        // The `saveManualActivity` half of AC-004 row 3 is `testRECURRULE_SaveRefusedWhenSeriesFileCannotBeBackedUp`;
+        // this test covers `saveSeries` and `addSeries`.
         _ = EmptyStore.make()
         try write(Data("bad".utf8), "series.json")
         for n in 1...9 {
@@ -464,5 +517,237 @@ final class RepeatSeriesStoreTests: XCTestCase {
         let november = store.activities(in: month(2026, 11))
         XCTAssertEqual(november.filter { $0.title.hasPrefix("Standup") }.count, 4)
         XCTAssertFalse(november.contains { $0.startDate == at(2026, 11, 9, 9) })
+    }
+
+    // MARK: AC-001 rows 1-2 - one record, no copies
+
+    func testRECURRULE_SaveMakesOneSeriesAndNoCopies() async throws {
+        let store = fixtureStore()
+        var f = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30), place: office)
+        commit(&f, "every Monday")
+        XCTAssertTrue(f.card.isReady)
+        XCTAssertNotNil(f.activeRecurrence)
+
+        let saved = await store.saveManualActivity(f, calendarDefault: false)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(store.series.count, 1)
+        XCTAssertEqual(store.activities.count, 0, "no stored copy per occurrence")
+        XCTAssertEqual(store.events.count, 0, "no stored leg per occurrence")
+        let series = try XCTUnwrap(store.series.first)
+        XCTAssertEqual(series.title, "Standup")
+        XCTAssertEqual(series.location?.name, "Office")
+        XCTAssertEqual(series.rule.unit, .weekly)
+        XCTAssertEqual(series.rule.weekdays, [2])
+        XCTAssertNil(series.lastDayKey)
+        XCTAssertEqual(series.firstDayKey, 20261102)
+        XCTAssertEqual(series.startMinute, 540)
+        XCTAssertEqual(series.endMinute, 570)
+        XCTAssertEqual(series.endDayDistance, 0)
+        XCTAssertNil(series.lunarCalendar)
+        XCTAssertNil(series.legPlan, "the travel toggles are off")
+        XCTAssertEqual(standups(in: store, month(2026, 11)).count, 5, "the occurrences are drawn from the rule")
+
+        let reloaded = relaunched()
+        XCTAssertEqual(reloaded.series.map { $0.id }, [series.id], "the series reached series.json")
+
+        // The same form with the Repeat row empty is the one-time branch: one stored activity and no series.
+        let once = fixtureStore()
+        let plain = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30), place: office)
+        let savedOnce = await once.saveManualActivity(plain, calendarDefault: false)
+        XCTAssertTrue(savedOnce)
+        XCTAssertEqual(once.series.count, 0)
+        XCTAssertEqual(once.activities.count, 1)
+        XCTAssertEqual(once.activities.first?.title, "Standup")
+        XCTAssertEqual(once.activities.first?.startDate, at(2026, 11, 2, 9))
+        XCTAssertEqual(once.activities.first?.endDate, at(2026, 11, 2, 9, 30))
+        XCTAssertNil(once.activities.first?.recurrenceId)
+    }
+
+    // MARK: AC-004 row 3 - a series file that cannot be backed up
+
+    func testRECURRULE_SaveRefusedWhenSeriesFileCannotBeBackedUp() async throws {
+        _ = EmptyStore.make()
+        try write(Data("bad".utf8), "series.json")
+        for n in 1...9 {
+            try write(Data("old \(n)".utf8), n == 1 ? "series.unreadable.json" : "series.unreadable-\(n).json")
+        }
+        let store = relaunched()
+        let clock = fixtureClock
+        store.replanNow = { clock }
+        XCTAssertTrue(store.seriesLoadFailed)
+
+        var f = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30), place: office)
+        commit(&f, "every Monday until Nov 30")
+        XCTAssertTrue(f.card.isReady)
+        XCTAssertNotNil(f.activeRecurrence)
+
+        let saved = await store.saveManualActivity(f, calendarDefault: false)
+        XCTAssertFalse(saved)
+        XCTAssertEqual(store.series.count, 0, "nothing is left in memory")
+        XCTAssertEqual(store.activities.count, 0)
+        XCTAssertEqual(store.events.count, 0)
+        XCTAssertEqual(bytes("series.json"), Data("bad".utf8), "the unreadable file is not written over")
+        XCTAssertTrue(store.seriesLoadFailed)
+    }
+
+    // MARK: AC-008 - the lock and the cap are gone
+
+    func testRECURRULE_NoEndRepeatHasNoNoteAndAddIsLive() {
+        var f = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&f, "every Monday")
+        XCTAssertNil(RecurrenceLine.problem(rule: f.recurrence.rule, endDate: f.recurrence.endDate, start: f.startDate))
+        XCTAssertNil(note(f))
+        XCTAssertTrue(f.card.isReady)
+        guard let active = f.activeRecurrence else { return XCTFail("a repeat with no end is not active") }
+        XCTAssertNil(active.endDate)
+        XCTAssertEqual(active.rule.unit, .weekly)
+
+        // The missing items of a rule never include an end date.
+        let weekly = RecurrenceRule(weekdays: [2], unit: .weekly)
+        XCTAssertEqual(RecurrenceLine.missingItems(rule: weekly, endDate: nil), [])
+        let noWeekday = RecurrenceRule(weekdays: [], unit: .weekly)
+        XCTAssertEqual(RecurrenceLine.missingItems(rule: noWeekday, endDate: nil), [RecurrenceLine.missingWeekdays])
+
+        // An end well past the old count of 182 passes too.
+        var daily = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&daily, "daily until 12/31/2027")
+        XCTAssertNil(note(daily))
+        XCTAssertNotNil(daily.activeRecurrence)
+    }
+
+    func testRECURRULE_EndBeyondHorizonIsTooFar() {
+        var f = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&f, "every Monday until 1/1/9999")
+        XCTAssertEqual(note(f), "End date is too far away")
+        XCTAssertNil(f.activeRecurrence)
+
+        // The boundary is the horizon counted from the start day: the last day is accepted, the next one is not.
+        let rule = RecurrenceRule(weekdays: [2], unit: .weekly)
+        let startDay = cal.startOfDay(for: at(2026, 11, 2, 9))
+        let horizon = cal.date(byAdding: .year, value: RecurrenceRule.horizonYears, to: startDay)!
+        XCTAssertNil(RecurrenceLine.problem(rule: rule, endDate: horizon, start: at(2026, 11, 2, 9)))
+        let dayAfter = cal.date(byAdding: .day, value: 1, to: horizon)!
+        XCTAssertEqual(RecurrenceLine.problem(rule: rule, endDate: dayAfter, start: at(2026, 11, 2, 9)), "End date is too far away")
+    }
+
+    func testRECURRULE_NoMatchingDatesStillNoted() {
+        var before = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&before, "every Monday until 11/1/2026")
+        XCTAssertEqual(note(before), "No matching dates")
+        XCTAssertNil(before.activeRecurrence)
+
+        // A rule with no occurrence inside the horizon and no end: Feb 30 never happens.
+        var never = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        never.seedRecurrence(text: "every year on Feb 30",
+                             arguments: [RecurrenceRule.Arg.unit: "year", RecurrenceRule.Arg.month: 2, RecurrenceRule.Arg.day: 30],
+                             endDate: nil)
+        XCTAssertEqual(note(never), "No matching dates")
+        XCTAssertNil(never.activeRecurrence)
+
+        // Positive control: Feb 28 happens, so the same shape of rule has no note.
+        var feb28 = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        feb28.seedRecurrence(text: "every year on Feb 28",
+                             arguments: [RecurrenceRule.Arg.unit: "year", RecurrenceRule.Arg.month: 2, RecurrenceRule.Arg.day: 28],
+                             endDate: nil)
+        XCTAssertNil(note(feb28))
+        XCTAssertNotNil(feb28.activeRecurrence)
+    }
+
+    func testRECURRULE_TextWithUntilStillSetsTheEnd() async {
+        var four = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&four, "every Monday for 4 weeks")
+        XCTAssertEqual(four.activeRecurrence?.endDate, cal.startOfDay(for: at(2026, 11, 29)))
+        let store = fixtureStore()
+        let saved = await store.saveManualActivity(four, calendarDefault: false)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(store.series.first?.lastDayKey, 20261129)
+        let weeks = standups(in: store, DateInterval(start: at(2026, 11, 1), end: at(2027, 1, 1)))
+        XCTAssertEqual(weeks.map { $0.startDate }, [at(2026, 11, 2, 9), at(2026, 11, 9, 9), at(2026, 11, 16, 9), at(2026, 11, 23, 9)],
+                       "the last occurrence is Monday Nov 23")
+
+        let until = fixtureStore()
+        var upTo = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&upTo, "every Monday until Nov 30")
+        let savedUntil = await until.saveManualActivity(upTo, calendarDefault: false)
+        XCTAssertTrue(savedUntil)
+        XCTAssertEqual(until.series.first?.lastDayKey, 20261130)
+        XCTAssertEqual(standups(in: until, DateInterval(start: at(2026, 11, 1), end: at(2027, 1, 1))).count, 5)
+    }
+
+    // MARK: AC-009 - save
+
+    func testRECURRULE_SaveOfPastOnlyRepeatMakesNothing() async {
+        let store = EmptyStore.make()
+        let late = at(2027, 1, 1, 8)
+        store.replanNow = { late }
+        var f = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&f, "every Monday until 11/16/2026")
+        XCTAssertNil(note(f))
+        XCTAssertNotNil(f.activeRecurrence)
+        XCTAssertTrue(f.card.isReady)
+
+        let saved = await store.saveManualActivity(f, calendarDefault: false)
+        XCTAssertFalse(saved)
+        XCTAssertEqual(store.series.count, 0)
+        XCTAssertEqual(store.activities.count, 0)
+        XCTAssertEqual(store.events.count, 0)
+        XCTAssertTrue(f.hasNoUpcomingOccurrence(now: late))
+        // Control: at the fixture clock the same form has upcoming occurrences.
+        XCTAssertFalse(f.hasNoUpcomingOccurrence(now: fixtureClock))
+    }
+
+    func testRECURRULE_SaveRefusesOver24Hours() async throws {
+        // Start 09:00, end the next day 09:30 (24.5 hours): refused, nothing made.
+        var long = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&long, "every Monday")
+        setEnd(&long, at(2026, 11, 3, 9, 30))
+        XCTAssertTrue(long.card.isReady)
+        XCTAssertNotNil(long.activeRecurrence)
+        let longStore = fixtureStore()
+        let longSaved = await longStore.saveManualActivity(long, calendarDefault: false)
+        XCTAssertFalse(longSaved)
+        XCTAssertEqual(longStore.series.count, 0)
+        XCTAssertEqual(longStore.activities.count, 0)
+
+        // End equal to start: refused.
+        var same = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&same, "every Monday")
+        setEnd(&same, at(2026, 11, 2, 9))
+        XCTAssertTrue(same.card.isReady)
+        XCTAssertNotNil(same.activeRecurrence)
+        let sameStore = fixtureStore()
+        let sameSaved = await sameStore.saveManualActivity(same, calendarDefault: false)
+        XCTAssertFalse(sameSaved)
+        XCTAssertEqual(sameStore.series.count, 0)
+
+        // Start 23:00, end 01:00 the next day: saved, and the end falls on the next day.
+        var night = makeForm(start: at(2026, 11, 2, 23), end: at(2026, 11, 3, 1))
+        commit(&night, "every Monday")
+        XCTAssertNotNil(night.activeRecurrence)
+        let nightStore = fixtureStore()
+        let nightSaved = await nightStore.saveManualActivity(night, calendarDefault: false)
+        XCTAssertTrue(nightSaved)
+        let series = try XCTUnwrap(nightStore.series.first)
+        XCTAssertEqual(series.endDayDistance, 1)
+        XCTAssertEqual(series.startMinute, 23 * 60)
+        XCTAssertEqual(series.endMinute, 60)
+    }
+
+    func testRECURRULE_SaveDayThreeYearsLaterIsDrawn() async {
+        let store = fixtureStore()
+        var f = makeForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&f, "daily")
+        XCTAssertNotNil(f.activeRecurrence)
+        let saved = await store.saveManualActivity(f, calendarDefault: false)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(store.series.count, 1)
+        XCTAssertEqual(store.activities.count, 0, "no occurrence was precomputed")
+        XCTAssertEqual(store.events.count, 0)
+
+        let day = DateInterval(start: at(2029, 3, 14), end: at(2029, 3, 15))
+        let drawn = standups(in: store, day)
+        XCTAssertEqual(drawn.count, 1)
+        XCTAssertEqual(drawn.first?.startDate, at(2029, 3, 14, 9))
+        XCTAssertEqual(store.activities(on: at(2029, 3, 14)).filter { $0.title == "Standup" }.count, 1)
     }
 }
