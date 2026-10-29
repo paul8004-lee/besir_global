@@ -639,6 +639,9 @@ final class SnapFlowTests: XCTestCase {
         // (f) a failed transport
         (rig, _) = await run(.status(500))
         XCTAssertEqual(rig.flow.phase, .line(SnapLine.noMatch))
+        // (g) one place inside the radius and one beyond it: the far one is dropped, so there is no list
+        (rig, _) = await run(answer([("Far", 400), ("A", 120)]))
+        XCTAssertEqual(rig.flow.phase, .awaitingMode)
     }
 
     func testCAMSNAP_T35_candidateRowsAreCutCleanAndCarryTheGoogleMark() async throws {
@@ -854,7 +857,7 @@ final class SnapFlowTests: XCTestCase {
             XCTAssertEqual(rig.reader.calls, 2)
             XCTAssertNotNil(rig.flow.takeOutcome(), "(a) the new frame completes normally")
             await rig.log.flush()
-            XCTAssertEqual(rig.log.packets.map(\.summary), ["Image read"])
+            XCTAssertEqual(rig.log.packets.map(\.kind), [.imageRead], "(a) one packet, for the new frame only")
         }
 
         // (b) A lookup held in the places transport, with a real PlaceSearch and a real log.
