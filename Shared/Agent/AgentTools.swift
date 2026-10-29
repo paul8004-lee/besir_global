@@ -560,18 +560,30 @@ final class AgentToolbox {
         }
         if to <= from || to.timeIntervalSince(from) > Self.maxListSpan { throw Rejection(Say.listInvalid) }
 
-        let hits = store.activities.enumerated()
+        let local = formats.local
+        var hits: [(start: Date, item: [String: Any])] = store.activities.enumerated()
             .filter { $0.element.startDate < to && $0.element.endDate > from }
             .sorted { ($0.element.startDate, $0.offset) < ($1.element.startDate, $1.offset) }
-        let local = formats.local
-        let items: [[String: Any]] = hits.prefix(Self.maxItems).map { hit in
-            let a = hit.element
-            var item: [String: Any] = ["id": a.id.uuidString, "title": Self.sanitized(a.title), "start": local.string(from: a.startDate),
-                                       "end": local.string(from: a.endDate), "recurring": a.recurrenceId != nil]
-            if let place = a.location { item["location"] = Self.sanitized(place.name) }
-            return item
+            .map { hit in
+                let a = hit.element
+                var item: [String: Any] = ["id": a.id.uuidString, "title": Self.sanitized(a.title), "start": local.string(from: a.startDate),
+                                           "end": local.string(from: a.endDate), "recurring": a.recurrenceId != nil]
+                if let place = a.location { item["location"] = Self.sanitized(place.name) }
+                return (a.startDate, item)
+            }
+        // In a plan turn the calendar entries besir did not write are listed too, from the events the plan message showed
+        // (so the model finds the same e1... ids here); only they carry a `source`.
+        let calendarHits = (dayPlan?.events ?? []).filter { $0.source == .calendar && $0.start < to && $0.end > from }
+        for event in calendarHits {
+            var item: [String: Any] = ["id": event.handle, "title": Self.sanitized(event.title), "start": local.string(from: event.start),
+                                       "end": local.string(from: event.end), "recurring": false, "source": event.source.rawValue]
+            if let text = event.locationText { item["location"] = Self.sanitized(text) }
+            hits.append((event.start, item))
         }
-        return .result(Self.encode(["items": items, "count": items.count, "truncated": hits.count > Self.maxItems]))
+        // Stable: a besir activity and a calendar entry starting together keep the Store item first.
+        let ordered = hits.enumerated().sorted { ($0.element.start, $0.offset) < ($1.element.start, $1.offset) }.map(\.element.item)
+        let items = Array(ordered.prefix(Self.maxItems))
+        return .result(Self.encode(["items": items, "count": items.count, "truncated": ordered.count > Self.maxItems]))
     }
 
     private func create(_ values: [String: String]) throws -> AgentToolOutcome {

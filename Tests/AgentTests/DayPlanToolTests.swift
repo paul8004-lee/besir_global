@@ -1443,12 +1443,12 @@ final class DayPlanToolTests: XCTestCase {
         XCTAssertTrue(card.store.activities.isEmpty, "showing a card writes nothing")
     }
 
-    // MARK: cause of the W2 walk failure (card t19, evidence only)
+    // MARK: the W2 walk failure (card t19): a calendar-only event is listed in a plan turn
 
-    /// The W2 state: the Store holds no activity and the only event is an Apple Calendar entry with a location text. This
-    /// pins what the model is shown and what it is not, as they are today; it repairs nothing.
+    /// The W2 state: the Store holds no activity and the only event is an Apple Calendar entry with a location text. The plan
+    /// message carries it as e1, and list_activities now answers with the same e1 (it used to answer with nothing).
     @MainActor
-    func testPLANDAY_T74_aCalendarOnlyEventReachesTheModelInThePlanMessageButNotThroughListActivities() async throws {
+    func testPLANDAY_T74_aCalendarOnlyEventReachesTheModelInThePlanMessageAndThroughListActivities() async throws {
         let entry = CalendarEntry(id: "ek-1", title: "Team meeting", start: date("15:00"), end: date("16:00"), isAllDay: false,
                                   location: "Team HQ, 1 Market St, San Francisco", calendarName: "Home", isFromBesir: false)
         let gathered = PlanMyDay.events(activities: [], entries: [entry], now: TestClock.now,
@@ -1464,20 +1464,55 @@ final class DayPlanToolTests: XCTestCase {
         XCTAssertEqual(packet.first?["location"] as? String, "Team HQ, 1 Market St, San Francisco")
         XCTAssertTrue(packet.first?["place_id"] is NSNull, "a calendar entry never has a registered place")
 
-        // (2) list_activities on the same day answers with nothing: it reads the Store only, the calendar entry is not there.
+        // (2) list_activities on the same day lists that event with the same id, its location text and its source.
         let rig = planRig(events: gathered.events)
         XCTAssertTrue(rig.store.activities.isEmpty)
         let listed = await rig.run("list_activities", ["from": "2026-10-27T00:00", "to": "2026-10-27T23:59"])
-        XCTAssertEqual(listed.json?["count"] as? Int, 0)
-        XCTAssertEqual((listed.json?["items"] as? [Any])?.count, 0)
+        XCTAssertEqual(listed.json?["count"] as? Int, 1)
+        XCTAssertEqual(listed.json?["truncated"] as? Bool, false)
+        let items = try XCTUnwrap(listed.json?["items"] as? [[String: Any]])
+        let item = try XCTUnwrap(items.first)
+        XCTAssertEqual(Set(item.keys), ["id", "title", "start", "end", "recurring", "location", "source"])
+        XCTAssertEqual(item["id"] as? String, "e1")
+        XCTAssertEqual(item["title"] as? String, "Team meeting")
+        XCTAssertEqual(item["start"] as? String, "2026-10-27T15:00")
+        XCTAssertEqual(item["end"] as? String, "2026-10-27T16:00")
+        XCTAssertEqual(item["location"] as? String, "Team HQ, 1 Market St, San Francisco")
+        XCTAssertEqual(item["source"] as? String, "calendar")
+        XCTAssertEqual(item["recurring"] as? Bool, false)
 
-        // (3) The two new stops of the W2 transcript, with no stop that names e1: no route is looked up for any leg.
+        // (3) A range that does not overlap the event lists nothing.
+        let before = await rig.run("list_activities", ["from": "2026-10-27T00:00", "to": "2026-10-27T15:00"])
+        XCTAssertEqual(before.json?["count"] as? Int, 0)
+        let after = await rig.run("list_activities", ["from": "2026-10-27T16:00", "to": "2026-10-27T23:59"])
+        XCTAssertEqual(after.json?["count"] as? Int, 0)
+
+        // (4) The two new stops of the W2 transcript, with no stop that names e1: no route is looked up for any leg. Listing
+        // the event does not give it a place; whether the model now attaches one is decided by the walk, not by this test.
         let stops = [stopObject("Ferry Building Marketplace", "12:00", "13:00", place: "p1"),
                      stopObject("Housewarming Party", "19:30", "21:30", place: "p2")]
         let reply = await check(rig, stops)
         XCTAssertEqual(rig.routes.callCount, 0, "e1 has no place and was not given one, so no leg has both ends")
         XCTAssertFalse(unchecked(reply).isEmpty)
         print("T74 packet:", packet, "\nT74 list_activities:", listed.text ?? "nil", "\nT74 check_day_plan:", reply.text ?? "nil")
+    }
+
+    /// Outside a plan turn list_activities reads the Store only, and in a plan turn it lists a calendar event once: an event
+    /// of the plan that comes from the Store is not added a second time.
+    @MainActor
+    func testPLANDAY_T74_listActivitiesAddsCalendarEventsOnlyInAPlanTurnAndNeverTwiceForAStoreEvent() async throws {
+        let calendarEvent = event("e1", "Team meeting", "15:00", "16:00", place: nil)
+        let storeEvent = event("e2", "Dinner", "18:00", "19:00", place: p2, source: .besir)
+        let args = ["from": "2026-10-27T00:00", "to": "2026-10-27T23:59"]
+
+        let rig = planRig(events: [calendarEvent, storeEvent])
+        let inPlan = await rig.run("list_activities", args)
+        let planItems = try XCTUnwrap(inPlan.json?["items"] as? [[String: Any]])
+        XCTAssertEqual(planItems.compactMap { $0["id"] as? String }, ["e1"], "the Store event is not listed from the plan; the Store lists its own")
+
+        rig.tools.endDayPlan()
+        let outside = await rig.run("list_activities", args)
+        XCTAssertEqual(outside.json?["count"] as? Int, 0, "no plan turn: the calendar event is not listed")
     }
 }
 
