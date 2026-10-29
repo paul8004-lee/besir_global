@@ -354,6 +354,8 @@ enum AgentCardRow: Equatable {
 final class AgentCard {
     /// The lines in order, the heading first; for a card with editors they are read from the editors.
     var lines: [String] { makeRows == nil ? fixedLines : rows.compactMap(\.line) }
+    /// SPEC-CHOICECARD-001: the model of a card drawn from a partner's field list; nil for the other two forms.
+    private(set) var fieldCard: AgentFieldCard?
     /// The rows in order; a row of an editable value tells the view where a control goes.
     var rows: [AgentCardRow] { makeRows?() ?? fixedLines.map { .text($0) } }
     /// The values the user can change in this card (empty for every card but a delivery card).
@@ -388,6 +390,16 @@ final class AgentCard {
         fixedLines = []
         makeRows = rows
         self.editors = editors
+        self.showsGoogleMark = showsGoogleMark
+        self.onConfirm = onConfirm
+    }
+
+    /// SPEC-CHOICECARD-001: a card whose rows are the fields of `fieldCard`.
+    init(fieldCard: AgentFieldCard, showsGoogleMark: Bool = false,
+         onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
+        fixedLines = []
+        makeRows = nil
+        editors = AgentCardEditors()
         self.showsGoogleMark = showsGoogleMark
         self.onConfirm = onConfirm
     }
