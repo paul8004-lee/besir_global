@@ -713,7 +713,7 @@ final class DeliveryClientTests: XCTestCase {
         // The edges are accepted.
         let widest = optionsObject {
             $0["menu"] = menuOf(12, price: 100000)
-            $0["cards"] = (0..<4).map { cardEntry("card\($0)", String(repeating: "L", count: 60)) }
+            $0["order_fields"] = orderFields(cards: (0..<4).map { cardEntry("card\($0)", String(repeating: "L", count: 60)) })
             $0["delivery_fee_cents"] = 10000
         }
         let edge = DeliveryClient.optionsAnswer(from: Data(widest.utf8))
@@ -723,7 +723,7 @@ final class DeliveryClientTests: XCTestCase {
         XCTAssertEqual(edge?.deliveryFeeCents, 10000)
         let narrowest = optionsObject {
             $0["menu"] = [menuEntry("a", String(repeating: "N", count: 40), 1)]
-            $0["cards"] = [cardEntry("c", "L")]
+            $0["order_fields"] = orderFields(cards: [cardEntry("c", "L")])
             $0["delivery_fee_cents"] = 0
         }
         XCTAssertEqual(DeliveryClient.optionsAnswer(from: Data(narrowest.utf8)),
