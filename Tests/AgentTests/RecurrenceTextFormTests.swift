@@ -67,7 +67,7 @@ final class RecurrenceTextFormTests: XCTestCase {
             ("daily until 12/31/2027", "End date is too far away", false),
             ("every Monday until Nov 30", nil, true),
             ("evry monday", "Couldn't interpret the repeat", false),
-            ("매주 화요일 4주", "Couldn't interpret the repeat", false),
+            ("\u{B9E4}\u{C8FC} \u{D654}\u{C694}\u{C77C} 4\u{C8FC}", "Couldn't interpret the repeat", false),  // Korean, escaped
         ]
         for (text, expectedNote, active) in rows {
             var f = makeForm(start: at(2026, 11, 2))

@@ -1552,7 +1552,7 @@ extension EndWheelSpec {
         func monthDay(_ month: Int, _ day: Int) -> String {
             "\(RecurrenceTextParser.monthAbbreviations[max(0, min(11, month - 1))]) \(day)"
         }
-        func dateText(_ d: Date) -> String {
+        func dateString(_ d: Date) -> String {
             let c = calendar.dateComponents([.year, .month, .day], from: d)
             let md = monthDay(c.month ?? 1, c.day ?? 1)
             return c.year == startYear ? md : md + ", \(c.year ?? 0)"
@@ -1560,7 +1560,7 @@ extension EndWheelSpec {
         let weekdayOrder: [Int] = [2, 3, 4, 5, 6, 7, 1]
         let shortDays: [String] = weekdayOrder.filter { rule.weekdays.contains($0) }
             .compactMap { RecurrenceTextParser.weekdayAbbreviations[$0] }
-        func nthText(_ nth: Int) -> String {
+        func nthPhrase(_ nth: Int) -> String {
             "on the \(RecurrenceTextParser.nthNames[nth] ?? "") \(list(shortDays))"
         }
         var line: String
@@ -1570,7 +1570,7 @@ extension EndWheelSpec {
         case .weekly:
             if let nth = rule.nthWeekOfMonth {
                 // A legacy weekday + week-number shape without a unit name means "every month on the nth weekday".
-                line = "every month " + nthText(nth)
+                line = "every month " + nthPhrase(nth)
             } else if rule.everyNWeeks == 1 {
                 if rule.weekdays == [2, 3, 4, 5, 6] {
                     line = "every weekday"
@@ -1587,7 +1587,7 @@ extension EndWheelSpec {
             var days: [String] = rule.monthDays.sorted().map { ordinal($0) }
             if rule.lastDayOfMonth { days.append("last day") }
             if !days.isEmpty { line += " on the \(list(days))" }
-            if let nth = rule.nthWeekOfMonth, !rule.weekdays.isEmpty { line += " " + nthText(nth) }
+            if let nth = rule.nthWeekOfMonth, !rule.weekdays.isEmpty { line += " " + nthPhrase(nth) }
         case .yearly:
             line = rule.interval == 1 ? "every year" : "every \(rule.interval) years"
             if let m = rule.month, let d = rule.day { line += " on " + monthDay(m, d) }
@@ -1595,10 +1595,10 @@ extension EndWheelSpec {
             line = "every year by the Korean lunar calendar"
             if let m = rule.month, let d = rule.day { line += " on " + (rule.isLeapMonth ? "leap " : "") + "month \(m) day \(d)" }
         case .dateList:
-            return rule.explicitDates.sorted().map { dateText($0) }.joined(separator: " · ")
+            return rule.explicitDates.sorted().map { dateString($0) }.joined(separator: " · ")
         }
         if rule.skipHolidays { line += " except Korean holidays" }
-        if let endDate { line += " until " + dateText(endDate) }
+        if let endDate { line += " until " + dateString(endDate) }
         return line
     }
 }

@@ -196,7 +196,7 @@ final class RecurrenceTextParserTests: XCTestCase {
             "until nov 30", "for 4 weeks", "biweekly", "every monday for 5 times", "every on monday",
             "every 2 weeks monday", "every month on the 32nd", "every month on the 0th", "every month on the 15th and 15th",
             "monday and friday", "every first monday and tuesday", "every year on feb 30", "evry monday",
-            "매주 화요일 4주",
+            "\u{B9E4}\u{C8FC} \u{D654}\u{C694}\u{C77C} 4\u{C8FC}",  // the Korean phrase of the t4 smoke, escaped: no Hangul in the source
         ]
         for text in texts {
             XCTAssertNil(RecurrenceTextParser.parse(text, start: S, calendar: C), "`\(text)` must not be read")
