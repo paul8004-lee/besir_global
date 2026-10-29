@@ -71,7 +71,8 @@ final class RecurrenceTextFormTests: XCTestCase {
             ("every month until Jan 31", "Enter days of the month", false),
             ("yearly until Nov 30, 2030", "Enter date", false),
             ("every Monday until 11/1/2026", "No matching dates", false),
-            ("daily until 12/31/2027", "End date is too far away", false),
+            ("daily until 12/31/2027", nil, true),
+            ("every Monday until 1/1/9999", "End date is too far away", false),
             ("every Monday until Nov 30", nil, true),
             ("evry monday", "Couldn't interpret the repeat", false),
             ("\u{B9E4}\u{C8FC} \u{D654}\u{C694}\u{C77C} 4\u{C8FC}", "Couldn't interpret the repeat", false),  // Korean, escaped
@@ -130,7 +131,6 @@ final class RecurrenceTextFormTests: XCTestCase {
         XCTAssertEqual(RecurrenceLine.missingMonthDays, "Enter days of the month")
         XCTAssertEqual(RecurrenceLine.missingLunarDate, "Enter lunar date")
         XCTAssertEqual(RecurrenceLine.missingDate, "Enter date")
-        XCTAssertEqual(RecurrenceLine.missingEndDate, "Enter end date")
         XCTAssertEqual(RecurrenceLine.interpretFailed, "Couldn't interpret the repeat")
         XCTAssertEqual(RecurrenceLine.tooFar, "End date is too far away")
         XCTAssertEqual(RecurrenceLine.noOccurrence, "No matching dates")
@@ -147,14 +147,18 @@ final class RecurrenceTextFormTests: XCTestCase {
         commit(&f, "every Monday for 4 weeks")
         let saved = await store.saveManualActivity(f, calendarDefault: false)
         XCTAssertTrue(saved)
-        let made = store.activities.filter { $0.title == "Gym" }.sorted { $0.startDate < $1.startDate }
+        // One stored series and no stored copy; the occurrences are computed when they are read.
+        XCTAssertEqual(store.series.count, 1)
+        XCTAssertEqual(store.activities.filter { $0.title == "Gym" }.count, 0)
+        XCTAssertEqual(store.events.count, 0)
+        let window = DateInterval(start: day, end: cal.date(byAdding: .day, value: 35, to: day)!)
+        let made = store.activities(in: window).filter { $0.title == "Gym" }.sorted { $0.startDate < $1.startDate }
         XCTAssertEqual(made.count, 4)
         for (i, activity) in made.enumerated() {
             let expectedStart = cal.date(byAdding: .day, value: 7 * i, to: start)!
             XCTAssertEqual(activity.startDate, expectedStart)
             XCTAssertEqual(activity.endDate, cal.date(byAdding: .hour, value: 1, to: expectedStart)!)
-            XCTAssertNotNil(activity.recurrenceId)
-            XCTAssertEqual(activity.recurrenceId, made.first?.recurrenceId)
+            XCTAssertEqual(activity.recurrenceId, store.series.first?.id)
         }
     }
 }

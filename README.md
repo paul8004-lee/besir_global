@@ -102,6 +102,7 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **Absurdly long legs are not late arrivals** — in Plan my day, a leg over six hours counts as unchecked instead of showing a huge late-arrival time — [#31](https://github.com/paul8004-lee/besir_global/pull/31)
 - **Example Budget (Simulated)** — a simulated budget app: ask what is left this week, say what you spent, and a booking sends its estimated spend; facts only, no advice — [#36](https://github.com/paul8004-lee/besir_global/pull/36)
 - **Share, then one tap** — after a share, one fixed notification brings besir to the front with a tap, and the banner is cleared when besir opens — [#37](https://github.com/paul8004-lee/besir_global/pull/37)
+- **Repeat saved as its rule** — a repeating activity is stored as one rule and its days are worked out when shown, so `every Monday` needs no end date and has no 182-day cap — [#38](https://github.com/paul8004-lee/besir_global/pull/38)
 
 Some baseline files are edited in place, only for two reasons: the English localization of the app UI, and the split of the app and App Group identifiers from the earlier app. Both are listed as lines above when they land. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
