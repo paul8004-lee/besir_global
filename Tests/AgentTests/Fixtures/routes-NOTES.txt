@@ -12,3 +12,12 @@ stay in the git-excluded evidence folder).
 
 live-{transit,walk,bicycle,noroute}-body.json and -mask.txt are the exact requests the app
 builds for the four requests of the live block; a unit test compares them with the app output.
+
+Fixtures of SPEC-ROUTELINE-001 (card t45): routes-line-drive.json, routes-line-no-polyline.json,
+routes-line-bad-polyline.json, live-line-car-body.json, live-line-walk-body.json,
+live-line-bicycle-body.json, live-line-transit-body.json and live-line-mask.txt.
+routes-line-*.json are synthetic: every polyline text in them was produced by the test-side encoder
+from invented points near the San Francisco test coordinates (no Google answer is stored). The bad
+polyline is the drive text with one space inside it. live-line-<mode>-body.json are the exact line
+requests the app builds for the live check (polylineEncoding and polylineQuality added); a unit
+test compares them with the app output. live-line-mask.txt is the line field mask.
