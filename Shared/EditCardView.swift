@@ -14,6 +14,9 @@ struct EditCardView: View {
     // 카드 크롬의 뷰 쪽 기본값 — 확인 문구만 기본값을 갖는다. 머리글 기본값은 S1에서 빠졌다
     // (REQ-008): 줄 이름이 곧 물어보는 문장이라 머리글은 같은 말을 두 번 하는 군더더기였다.
     var chrome: EditCardChrome = EditCardChrome(header: nil, confirmTitle: "Add")
+    // Pulse from the owner screen: each tap on the empty sheet area outside the card bumps it, and the
+    // card answers with the same close a tap on its own empty space gives.
+    var outsideTapCount: Int = 0
 
     // 직접입력 상태는 카드와 수명을 같이 한다. 채팅 뷰에 두면 카드가 요약으로 바뀐 뒤에도
     // 열린 입력창과 거절 표시가 남아 다음 카드로 흘러간다.
@@ -80,6 +83,9 @@ struct EditCardView: View {
         // 탭을 자기가 받아 이 제스처에 걸리지 않으므로 빈 곳에만 닿는다.
         .contentShape(Rectangle())
         .onTapGesture { collapseOtherEditors() }
+        .onChange(of: outsideTapCount) {
+            collapseOtherEditors()
+        }
         // '반복' 칸에서 포커스가 떠나면 해석을 맡긴다 — 해석이 필요한지(빈 글·이미 해석한 글)는 소유자 쪽 폼이 정하고,
         // 결과도 소유자가 줄에 붙인다. 뷰는 결과를 들지 않는다.
         .onChange(of: titleFocus) { old, new in
