@@ -64,7 +64,8 @@ enum MapFraming: Equatable {
         c.latitude.isFinite && c.longitude.isFinite && abs(c.latitude) <= 90 && abs(c.longitude) <= 180
     }
 
-    static func plan(origin: CLLocationCoordinate2D?, destination: CLLocationCoordinate2D?) -> MapFraming {
+    static func plan(origin: CLLocationCoordinate2D?, destination: CLLocationCoordinate2D?,
+                     path: [RoutePoint] = []) -> MapFraming {
         let o = origin.flatMap { isValid($0) ? $0 : nil }
         let d = destination.flatMap { isValid($0) ? $0 : nil }
         switch (o, d) {
@@ -82,6 +83,16 @@ enum MapFraming: Equatable {
             return defaultPoint
         }
     }
+}
+
+/// The route line the map draws. Stub for the red run.
+struct RouteLineSpec: Equatable {
+    let points: [RoutePoint]
+    static let width: Double = 5
+
+    static func make(_ points: [RoutePoint]) -> RouteLineSpec? { nil }
+
+    static func needsRedraw(last: RouteLineSpec?, next: RouteLineSpec?, colourSchemeChanged: Bool) -> Bool { false }
 }
 
 /// How far the camera fit keeps the markers from each edge so the destination's name label
