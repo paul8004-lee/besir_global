@@ -3514,4 +3514,87 @@ final class RepeatSeriesStoreTests: XCTestCase {
         // 6 requests handed over by the retime, 6 by the fill's reschedule, 6 by the refresh's reschedule.
         XCTAssertEqual(store.notifications.requestCount, requests + 18)
     }
+
+    // MARK: AC-006 - new legs copy a representative time
+
+    /// A stored copy of the occurrence of a day, made the way an edit makes it.
+    private func storeCopy(_ store: Store, _ s: RepeatSeries, day dayKey: Int) {
+        XCTAssertTrue(store.modifyActivity(id: s.occurrenceID(dayKey: dayKey), newTitle: "Standup (moved)"))
+    }
+
+    /// Sets the travel time of every leg linked to one of the days, and nothing else of them.
+    private func setTravelSeconds(_ store: Store, _ s: RepeatSeries, days: [Int], _ seconds: TimeInterval) {
+        let links = Set(days.map { s.occurrenceID(dayKey: $0) })
+        store.events = store.events.map { e in
+            guard let link = e.linkedActivityId, links.contains(link) else { return e }
+            var e = e
+            e.travelSeconds = seconds
+            return e
+        }
+    }
+
+    /// The clock of the pass under test: Nov 9, so the window ends Nov 23 and the mark (Nov 16) is below it, and the
+    /// pass makes the two legs of Nov 23 and no other.
+    private func moveToNov9(_ store: Store) {
+        let clock = at(2026, 11, 9, 8)
+        store.replanNow = { clock }
+    }
+
+    func testLEGTIME_NewLegsDoNotTakeTheTimeOfAnEditedStoredLeg() async throws {
+        let (store, s, _) = await offlineFilledStandup(seconds: 900)
+        for day in [20261102, 20261109] { storeCopy(store, s, day: day) }
+        setTravelSeconds(store, s, days: [20261102, 20261109], 1200)   // an edited time on the copies
+        moveToNov9(store)
+        let lookups = store.drvTravelLookupCount
+
+        await store.fillSeriesLegs()
+
+        XCTAssertEqual(store.events.count, 8)
+        let (out, back) = try legPair(store, s, 20261123)
+        XCTAssertEqual(out.travelSeconds, 900, "the only unstored occurrence with legs is Nov 16")
+        XCTAssertEqual(back.travelSeconds, 900)
+        XCTAssertEqual(store.drvTravelLookupCount, lookups)
+    }
+
+    func testLEGTIME_NewLegsTakeTheMostCommonTimeOfTheUnstoredLegs() async throws {
+        func row(_ label: String, remove: [Int] = [], set times: [Int: TimeInterval]) async throws {
+            let (store, s, _) = await offlineFilledStandup(seconds: 900)
+            for day in remove {
+                let link = s.occurrenceID(dayKey: day)
+                store.deleteEvents(store.events.filter { $0.linkedActivityId == link })
+            }
+            for (day, seconds) in times { setTravelSeconds(store, s, days: [day], seconds) }
+            moveToNov9(store)
+            let lookups = store.drvTravelLookupCount
+
+            await store.fillSeriesLegs()
+
+            let (out, back) = try legPair(store, s, 20261123)
+            XCTAssertEqual(out.travelSeconds, 900, "\(label): outbound")
+            XCTAssertEqual(back.travelSeconds, 900, "\(label): return")
+            XCTAssertEqual(store.drvTravelLookupCount, lookups, "\(label): no lookup")
+        }
+        try await row("a, the adjusted leg first", set: [20261102: 1500])
+        try await row("b, the adjusted leg last", set: [20261116: 1500])
+        // The two Nov 16 legs are gone (the mark keeps them from coming back): 1500 and 900 are equally common, and the
+        // leg with the latest arrival, Nov 9, decides.
+        try await row("c, a tie", remove: [20261116], set: [20261102: 1500])
+    }
+
+    func testLEGTIME_NewLegsFallBackToTheStoredLegsWhenNoUnstoredLegHasATime() async throws {
+        let (store, s, box) = await offlineFilledStandup(seconds: 900)
+        for day in [20261102, 20261109, 20261116] { storeCopy(store, s, day: day) }
+        setTravelSeconds(store, s, days: [20261102], 900)
+        setTravelSeconds(store, s, days: [20261109, 20261116], 1200)
+        box.seconds = 777
+        moveToNov9(store)
+        let lookups = store.drvTravelLookupCount
+
+        await store.fillSeriesLegs()
+
+        let (out, back) = try legPair(store, s, 20261123)
+        XCTAssertEqual(out.travelSeconds, 1200, "the most common time of the stored legs")
+        XCTAssertEqual(back.travelSeconds, 1200)
+        XCTAssertEqual(store.drvTravelLookupCount, lookups)
+    }
 }
