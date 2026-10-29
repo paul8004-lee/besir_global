@@ -64,6 +64,15 @@ final class RepeatSeriesStoreTests: XCTestCase {
         return [UInt8((v >> 24) & 0xff), UInt8((v >> 16) & 0xff), UInt8((v >> 8) & 0xff), UInt8(v & 0xff)]
     }
 
+    /// Two encodes of the same value do not always list the keys in the same order, so "the same bytes" is checked as the
+    /// same byte count and the same JSON value: an added, dropped or changed field still fails.
+    private func sameJSON(_ a: Data?, _ b: Data?) -> Bool {
+        guard let a, let b, a.count == b.count,
+              let x = try? JSONSerialization.jsonObject(with: a) as? NSArray,
+              let y = try? JSONSerialization.jsonObject(with: b) as? NSArray else { return false }
+        return x.isEqual(y)
+    }
+
     private func idBytes(_ id: UUID) -> [UInt8] { withUnsafeBytes(of: id.uuid) { Array($0) } }
 
     private func assertSameRule(_ a: RecurrenceRule, _ b: RecurrenceRule, _ label: String,
@@ -131,8 +140,8 @@ final class RepeatSeriesStoreTests: XCTestCase {
         store.deleteActivities([dummy])
         store.save()
         XCTAssertNotNil(bytes("series.json"))
-        XCTAssertEqual(bytes("activities.json"), controlActivities, "activities.json must not change because a series exists")
-        XCTAssertEqual(bytes("events.json"), controlEvents, "events.json must not change because a series exists")
+        XCTAssertTrue(sameJSON(bytes("activities.json"), controlActivities), "activities.json must not change because a series exists")
+        XCTAssertTrue(sameJSON(bytes("events.json"), controlEvents), "events.json must not change because a series exists")
 
         // Row 1: a new store on the same directory loads the series with every field equal.
         let reloaded = relaunched()
@@ -177,7 +186,14 @@ final class RepeatSeriesStoreTests: XCTestCase {
                                            lunarCalendar: RecurrenceRule.lunarIdentifier(osMajorVersion: 26))
         XCTAssertEqual(before.count, 1)
         XCTAssertEqual(before.map { cal.startOfDay(for: $0) }, expected.map { cal.startOfDay(for: $0) })
-        XCTAssertEqual(before.first.map { Store.dayKey($0, calendar: cal) }, 20270206, "Lunar New Year 2027 is Feb 6")
+        // The Korean new moon of Feb 2027 falls just after midnight in Seoul and just before it in Beijing, so the
+        // two calendars name different days: the stored choice is what keeps this series on the Korean one.
+        if #available(iOS 26, macOS 26, *) {
+            XCTAssertEqual(before.first.map { Store.dayKey($0, calendar: cal) }, 20270207, "dangi: Feb 7")
+            var chinese = series
+            chinese.lunarCalendar = .chinese
+            XCTAssertEqual(chinese.occurrences(in: interval).first.map { Store.dayKey($0.startDate, calendar: cal) }, 20270206, "chinese: Feb 6")
+        }
 
         let data = try JSONEncoder().encode(series)
         let decoded = try JSONDecoder().decode(RepeatSeries.self, from: data)

@@ -12,6 +12,9 @@ final class Store: ObservableObject {
     @Published var favorites: [FavoritePlace] = []
     /// 이동이 아닌 체류형 활동(수업·근무·점심 등) 시간표 블록.
     @Published var activities: [ActivityBlock] = [] { didSet { recomputeDaysWithSchedule() } }
+    /// Repeating activities stored as their rule (SPEC-RECURRULE-001). Occurrences are computed when drawn, never stored.
+    /// Changing the list clears the month cache of occurrence titles.
+    @Published private(set) var series: [RepeatSeries] = [] { didSet { seriesMonthCache = [:] } }
     /// 식사 기록(be full sir). 시간표에 그리는 블록이 아니라 "무엇을 먹었나"의 이력이라
     /// daysWithSchedule에는 넣지 않는다 — 식당까지 가는 이동은 별도 ScheduledEvent가 담당한다.
     @Published var meals: [MealLog] = []
@@ -85,6 +88,9 @@ final class Store: ObservableObject {
     private var mealsURL: URL {
         AppConfig.supportDirectory.appendingPathComponent("meals.json")
     }
+    private var seriesURL: URL {
+        AppConfig.supportDirectory.appendingPathComponent("series.json")
+    }
 
     /// 재조회가 따라잡기 알림을 기다리는 일정 id(비저장, REQ-003). 일정 id 키라 한 일정에 많아야
     /// 하나다. rescheduleNearestNotifications 꼬리에서 꺼낸다(REQ-009).
@@ -114,6 +120,7 @@ final class Store: ObservableObject {
         load()
         loadFavorites()
         loadActivities()
+        loadSeries()
         loadMeals()
         // A tap on a departure alert starts the live check of its event (REQ-REPLAN-006).
         notifications.onAlertTap = { [weak self] id in
@@ -773,14 +780,173 @@ final class Store: ObservableObject {
 
     // MARK: - Repeat series (SPEC-RECURRULE-001)
 
-    // Stubs for the red run.
-    @Published private(set) var series: [RepeatSeries] = []
+    /// True while `series.json` exists but could not be decoded. The file is copied to `series.unreadable.json` (or the
+    /// next free numbered name) before any save overwrites it; until then the calendar mirror keeps every link.
     private(set) var seriesLoadFailed = false
-    @discardableResult func saveSeries() -> Bool { true }
-    @discardableResult func addSeries(_ new: RepeatSeries) -> Bool { series.append(new); return true }
-    func series(forOccurrence id: UUID) -> (RepeatSeries, dayKey: Int)? { nil }
-    func activity(id: UUID) -> ActivityBlock? { activities.first { $0.id == id } }
-    func activities(in interval: DateInterval, calendar: Calendar = .current) -> [ActivityBlock] { activities }
+    /// Occurrence titles of the visible months, keyed by "<time-zone id>/<yyyyMM>"; cleared whenever `series` changes.
+    private var seriesMonthCache: [String: [Int: [(id: UUID, title: String)]]] = [:]
+
+    private func loadSeries() {
+        guard FileManager.default.fileExists(atPath: seriesURL.path) else { return }
+        guard let decoded: [RepeatSeries] = loadDataFile(seriesURL) else {
+            seriesLoadFailed = true
+            return
+        }
+        series = decoded
+        repairSkippedDaysOfStoredOccurrences()
+    }
+
+    /// A materialized occurrence is saved as a stored activity first and as a skipped day second. If the app died between
+    /// the two saves, a stored activity has the id of an occurrence that is not skipped, and deleting the copy would let
+    /// the computed occurrence come back. Add the day here and save once.
+    private func repairSkippedDaysOfStoredOccurrences() {
+        var repaired = series
+        var changed = false
+        for stored in activities {
+            guard let (owner, dayKey) = series(forOccurrence: stored.id),
+                  let index = repaired.firstIndex(where: { $0.id == owner.id }),
+                  !repaired[index].skippedDayKeys.contains(dayKey) else { continue }
+            repaired[index].skippedDayKeys.append(dayKey)
+            changed = true
+        }
+        guard changed else { return }
+        series = repaired
+        saveSeries()
+    }
+
+    /// Writes `series.json`. When the file was unreadable at load, its bytes are first copied to `series.unreadable.json`
+    /// (`-2` to `-9` when that name is taken). If no copy can be made nothing is written, the flag stays, and the result
+    /// is false. Internal so a test can call it; the writers of the app go through `addSeries`.
+    @discardableResult
+    func saveSeries() -> Bool {
+        try? FileManager.default.createDirectory(at: AppConfig.supportDirectory, withIntermediateDirectories: true)
+        if seriesLoadFailed, !copyUnreadableSeriesFile() { return false }
+        guard let data = try? JSONEncoder().encode(series),
+              (try? data.write(to: seriesURL, options: .atomic)) != nil else { return false }
+        seriesLoadFailed = false
+        return true
+    }
+
+    private func copyUnreadableSeriesFile() -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: seriesURL.path) else { return true }
+        for n in 1...9 {
+            let name = n == 1 ? "series.unreadable.json" : "series.unreadable-\(n).json"
+            let target = AppConfig.supportDirectory.appendingPathComponent(name)
+            if fm.fileExists(atPath: target.path) { continue }
+            return (try? fm.copyItem(at: seriesURL, to: target)) != nil
+        }
+        return false
+    }
+
+    /// Adds a series and saves it. When the file cannot be written the series is taken out of memory again and the
+    /// result is false.
+    @discardableResult
+    func addSeries(_ new: RepeatSeries) -> Bool {
+        series.append(new)
+        guard saveSeries() else {
+            series.removeAll { $0.id == new.id }
+            return false
+        }
+        return true
+    }
+
+    /// The series an occurrence id belongs to and the day it names. Syntax and range only: the id must decode, carry the
+    /// prefix of an existing series, and name a day between that series' first and last day. It does not ask the rule
+    /// whether the day is an occurrence (a valid Tuesday of a Monday rule passes); `activity(id:)` does.
+    // @MX:ANCHOR: the one place an id is read back to (series, day). The resolver, delete and edit of a computed
+    // occurrence, the leg owner lookup and the calendar mirror's `retains` all start here; accepting an id it should
+    // refuse would let a random UUID act on a series.
+    func series(forOccurrence id: UUID) -> (RepeatSeries, dayKey: Int)? {
+        guard let decoded = RepeatSeries.decode(id),
+              let owner = series.first(where: { $0.owns(decoded) }),
+              decoded.dayKey >= owner.firstDayKey,
+              owner.lastDayKey.map({ decoded.dayKey <= $0 }) ?? true else { return nil }
+        return (owner, decoded.dayKey)
+    }
+
+    /// The activity with an id: the stored one if there is one, else the computed occurrence. A computed occurrence needs
+    /// an existing series, a day in its range that the rule produces, and a day that is not skipped.
+    // @MX:ANCHOR: the one resolver of an activity id. Agent lookups, the detail screen, leg owners and the stale check
+    // call it; a stored copy must win over the computed occurrence of the same id so a materialized edit is what is seen.
+    func activity(id: UUID, calendar: Calendar = .current) -> ActivityBlock? {
+        if let stored = activities.first(where: { $0.id == id }) { return stored }
+        guard let (owner, dayKey) = series(forOccurrence: id), !owner.skippedDayKeys.contains(dayKey),
+              let day = RepeatSeries.date(forDayKey: dayKey, calendar: calendar),
+              let interval = calendar.dateInterval(of: .day, for: day) else { return nil }
+        return owner.occurrences(in: interval, calendar: calendar).first { $0.id == id }
+    }
+
+    /// Stored activities that overlap `interval`, plus the series occurrences that do, with a stored activity winning
+    /// over an occurrence of the same id. Sorted by start, then by id string. A broken stored record (end not after
+    /// start) counts on its start day, as the day list has always done.
+    func activities(in interval: DateInterval, calendar: Calendar = .current) -> [ActivityBlock] {
+        let stored = activities.filter { a in
+            guard a.endDate > a.startDate else { return a.startDate >= interval.start && a.startDate < interval.end }
+            return a.startDate < interval.end && a.endDate > interval.start
+        }
+        return Self.sortedByStart(stored + computedOccurrences(in: interval, calendar: calendar))
+    }
+
+    /// The day list of one day: what `ContentView.activities(on:)` showed (a stored activity listed by `overlapsDay`, a
+    /// broken record on its start day), plus the series occurrences of the day.
+    func activities(on day: Date, calendar: Calendar = .current) -> [ActivityBlock] {
+        let stored = activities.filter { a in
+            guard a.endDate > a.startDate else { return calendar.isDate(a.startDate, inSameDayAs: day) }
+            return Self.overlapsDay(start: a.startDate, end: a.endDate, day: day, calendar: calendar)
+        }
+        guard let interval = calendar.dateInterval(of: .day, for: day) else { return Self.sortedByStart(stored) }
+        return Self.sortedByStart(stored + computedOccurrences(in: interval, calendar: calendar))
+    }
+
+    /// The occurrences of every series inside `interval`, without the ones whose id is also a stored activity's id.
+    private func computedOccurrences(in interval: DateInterval, calendar: Calendar) -> [ActivityBlock] {
+        guard !series.isEmpty else { return [] }
+        let storedIDs = Set(activities.map { $0.id })
+        return series.flatMap { $0.occurrences(in: interval, calendar: calendar) }.filter { !storedIDs.contains($0.id) }
+    }
+
+    private static func sortedByStart(_ list: [ActivityBlock]) -> [ActivityBlock] {
+        list.sorted { ($0.startDate, $0.id.uuidString) < ($1.startDate, $1.id.uuidString) }
+    }
+
+    /// The occurrence titles of the month that contains `day`, by day key. Built on the first request for a month and kept
+    /// until a series changes.
+    private func seriesTitles(inMonthOf day: Date, calendar: Calendar) -> [Int: [(id: UUID, title: String)]] {
+        guard !series.isEmpty else { return [:] }
+        let c = calendar.dateComponents([.year, .month], from: day)
+        let cacheKey = "\(calendar.timeZone.identifier)/\(String(format: "%04d%02d", c.year ?? 0, c.month ?? 0))"
+        if let cached = seriesMonthCache[cacheKey] { return cached }
+        var byDay: [Int: [(id: UUID, title: String)]] = [:]
+        if let month = calendar.dateInterval(of: .month, for: day) {
+            let blocks = Self.sortedByStart(series.flatMap { $0.occurrences(in: month, calendar: calendar) })
+            for block in blocks {
+                // The same day rule as the stored titles: the days the block overlaps, its start day when it is broken.
+                let keys = block.endDate > block.startDate
+                    ? Self.dayKeys(start: block.startDate, end: block.endDate, calendar: calendar)
+                    : [Self.dayKey(block.startDate, calendar: calendar)]
+                for key in keys { byDay[key, default: []].append((id: block.id, title: block.title)) }
+            }
+        }
+        seriesMonthCache[cacheKey] = byDay
+        return byDay
+    }
+
+    /// Titles for a month-grid cell: the stored activities' titles, then the series occurrences' (a series entry whose id
+    /// is also in the stored entry is dropped, stored wins).
+    func scheduleTitles(on day: Date, calendar: Calendar = .current) -> [(id: UUID, title: String)] {
+        let key = Self.dayKey(day, calendar: calendar)
+        let stored = daysWithActivityTitles[key] ?? []
+        let fromSeries = seriesTitles(inMonthOf: day, calendar: calendar)[key] ?? []
+        let storedIDs = Set(stored.map { $0.id })
+        return stored + fromSeries.filter { !storedIDs.contains($0.id) }
+    }
+
+    /// Whether a day shows a dot: the stored cache says so, or a series has an occurrence on it.
+    func hasSchedule(on day: Date, calendar: Calendar = .current) -> Bool {
+        let key = Self.dayKey(day, calendar: calendar)
+        return daysWithSchedule.contains(key) || !(seriesTitles(inMonthOf: day, calendar: calendar)[key] ?? []).isEmpty
+    }
 
     // MARK: - 식사 기록(be full sir)
 
@@ -2635,6 +2801,9 @@ final class Store: ObservableObject {
             meals.removeAll()
             saveMeals()
         }
+        // The repeats go too. Backups of an unreadable series file (`series.unreadable*.json`) are left alone.
+        series = []
+        saveSeries()
     }
 
     // MARK: - 설정
