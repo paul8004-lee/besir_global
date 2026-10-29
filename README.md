@@ -96,6 +96,7 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **Brief README lines** — each line here is now a short index entry; card details move to issues and pull requests — [#5](https://github.com/paul8004-lee/besir_global/pull/5)
 - **Issue and pull request templates** — one card template for issues and one for pull requests, so every card reads the same — [#8](https://github.com/paul8004-lee/besir_global/pull/8)
 - **Calendar not read, said so** — when Plan my day cannot read the calendar, the agent is told so and says its plan was not compared with the calendar, instead of calling the day clear — [#10](https://github.com/paul8004-lee/besir_global/pull/10)
+- **Route line on the Google map** — a travel leg's map now draws the real route from Google Routes between the two pins, for car, walk, bicycle and transit, in light and dark — [#27](https://github.com/paul8004-lee/besir_global/pull/27)
 
 Some baseline files are edited in place, only for two reasons: the English localization of the app UI, and the split of the app and App Group identifiers from the earlier app. Both are listed as lines above when they land. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
@@ -105,3 +106,4 @@ Some baseline files are edited in place, only for two reasons: the English local
 - **be fun sir** — suggest leisure and events that fit the day's schedule
 - **be rich sir** — track spending tied to each plan
 - **More connections** — real partner apps in place of the simulated reservation partner, and outgoing records to budget and health apps (Apple Health, Plaid, Ticketmaster and others), each one confirmed by the user
+- **besir memory** — remembers the user's choices over time and shows recommendations that fit them; the user always makes the choice and besir never picks for them, so the app grows to fit each user
