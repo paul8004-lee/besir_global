@@ -1587,12 +1587,12 @@ final class Store: ObservableObject {
 
     /// Adds a leg to the whole series (REQ-016). It is the second way legs are made (the fill is the first; a single
     /// occurrence goes through addLeg). The target set is the targetActivityIds taken when the dialog opened (the preview's
-    /// eligibleIds), taken as they are. 같은 저장 안 순서(P-12): ② 형제에 이동 추가 → ③ 편집 회차도
-    /// 이동을 받는다(editedDetaches면 번호 없이) → ④ 편집 회차의 빠짐이 맨 끝. 조회는 첫 회차만
-    /// 하고 나머지는 복사하며(REQ-005) 저장·재예약은 activities·events 각 한 번이다. 캘린더 동의는
-    /// 회차마다 그 활동의 wantsCalendarSync를 따른다(addLeg와 같은 규칙 — autoAddToCalendar는
-    /// 동의가 아니라 자동 등록 설정이다). "이 일정만" 추가는 이 함수를 거치지 않는다 — addLeg 하나로
-    /// 끝난다(만든 구간은 번호 없고 addLeg 안의 빠짐이 그 회차를 뗀다).
+    /// eligibleIds), taken as they are. The order inside the save (P-12): 2. the siblings get the leg, 3. the edited
+    /// occurrence gets it too (without a number when editedDetaches), 4. the edited occurrence leaves the series last.
+    /// Only the first occurrence is looked up and the rest copy it (REQ-005), and activities and events are each saved
+    /// once, with one reschedule. Calendar consent follows each activity's wantsCalendarSync (the same rule as addLeg;
+    /// autoAddToCalendar is a setting for automatic adding, not consent). "This event only" does not come through here: addLeg
+    /// does it alone (the leg it makes has no number, and the detach inside addLeg takes that occurrence out).
     @discardableResult
     func addLegToSeries(editedActivityId: UUID,
                         seriesId: UUID,
