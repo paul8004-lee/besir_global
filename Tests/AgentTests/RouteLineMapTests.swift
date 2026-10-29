@@ -125,7 +125,7 @@ final class RouteLineMapTests: XCTestCase {
             return low + Double(state >> 11) / Double(1 << 53) * (high - low)
         }
         var violations = 0
-        for route in 0..<50 {
+        for _ in 0..<50 {
             state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
             let count = 2 + Int((state >> 33) % 39)
             let path = (0..<count).map { _ in point(next(-90, 90), next(-180, 180)) }
