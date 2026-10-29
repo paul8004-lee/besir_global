@@ -199,6 +199,48 @@
   },
   {
     "type": "function",
+    "name": "get_delivery_options",
+    "description": "Look up what a simulated delivery app offers: its items with estimated prices, its delivery fee and the cards it holds. The delivery app is simulated, not a real one: always call the result simulated. Call it before order_delivery. Takes no arguments.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "order_delivery",
+    "description": "Order food delivery from a restaurant found with search_places, in a simulated delivery app, with items and a card taken from get_delivery_options. The delivery app is simulated, not a real one: always call the result simulated. items is written as item_id:quantity pairs separated by commas, such as ramen:2,gyoza:1. Ask the user for the arrival time, the items and the card if they have not said. deliver_to is a place_id from search_places, set only when the user named a place to deliver to and left out otherwise; the app may then suggest a place from the schedule. Never write an address. The user confirms before anything is sent.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "place_id": {
+          "type": "string",
+          "description": "The restaurant: a place_id returned by search_places."
+        },
+        "arrive_at": {
+          "type": "string",
+          "description": "When the food is to arrive, as a local date-time, YYYY-MM-DDTHH:MM. Ask the user if they have not said."
+        },
+        "items": {
+          "type": "string",
+          "description": "What to order: item_id:quantity pairs separated by commas with no spaces, 1 to 6 pairs, each quantity 1 to 9, such as ramen:2,gyoza:1. Use item_id values from get_delivery_options. Ask the user if they have not said."
+        },
+        "card_id": {
+          "type": "string",
+          "description": "The card to pay with: a card_id from get_delivery_options. Ask the user if they have not said."
+        },
+        "deliver_to": {
+          "type": "string",
+          "description": "Optional. A place_id returned by search_places, set only when the user named a place to deliver to. Leave it out otherwise."
+        }
+      },
+      "required": ["place_id", "arrive_at", "items", "card_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
     "name": "request_booking",
     "description": "Ask a simulated table-booking partner for a table at a place found with search_places. The booking is simulated, not a real reservation: always call the result simulated. The user confirms before anything is sent.",
     "parameters": {

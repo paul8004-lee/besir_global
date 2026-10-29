@@ -164,10 +164,10 @@ final class AgentBookingToolTests: XCTestCase {
 
     func testBOOKING_G01_SevenDeclarationsTheOldOnesUnchangedAndTheNewOneStrict() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 11)
+        XCTAssertEqual(decls.count, 13)
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 11)
+        XCTAssertEqual(recorded.count, 13)
         for index in 0..<6 {
             XCTAssertTrue((decls[index] as AnyObject).isEqual(recorded[index]), "declaration \(index) changed")
         }
