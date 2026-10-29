@@ -1499,9 +1499,10 @@ final class AgentToolbox {
                 createdAt: now(), mealActivityID: mealID))
             let budget = await sendOrderTotal(order, totalCents: totalCents, flow: flow)
             let fields = AgentDelivery.appliedFields(
-                orderID: orderID, restaurant: order.placeName, arrival: order.request.arriveAt, items: order.items,
-                address: order.request.address, cardLabel: order.cardLabel, totalCents: totalCents, meal: meal, budget: budget)
-            return (AgentResolution(result: Self.encode(fields), notice: budget.notice(totalCents: totalCents)), .confirmed)
+                orderID: orderID, restaurant: order.placeName, items: order.items, address: order.request.address,
+                cardLabel: order.cardLabel, results: results, meal: meal, budget: budget)
+            let notice = budget.notice(moneyName: results.moneyName ?? "", totalCents: totalCents)
+            return (AgentResolution(result: Self.encode(fields), notice: notice), .confirmed)
         }
     }
 

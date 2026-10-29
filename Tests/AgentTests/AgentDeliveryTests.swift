@@ -37,7 +37,13 @@ final class AgentDeliveryTests: XCTestCase {
                        isWithin: within, includesEstimate: estimate)
     }
 
-    // MARK: H01-H05
+    /// The three items the Worker sends for a confirmed order at 19:40 of a 40-dollar order.
+    private static let threeResults: [PartnerResultItem] = [
+        PartnerResultItem(name: "Arrival", value: .time("2026-11-03T19:40")),
+        PartnerResultItem(name: "Estimated total", value: .money(4000)),
+        PartnerResultItem(name: "Status", value: .text("Preparing"))]
+
+    // MARK: H01-H06
 
     func testH01_ParseItemsTakesOnlyStrictPairsOfAnIdAndOneDigit() {
         XCTAssertEqual(AgentDelivery.parseItems("ramen:2,gyoza:1"),
@@ -180,9 +186,12 @@ final class AgentDeliveryTests: XCTestCase {
     }
 
     func testH05_FixedTextsAndBuildersAreEnglishFactualAndBuiltFromThePartnerConstants() throws {
-        XCTAssertEqual(AgentDelivery.controlLabels, ["Delivery place", "Add to schedule", "Meal title", "Start"])
-        XCTAssertEqual([AgentDelivery.deliveryPlaceLabel, AgentDelivery.mealSwitchLabel, AgentDelivery.mealTitleLabel, AgentDelivery.mealStartLabel],
-                       AgentDelivery.controlLabels)
+        // The fixed words of the card that are the app's own: the header, the meal row labels and the two chips of the meal switch.
+        XCTAssertEqual([AgentDelivery.cardHeader, AgentDelivery.mealSwitchLabel, AgentDelivery.mealTitleLabel, AgentDelivery.mealStartLabel],
+                       ["Order delivery", "Add to schedule", "Meal title", "Start"])
+        XCTAssertEqual([AgentDelivery.mealOnWord, AgentDelivery.mealOffWord], ["Add", "Don't Add"])
+        XCTAssertEqual([AgentDelivery.mealSwitchKey, AgentDelivery.mealTitleKey, AgentDelivery.mealStartKey],
+                       ["meal", "meal_title", "meal_start"])
         XCTAssertEqual(AgentDelivery.partnerLine, "\(DeliveryClient.partnerName) - Simulated")
 
         let options = DeliveryOptions(
@@ -207,18 +216,19 @@ final class AgentDeliveryTests: XCTestCase {
         let recorded = AgentDelivery.BudgetHandOff.recorded(standing: standing(left: 16000), week: "this week")
         let meal = AgentDelivery.AppliedMeal.added(id: "ID-1", title: "Dinner (Simulated)", start: "2026-11-03T19:40", end: "2026-11-03T20:40")
         func applied(meal: AgentDelivery.AppliedMeal?, budget: AgentDelivery.BudgetHandOff) -> [String: Any] {
-            AgentDelivery.appliedFields(orderID: "DL-AB12CD", restaurant: "Test Cafe", arrival: "2026-11-03T19:40",
+            AgentDelivery.appliedFields(orderID: "DL-AB12CD", restaurant: "Test Cafe",
                                         items: [(name: "Ramen", quantity: 2), (name: "Gyoza", quantity: 1)], address: "12 Example Street",
-                                        cardLabel: "Example Debit \u{2022}\u{2022}4242 (Simulated)", totalCents: 4000, meal: meal, budget: budget)
+                                        cardLabel: "Example Debit \u{2022}\u{2022}4242 (Simulated)", results: Self.threeResults,
+                                        meal: meal, budget: budget)
         }
         let withMeal = applied(meal: meal, budget: recorded)
-        XCTAssertEqual(Set(withMeal.keys), ["status", "partner", "simulated", "order_id", "restaurant", "arrival_estimate", "items", "address",
-                                            "card", "estimated_total", "estimate", "message", "meal", "budget"])
+        XCTAssertEqual(Set(withMeal.keys), ["status", "partner", "simulated", "order_id", "restaurant", "items", "address",
+                                            "card", "results", "message", "meal", "budget"])
         XCTAssertEqual(withMeal["status"] as? String, "applied")
         XCTAssertEqual(withMeal["partner"] as? String, DeliveryClient.partnerName)
         XCTAssertEqual(withMeal["simulated"] as? Bool, true)
-        XCTAssertEqual(withMeal["estimate"] as? Bool, true)
-        XCTAssertEqual(withMeal["estimated_total"] as? String, "$40.00")
+        let resultList = try XCTUnwrap(withMeal["results"] as? [[String: Any]])
+        XCTAssertEqual(resultList.count, 3)
         XCTAssertEqual(withMeal["address"] as? String, "12 Example Street")
         XCTAssertEqual(withMeal["card"] as? String, "Example Debit \u{2022}\u{2022}4242 (Simulated)")
         XCTAssertEqual((withMeal["items"] as? [[String: Any]])?.map { Set($0.keys) }, [["name", "quantity"], ["name", "quantity"]])
@@ -253,20 +263,23 @@ final class AgentDeliveryTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(none["message"] as? String).contains(AgentDelivery.mealAddedSentence))
 
         // The notice: within, over and in the next week, built from the Budget partner label.
-        XCTAssertEqual(AgentDelivery.BudgetHandOff.recorded(standing: standing(left: 16000), week: "this week").notice(totalCents: 4000),
+        XCTAssertEqual(AgentDelivery.BudgetHandOff.recorded(standing: standing(left: 16000), week: "this week").notice(moneyName: "Estimated total", totalCents: 4000),
                        "Estimated total $40.00 sent to Example Budget (Simulated): $160.00 left this week.")
-        XCTAssertEqual(AgentDelivery.BudgetHandOff.recorded(standing: standing(left: -2500, within: false), week: "this week").notice(totalCents: 4000),
+        XCTAssertEqual(AgentDelivery.BudgetHandOff.recorded(standing: standing(left: -2500, within: false), week: "this week").notice(moneyName: "Estimated total", totalCents: 4000),
                        "Estimated total $40.00 sent to Example Budget (Simulated): $25.00 over the budget this week.")
-        XCTAssertEqual(AgentDelivery.BudgetHandOff.recorded(standing: standing(left: 16000), week: "week of Nov 2").notice(totalCents: 4000),
+        XCTAssertEqual(AgentDelivery.BudgetHandOff.recorded(standing: standing(left: 16000), week: "week of Nov 2").notice(moneyName: "Estimated total", totalCents: 4000),
                        "Estimated total $40.00 sent to Example Budget (Simulated): $160.00 left for the week of Nov 2.")
-        XCTAssertEqual(AgentDelivery.BudgetHandOff.recorded(standing: standing(left: -2500, within: false), week: "week of Nov 2").notice(totalCents: 4000),
+        XCTAssertEqual(AgentDelivery.BudgetHandOff.recorded(standing: standing(left: -2500, within: false), week: "week of Nov 2").notice(moneyName: "Estimated total", totalCents: 4000),
                        "Estimated total $40.00 sent to Example Budget (Simulated): $25.00 over the budget for the week of Nov 2.")
-        XCTAssertEqual(AgentDelivery.budgetNotice(totalCents: 35600, standing: standing(left: -15600, within: false), week: "this week"),
+        XCTAssertEqual(AgentDelivery.budgetNotice(moneyName: "Estimated total", totalCents: 35600, standing: standing(left: -15600, within: false), week: "this week"),
                        "Estimated total $356.00 sent to Example Budget (Simulated): $156.00 over the budget this week.")
-        XCTAssertEqual(AgentDelivery.BudgetHandOff.unavailable(notify: true).notice(totalCents: 4000),
+        // The notice names the amount with the partner's own word for the money item, not a fixed label.
+        XCTAssertEqual(AgentDelivery.BudgetHandOff.recorded(standing: standing(left: 16000), week: "this week").notice(moneyName: "Order total", totalCents: 4000),
+                       "Order total $40.00 sent to Example Budget (Simulated): $160.00 left this week.")
+        XCTAssertEqual(AgentDelivery.BudgetHandOff.unavailable(notify: true).notice(moneyName: "Estimated total", totalCents: 4000),
                        "The estimated total could not be sent to \(BudgetClient.partnerName) (Simulated).")
         XCTAssertEqual(AgentDelivery.budgetFailureNotice, "The estimated total could not be sent to Example Budget (Simulated).")
-        XCTAssertNil(AgentDelivery.BudgetHandOff.unavailable(notify: false).notice(totalCents: 4000))
+        XCTAssertNil(AgentDelivery.BudgetHandOff.unavailable(notify: false).notice(moneyName: "Estimated total", totalCents: 4000))
 
         // Every fixed text: English, no Hangul, none of the words of REQ-DELIVERY-015.
         var texts: [String] = [
@@ -275,10 +288,11 @@ final class AgentDeliveryTests: XCTestCase {
             AgentDelivery.unavailableMessage, AgentDelivery.unavailableNotice, AgentDelivery.editRejectedMessage,
             AgentDelivery.budgetRecordedSentence, AgentDelivery.budgetUnavailableSentence, AgentDelivery.budgetFailureNotice,
             AgentDelivery.partnerLine, message, missedMessage, AgentDelivery.estimatedTotalLine(cents: 4000)]
-        texts += AgentDelivery.controlLabels
-        texts += AgentDelivery.cardLines(placeName: "P", arrives: "A", items: [(name: "Ramen", quantity: 1)], deliveryText: "T",
-                                         deliveryIsSuggested: true, cardLabel: "C", totalCents: 1900,
-                                         meal: AgentDelivery.CardMeal(title: "Dinner (Simulated)", time: "7:40 PM", isSuggested: true))
+        texts += [AgentDelivery.cardHeader, AgentDelivery.mealSwitchLabel, AgentDelivery.mealTitleLabel, AgentDelivery.mealStartLabel,
+                  AgentDelivery.mealOnWord, AgentDelivery.mealOffWord]
+        // The result items as the model reads them: every name and value is a fact in plain English.
+        for item in resultList { texts += item.values.compactMap { $0 as? String } }
+        XCTAssertTrue(message.contains("each result item as a fact"), message)
         for text in texts {
             XCTAssertFalse(text.isEmpty)
             XCTAssertFalse(hasHangul(text), text)
@@ -300,5 +314,36 @@ final class AgentDeliveryTests: XCTestCase {
                       AgentDelivery.declinedMessage)
         XCTAssertTrue(AgentDelivery.declinedMessage.contains("nothing was ordered"), AgentDelivery.declinedMessage)
         XCTAssertTrue(AgentDelivery.mealTitle(arrivalMinute: 1180).contains("Simulated"))
+    }
+
+    func testH06_AppliedFieldsWriteTheResultItemsByKindAndNoneOfTheOldEstimateKeys() throws {
+        let budget = AgentDelivery.BudgetHandOff.recorded(standing: standing(left: 16000), week: "this week")
+        func fields(_ results: [PartnerResultItem]) -> [String: Any] {
+            AgentDelivery.appliedFields(orderID: "DL-AB12CD", restaurant: "Test Cafe", items: [(name: "Ramen", quantity: 2)],
+                                        address: "12 Example Street", cardLabel: "Example Debit", results: results, meal: nil, budget: budget)
+        }
+        // The Worker's three items: a time written as text, money as dollars, a text as it is. A skeleton that still writes the
+        // old keys has no `results` array, so this fails first.
+        let applied = fields(Self.threeResults)
+        let list = try XCTUnwrap(applied["results"] as? [[String: Any]])
+        XCTAssertEqual(list.count, 3)
+        XCTAssertEqual(list.map { Set($0.keys) }, Array(repeating: ["name", "kind", "value"], count: 3))
+        XCTAssertEqual(list.compactMap { $0["name"] as? String }, ["Arrival", "Estimated total", "Status"])
+        XCTAssertEqual(list.compactMap { $0["kind"] as? String }, ["time", "money", "text"])
+        XCTAssertEqual(list.compactMap { $0["value"] as? String }, ["2026-11-03T19:40", "$40.00", "Preparing"])
+        // None of the old keys, and the keys that stay.
+        for old in ["arrival_estimate", "estimated_total", "estimate", "estimated_total_cents"] {
+            XCTAssertNil(applied[old], old)
+        }
+        XCTAssertEqual(Set(applied.keys), ["status", "partner", "simulated", "order_id", "restaurant", "items", "address", "card",
+                                           "results", "message", "budget"])
+        // Any number of text items, in the partner's order; a money item is dollars whatever its name.
+        let more = fields([PartnerResultItem(name: "Order total", value: .money(905)),
+                           PartnerResultItem(name: "Driver note", value: .text("Ring the bell")),
+                           PartnerResultItem(name: "Status", value: .text("Preparing"))])
+        let moreList = try XCTUnwrap(more["results"] as? [[String: Any]])
+        XCTAssertEqual(moreList.compactMap { $0["name"] as? String }, ["Order total", "Driver note", "Status"])
+        XCTAssertEqual(moreList.compactMap { $0["kind"] as? String }, ["money", "text", "text"])
+        XCTAssertEqual(moreList.compactMap { $0["value"] as? String }, ["$9.05", "Ring the bell", "Preparing"])
     }
 }

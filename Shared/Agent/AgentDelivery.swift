@@ -232,11 +232,11 @@ enum AgentDelivery {
             }
         }
 
-        /// The one notice line of the order, or nil.
-        func notice(totalCents: Int) -> String? {
+        /// The one notice line of the order, or nil. `moneyName` is the name of the partner's money item.
+        func notice(moneyName: String, totalCents: Int) -> String? {
             switch self {
             case .recorded(let standing, let week):
-                return AgentDelivery.budgetNotice(totalCents: totalCents, standing: standing, week: week)
+                return AgentDelivery.budgetNotice(moneyName: moneyName, totalCents: totalCents, standing: standing, week: week)
             case .unavailable(let notify):
                 return notify ? AgentDelivery.budgetFailureNotice : nil
             }
@@ -245,7 +245,7 @@ enum AgentDelivery {
 
     /// `Estimated total $40.00 sent to Example Budget (Simulated): $160.00 left this week.` or, over, `$25.00 over the budget
     /// for the week of Nov 2.`
-    static func budgetNotice(totalCents: Int, standing: BudgetStanding, week: String) -> String {
+    static func budgetNotice(moneyName: String, totalCents: Int, standing: BudgetStanding, week: String) -> String {
         let fields = AgentBudget.standingFields(standing)
         let standingText: String
         if let left = fields["left"] as? String {
@@ -258,17 +258,17 @@ enum AgentDelivery {
 
     /// The fields of the `applied` result. `meal` is nil when the entry was off at Confirm; the message carries the meal
     /// sentence only when the entry was on.
-    static func appliedFields(orderID: String, restaurant: String, arrival: String, items: [(name: String, quantity: Int)],
-                              address: String, cardLabel: String, totalCents: Int, meal: AppliedMeal?,
+    static func appliedFields(orderID: String, restaurant: String, items: [(name: String, quantity: Int)],
+                              address: String, cardLabel: String, results: [PartnerResultItem], meal: AppliedMeal?,
                               budget: BudgetHandOff) -> [String: Any] {
         var message = appliedMessage
         if let meal { message += " " + meal.sentence }
         message += " " + budget.sentence
         var object: [String: Any] = [
             "status": "applied", "partner": DeliveryClient.partnerName, "simulated": true, "order_id": orderID,
-            "restaurant": restaurant, "arrival_estimate": arrival,
+            "restaurant": restaurant, "arrival_estimate": results.arrival ?? "",
             "items": items.map { ["name": $0.name, "quantity": $0.quantity] as [String: Any] }, "address": address,
-            "card": cardLabel, "estimated_total": AgentBudget.dollars(cents: totalCents), "estimate": true,
+            "card": cardLabel, "estimated_total": AgentBudget.dollars(cents: results.moneyCents ?? 0), "estimate": true,
             "message": message, "budget": budget.block]
         if let meal { object["meal"] = meal.block }
         return object

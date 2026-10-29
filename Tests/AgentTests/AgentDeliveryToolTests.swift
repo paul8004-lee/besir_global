@@ -26,6 +26,8 @@ final class DeliveryToolPartner {
     var extraResults: [[String: Any]] = []
     /// When set, the `time` item of a confirmed order carries this text instead of the requested arrival.
     var timeItem: String?
+    /// The name the partner gives its money item (the Worker says `Estimated total`).
+    var moneyName = "Estimated total"
 
     private static let menu: [(id: String, name: String)] = [
         ("ramen", "Ramen"), ("gyoza", "Gyoza"), ("curry", "Curry rice"), ("pizza", "Cheese pizza"), ("salad", "Garden salad"),
@@ -83,7 +85,7 @@ final class DeliveryToolPartner {
                 $0 + (prices[$1["item_id"] as? String ?? ""] ?? 0) * ($1["quantity"] as? Int ?? 0)
             }
             let items: [[String: Any]] = [["name": "Arrival", "kind": "time", "value": timeItem ?? arrive],
-                                          ["name": "Estimated total", "kind": "money", "value": total],
+                                          ["name": moneyName, "kind": "money", "value": total],
                                           ["name": "Status", "kind": "text", "value": "Preparing"]]
             answer["results"] = items + extraResults
         } else {
@@ -1044,23 +1046,31 @@ final class AgentDeliveryToolTests: XCTestCase {
         let resolution = try await confirm(card)
         XCTAssertEqual(card.mark, .confirmed)
         let json = try XCTUnwrap(resolution.json)
-        XCTAssertEqual(Set(json.keys), ["status", "partner", "simulated", "order_id", "restaurant", "arrival_estimate", "items", "address",
-                                        "card", "estimated_total", "estimate", "message", "budget", "meal"])
+        // The keys of AC-019: the result items in one `results` array beside the unchanged keys, and none of the old estimate keys.
+        XCTAssertEqual(Set(json.keys), ["status", "partner", "simulated", "order_id", "restaurant", "items", "address",
+                                        "card", "results", "message", "budget", "meal"])
+        for old in ["arrival_estimate", "estimated_total", "estimate", "estimated_total_cents"] {
+            XCTAssertNil(json[old], old)
+        }
         XCTAssertNil(json["people"])
         XCTAssertEqual(json["status"] as? String, "applied")
         XCTAssertEqual(json["partner"] as? String, DeliveryClient.partnerName)
         XCTAssertEqual(json["simulated"] as? Bool, true)
         XCTAssertEqual(json["order_id"] as? String, "DL-AB12CD")
         XCTAssertEqual(json["restaurant"] as? String, "Pasta Palace")
-        XCTAssertEqual(json["arrival_estimate"] as? String, DeliveryToolFixture.arrival)
+        // Every result item is a fact for the model: the time as text, the money through `AgentBudget.dollars`, the text as it is.
+        let results = try XCTUnwrap(json["results"] as? [[String: Any]])
+        XCTAssertEqual(results.count, 3)
+        XCTAssertTrue(results.allSatisfy { Set($0.keys) == ["name", "kind", "value"] })
+        XCTAssertEqual(results.compactMap { $0["name"] as? String }, ["Arrival", "Estimated total", "Status"])
+        XCTAssertEqual(results.compactMap { $0["kind"] as? String }, ["time", "money", "text"])
+        XCTAssertEqual(results.compactMap { $0["value"] as? String }, [DeliveryToolFixture.arrival, "$40.00", "Preparing"])
         let items = try XCTUnwrap(json["items"] as? [[String: Any]])
         XCTAssertEqual(items.compactMap { $0["name"] as? String }, ["Ramen", "Gyoza"])
         XCTAssertEqual(items.compactMap { $0["quantity"] as? Int }, [2, 1])
         XCTAssertTrue(items.allSatisfy { Set($0.keys) == ["name", "quantity"] })
         XCTAssertEqual(json["address"] as? String, "9 Library Road")
         XCTAssertEqual(json["card"] as? String, DeliveryToolPartner.cards[0].label)
-        XCTAssertEqual(json["estimated_total"] as? String, "$40.00")
-        XCTAssertEqual(json["estimate"] as? Bool, true)
         let entry = try XCTUnwrap(mealEntry(rig))
         let meal = try XCTUnwrap(json["meal"] as? [String: Any])
         XCTAssertEqual(Set(meal.keys), ["status", "id", "title", "start", "end"])
@@ -1468,8 +1478,10 @@ final class AgentDeliveryToolTests: XCTestCase {
             XCTAssertTrue(text.contains("(Simulated)") && text.lowercased().contains("estimated total"), text)
         }
         XCTAssertTrue(DeliveryToolPartner.cards.allSatisfy { $0.label.contains("(Simulated)") })
-        XCTAssertEqual(applied.json?["estimated_total"] as? String, "$40.00")
-        XCTAssertEqual(applied.json?["estimate"] as? Bool, true)
+        let appliedResults = try XCTUnwrap(applied.json?["results"] as? [[String: Any]])
+        XCTAssertEqual(appliedResults.compactMap { $0["value"] as? String }, [DeliveryToolFixture.arrival, "$40.00", "Preparing"])
+        XCTAssertNil(applied.json?["estimated_total"])
+        XCTAssertNil(applied.json?["estimate"])
         for resolution in [applied, declinedResolution, failedResolution] {
             XCTAssertEqual(resolution.json?["simulated"] as? Bool, true)
             XCTAssertEqual(resolution.json?["partner"] as? String, DeliveryClient.partnerName)
@@ -1881,6 +1893,13 @@ final class AgentDeliveryToolTests: XCTestCase {
         XCTAssertEqual(resolution.status, "applied")
         XCTAssertEqual(card.mark, .confirmed)
 
+        // The text item is in the reply, in the partner's order beside the other items, and only there.
+        let reply = try XCTUnwrap(resolution.json?["results"] as? [[String: Any]])
+        XCTAssertEqual(reply.compactMap { $0["name"] as? String }, ["Arrival", "Estimated total", "Status", "Driver note"])
+        XCTAssertEqual(reply.compactMap { $0["kind"] as? String }, ["time", "money", "text", "text"])
+        XCTAssertEqual(reply.compactMap { $0["value"] as? String },
+                       [DeliveryToolFixture.arrival, "$40.00", "Preparing", "SENTINEL-NOTE-1"])
+
         // The time item is the arrival; the meal entry starts at the card's Start and lasts 60 minutes.
         let entry = try XCTUnwrap(mealEntry(rig))
         XCTAssertEqual(entry.startDate, start)
@@ -1911,6 +1930,17 @@ final class AgentDeliveryToolTests: XCTestCase {
             XCTAssertFalse(text.isEmpty)
             XCTAssertFalse(text.contains("SENTINEL-NOTE"), text)
         }
+
+        // The notice names the money item with the partner's own word, and the reply states that name.
+        let named = DeliveryToolPartner()
+        named.moneyName = "Order total"
+        let namedRig = makeRig(partner: named)
+        let namedResolution = try await confirm(try await readyCard(namedRig))
+        XCTAssertEqual(namedResolution.status, "applied")
+        XCTAssertEqual(namedResolution.notice, "Order total $40.00 sent to Example Budget (Simulated): $160.00 left this week.")
+        let namedResults = try XCTUnwrap(namedResolution.json?["results"] as? [[String: Any]])
+        XCTAssertEqual(namedResults.compactMap { $0["name"] as? String }, ["Arrival", "Order total", "Status"])
+        XCTAssertEqual(namedRig.budgetPartner.requests.count, 1)
     }
 
     func testO42_UnusableResultsGiveUnavailableAndWriteNothing() async throws {
@@ -1921,6 +1951,7 @@ final class AgentDeliveryToolTests: XCTestCase {
         let goodResolution = try await confirm(goodCard)
         XCTAssertEqual(goodResolution.status, "applied")
         XCTAssertEqual(good.orders.orders.count, 1)
+        XCTAssertEqual((goodResolution.json?["results"] as? [[String: Any]])?.count, 3, "the reply states the three result items")
 
         let defects: [(String, (DeliveryToolPartner) -> Void)] = [
             ("a second money item", { $0.extraResults = [["name": "Tip", "kind": "money", "value": 100]] }),

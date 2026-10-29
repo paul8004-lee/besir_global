@@ -208,6 +208,12 @@ extension Array where Element == PartnerResultItem {
         return nil
     }
 
+    /// The name of the first `money` item (the notice to the budget uses the partner's own word).
+    var moneyName: String? {
+        for item in self { if case .money = item.value { return item.name } }
+        return nil
+    }
+
     /// The text of the first `time` item.
     var arrival: String? {
         for item in self { if case .time(let text) = item.value { return text } }
