@@ -471,7 +471,7 @@ final class AgentSession: ObservableObject {
         isWaiting = false
         lookupCalls = nil
         if output.showsGoogleData { googleDataThisMessage = true }
-        record(calls, firstResult: output.result, notice: nil)
+        record(calls, firstResult: output.result, notice: output.notice)
         startRequest()
     }
 

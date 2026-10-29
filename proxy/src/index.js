@@ -5,9 +5,11 @@
 //   POST /vision  -> Baseten Muse Spark Open: one image in, {title, time, place, confidence} out
 //   POST /snap    -> Baseten Muse Spark Open: one image in, {kind, name, place_type, text, title, time, confidence} out
 //   POST /booking -> simulated table-booking partner (no upstream, no storage)
+//   POST /budget  -> simulated budget partner (no upstream, no storage)
 import { handleVision } from "./vision.js";
 import { handleSnap } from "./snap.js";
 import { handleBooking } from "./booking.js";
+import { handleBudget } from "./budget.js";
 
 const META_RESPONSES_URL = "https://api.meta.ai/v1/responses";
 const PLACES_URL = "https://places.googleapis.com/v1/places:searchText";
@@ -108,6 +110,7 @@ export default {
       case "/vision": return handleVision(request, env, { json });
       case "/snap": return handleSnap(request, env, { json });
       case "/booking": return handleBooking(request, { json });
+      case "/budget": return handleBudget(request, { json });
       default:
         return json(404, { error: "not_found" });
     }

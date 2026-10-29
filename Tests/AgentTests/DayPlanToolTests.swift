@@ -474,7 +474,7 @@ final class DayPlanToolTests: XCTestCase {
         let list = try XCTUnwrap(JSONSerialization.jsonObject(with: AgentTools.declarationsJSON()) as? [[String: Any]])
         let names = list.compactMap { $0["name"] as? String }
         XCTAssertEqual(names, ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places",
-                               "get_travel_time", "check_day_plan", "show_day_plan", "request_booking"])
+                               "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "request_booking"])
         XCTAssertEqual(AgentSession.knownToolNames(), Set(names))
 
         let expected: [String: String] = ["check_day_plan": "stops", "show_day_plan": "plan_id"]
