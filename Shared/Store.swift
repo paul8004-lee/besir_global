@@ -771,6 +771,17 @@ final class Store: ObservableObject {
         activities = decoded
     }
 
+    // MARK: - Repeat series (SPEC-RECURRULE-001)
+
+    // Stubs for the red run.
+    @Published private(set) var series: [RepeatSeries] = []
+    private(set) var seriesLoadFailed = false
+    @discardableResult func saveSeries() -> Bool { true }
+    @discardableResult func addSeries(_ new: RepeatSeries) -> Bool { series.append(new); return true }
+    func series(forOccurrence id: UUID) -> (RepeatSeries, dayKey: Int)? { nil }
+    func activity(id: UUID) -> ActivityBlock? { activities.first { $0.id == id } }
+    func activities(in interval: DateInterval, calendar: Calendar = .current) -> [ActivityBlock] { activities }
+
     // MARK: - 식사 기록(be full sir)
 
     /// 식사 기록을 하나 추가한다. 최신 것이 앞에 오도록 정렬해 "최근 뭘 먹었나"를 바로 볼 수 있게 한다
