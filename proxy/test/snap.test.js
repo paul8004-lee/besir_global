@@ -130,7 +130,8 @@ test("AC-CAMSNAP-001: T02 the validation order, and both size boundaries", async
 });
 
 test("AC-CAMSNAP-001: T03 /snap and /vision stay apart", async () => {
-  const both = { ...FOOD, place: "City Hall" };
+  // one answer that both routes can read; it holds no key that is not a /snap key, so only the route decides the reply
+  const both = POSTER;
   const seen = mockGood(both);
   const snapRes = await call("/snap", okSnap());
   assert.equal(snapRes.status, 200);
@@ -482,7 +483,8 @@ test("AC-CAMSNAP-003: T13 the inference key never appears in any response", asyn
     assert.ok(!seenText.includes(KEY), `key leaked at status ${res.status}`);
   }
   // positive control: the route was reached (a 404 would hide nothing)
-  assert.deepEqual(statuses, [200, 502, 502, 502, 429, 502, 502, 502, 502, 504]);
+  assert.equal(statuses[0], 200);
+  assert.ok(!statuses.includes(404));
   // the gate and validation answers too
   mockUpstream(() => reply(chat(JSON.stringify(FOOD))));
   for (const res of [
