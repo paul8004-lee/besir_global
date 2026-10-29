@@ -50,10 +50,17 @@ final class RecurrenceTextFormTests: XCTestCase {
         XCTAssertNil(note(f))
         XCTAssertTrue(f.card.isReady)
 
+        // Add tapped with the bad text still uncommitted: the card is only waiting for the reading, the commit step
+        // fails it, and after that the card stays locked (the save step runs the same commit and re-checks isReady).
         var bad = makeForm(start: at(2026, 11, 2))
-        commit(&bad, "every Monday please")
+        bad.setTitleText(field: rowId(bad, RecurrenceLine.key), text: "every Monday please")
+        XCTAssertFalse(bad.card.isReady)
+        XCTAssertTrue(bad.card.isReadyAfterRecurrenceCommit)
+        bad.commitRecurrenceByRules()
         XCTAssertNil(bad.activeRecurrence)
         XCTAssertEqual(note(bad), "Couldn't interpret the repeat")
+        XCTAssertFalse(bad.card.isReady)
+        XCTAssertFalse(bad.card.isReadyAfterRecurrenceCommit)
     }
 
     // MARK: AC-007
