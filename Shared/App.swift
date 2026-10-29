@@ -90,6 +90,7 @@ struct BesirApp: App {
                         // 권한은 설정 앱에서 언제 바뀔지 모르니 활성화마다 다시 읽는다 — 느린
                         // 캘린더 동기화를 기다리면 그동안 캡션이 낡은 권한으로 남는다.
                         notifications.refreshPermissionStatus()
+                        notifications.clearShareNudge()
                         // A calendar permission changed in Settings takes effect: hand the list over again.
                         store.reconcileCalendar()
                         Task {
