@@ -243,8 +243,8 @@ enum AgentDelivery {
         }
     }
 
-    /// `Estimated total $40.00 sent to Example Budget (Simulated): $160.00 left this week.` or, over, `$25.00 over the budget
-    /// for the week of Nov 2.`
+    /// `<money item name> $40.00 sent to Example Budget (Simulated): $160.00 left this week.` or, over, `$25.00 over the budget
+    /// for the week of Nov 2.` The Worker names its money item `Estimated total`.
     static func budgetNotice(moneyName: String, totalCents: Int, standing: BudgetStanding, week: String) -> String {
         let fields = AgentBudget.standingFields(standing)
         let standingText: String
@@ -253,11 +253,24 @@ enum AgentDelivery {
         } else {
             standingText = "\(fields["over_by"] as? String ?? "") over the budget \(AgentBudget.inWeek(week))"
         }
-        return "\(estimatedTotalLine(cents: totalCents)) sent to \(AgentBudget.partnerLabel): \(standingText)."
+        return "\(moneyName) \(AgentBudget.dollars(cents: totalCents)) sent to \(AgentBudget.partnerLabel): \(standingText)."
+    }
+
+    /// The result items for the model, each `{name, kind, value}` in the partner's order: a time as its text, money in dollars
+    /// through `AgentBudget`, a text as it is.
+    static func resultFields(_ results: [PartnerResultItem]) -> [[String: Any]] {
+        results.map { item in
+            let value: String
+            switch item.value {
+            case .time(let text), .text(let text): value = text
+            case .money(let cents): value = AgentBudget.dollars(cents: cents)
+            }
+            return ["name": item.name, "kind": item.kind.rawValue, "value": value]
+        }
     }
 
     /// The fields of the `applied` result. `meal` is nil when the entry was off at Confirm; the message carries the meal
-    /// sentence only when the entry was on.
+    /// sentence only when the entry was on. Every result item of the partner is stated in `results`.
     static func appliedFields(orderID: String, restaurant: String, items: [(name: String, quantity: Int)],
                               address: String, cardLabel: String, results: [PartnerResultItem], meal: AppliedMeal?,
                               budget: BudgetHandOff) -> [String: Any] {
@@ -266,10 +279,8 @@ enum AgentDelivery {
         message += " " + budget.sentence
         var object: [String: Any] = [
             "status": "applied", "partner": DeliveryClient.partnerName, "simulated": true, "order_id": orderID,
-            "restaurant": restaurant, "arrival_estimate": results.arrival ?? "",
-            "items": items.map { ["name": $0.name, "quantity": $0.quantity] as [String: Any] }, "address": address,
-            "card": cardLabel, "estimated_total": AgentBudget.dollars(cents: results.moneyCents ?? 0), "estimate": true,
-            "message": message, "budget": budget.block]
+            "restaurant": restaurant, "items": items.map { ["name": $0.name, "quantity": $0.quantity] as [String: Any] },
+            "address": address, "card": cardLabel, "results": resultFields(results), "message": message, "budget": budget.block]
         if let meal { object["meal"] = meal.block }
         return object
     }

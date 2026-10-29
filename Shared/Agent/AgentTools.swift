@@ -1468,8 +1468,10 @@ final class AgentToolbox {
                                       "message": AgentDelivery.declinedMessage])
             return (AgentResolution(result: result, notice: nil), .notApplied)
         case .success(.confirmed(let orderID, let results)):
-            // The client already refuses a different total; the card's total is checked again here.
-            guard let totalCents = results.moneyCents, totalCents == order.totalCents else { return deliveryUnavailable() }
+            // Act by kind. The client already refuses a different total or arrival; the `money` and `time` items are checked
+            // again here against the card's, and the total, the arrival and the money item's name are read from those items.
+            guard let totalCents = results.moneyCents, totalCents == order.totalCents, let moneyName = results.moneyName,
+                  let arrivalText = results.arrival, arrivalText == order.request.arriveAt else { return deliveryUnavailable() }
             let f = formats
             // The suggested meal entry, with the write `book(_:)` uses; the written activity is looked up in the Store.
             var meal: AgentDelivery.AppliedMeal?
@@ -1494,14 +1496,14 @@ final class AgentToolbox {
                                   quantity: line.quantity, unitPriceCents: order.options.menuItem(id: line.itemID)?.priceCents ?? 0)
             }
             (deliveryOrdersProvider?() ?? DeliveryOrderLog.shared).add(DeliveryOrderEntry(
-                orderID: orderID, requestID: order.request.requestID, placeName: order.placeName, arrival: order.request.arriveAt,
+                orderID: orderID, requestID: order.request.requestID, placeName: order.placeName, arrival: arrivalText,
                 items: lines, address: order.request.address, cardLabel: order.cardLabel, estimatedTotalCents: totalCents,
                 createdAt: now(), mealActivityID: mealID))
             let budget = await sendOrderTotal(order, totalCents: totalCents, flow: flow)
             let fields = AgentDelivery.appliedFields(
                 orderID: orderID, restaurant: order.placeName, items: order.items, address: order.request.address,
                 cardLabel: order.cardLabel, results: results, meal: meal, budget: budget)
-            let notice = budget.notice(moneyName: results.moneyName ?? "", totalCents: totalCents)
+            let notice = budget.notice(moneyName: moneyName, totalCents: totalCents)
             return (AgentResolution(result: Self.encode(fields), notice: notice), .confirmed)
         }
     }
