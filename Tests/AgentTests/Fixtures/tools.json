@@ -210,7 +210,7 @@
   {
     "type": "function",
     "name": "order_delivery",
-    "description": "Order food delivery from a restaurant found with search_places, in a simulated delivery app, with items and a card taken from get_delivery_options. The delivery app is simulated, not a real one: always call the result simulated. items is written as item_id:quantity pairs separated by commas, such as ramen:2,gyoza:1. Ask the user for the arrival time, the items and the card if they have not said. deliver_to is a place_id from search_places, set only when the user named a place to deliver to and left out otherwise; the app may then suggest a place from the schedule. Never write an address. The user confirms before anything is sent.",
+    "description": "Order food delivery from a restaurant found with search_places, in a simulated delivery app, with items taken from get_delivery_options. The delivery app is simulated, not a real one: always call the result simulated. items is written as item_id:quantity pairs separated by commas, such as ramen:2,gyoza:1. Ask the user for the arrival time and the items if they have not said. card_id is a card_id from get_delivery_options, set only when the user named a card and left out otherwise. deliver_to is a place_id from search_places, set only when the user named a place to deliver to and left out otherwise; the app may then suggest a place from the schedule. Never write an address. The user confirms before anything is sent, after filling in what is blank.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -228,14 +228,14 @@
         },
         "card_id": {
           "type": "string",
-          "description": "The card to pay with: a card_id from get_delivery_options. Ask the user if they have not said."
+          "description": "The card to pay with: a card_id from get_delivery_options. Set only when the user named a card. Leave it out otherwise."
         },
         "deliver_to": {
           "type": "string",
           "description": "Optional. A place_id returned by search_places, set only when the user named a place to deliver to. Leave it out otherwise."
         }
       },
-      "required": ["place_id", "arrive_at", "items", "card_id"],
+      "required": ["place_id", "arrive_at", "items"],
       "additionalProperties": false
     }
   },

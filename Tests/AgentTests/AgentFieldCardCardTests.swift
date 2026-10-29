@@ -139,5 +139,43 @@ final class AgentFieldCardCardTests: XCTestCase {
         XCTAssertNil(twice)
         XCTAssertEqual(ran.count, 1)
         XCTAssertEqual(plain.mark, .confirmed)
+
+        // In a session, once `order_delivery` returns the card: it waits as the pending card, Confirm resolves it and the model
+        // is asked again.
+        let rig = DeliveryToolRig(injectBudget: true)
+        let folder = rig.folder
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        rig.seedDinner()
+        let order = try JSONSerialization.data(withJSONObject: DeliveryToolRig.arguments(), options: [.sortedKeys])
+        let fake = FakeTransport([.turn(Turns.turn(Turns.call("get_delivery_options", "{}", id: "c1"))),
+                                  .turn(Turns.turn(Turns.call("order_delivery", String(decoding: order, as: UTF8.self), id: "c2"))),
+                                  .turn(Turns.text("Ordered."))])
+        let session = AgentSession(toolbox: rig.tools, transport: fake, connections: rig.log)
+        XCTAssertTrue(session.canSend)
+        session.send("Order two ramen and a gyoza")
+        await session.settle()
+        XCTAssertEqual(fake.requests.count, 2, "the card waits: the model is not asked a third time")
+        let pending = try XCTUnwrap(session.pendingCard, "order_delivery returned a card")
+        XCTAssertNotNil(pending.fieldCard, "the card carries the field-card model")
+        XCTAssertEqual(pending.lines.first, "Order delivery")
+        XCTAssertEqual(session.entries.filter { entry in
+            if case .card = entry.kind { return true }
+            return false
+        }.count, 1, "one card entry")
+        XCTAssertFalse(session.canSend)
+        #if DEBUG
+        XCTAssertTrue(session.transcript().components(separatedBy: "\n").contains("CARD Order delivery Pending"))
+        #endif
+        XCTAssertEqual(rig.partner.requests.count, 1, "only the options request while the card waits")
+        await session.confirmCard()
+        await session.settle()
+        XCTAssertNil(session.pendingCard)
+        XCTAssertEqual(rig.partner.requests.count, 2, "Confirm sent the one order request")
+        XCTAssertEqual(fake.requests.count, 3, "the next model request was made")
+        XCTAssertEqual(session.assistantTexts, ["Ordered."])
+        XCTAssertTrue(session.canSend)
+        #if DEBUG
+        XCTAssertTrue(session.transcript().components(separatedBy: "\n").contains("CARD Order delivery Confirmed"))
+        #endif
     }
 }
