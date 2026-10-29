@@ -7,6 +7,8 @@ import XCTest
 @MainActor
 final class RepeatSeriesStoreTests: XCTestCase {
     private var savedZone: TimeZone!
+    /// Link files of the mirrors a test built (AC-017); removed in `tearDown`.
+    private var linkURLs: [URL] = []
 
     override func setUp() {
         super.setUp()
@@ -16,6 +18,8 @@ final class RepeatSeriesStoreTests: XCTestCase {
 
     override func tearDown() {
         NSTimeZone.default = savedZone
+        for url in linkURLs { try? FileManager.default.removeItem(at: url) }
+        linkURLs = []
         super.tearDown()
     }
 
@@ -2449,5 +2453,248 @@ final class RepeatSeriesStoreTests: XCTestCase {
         XCTAssertEqual(legDayKeys(store, .departure), (5...19).map { 20261100 + $0 }, "no duplicate return leg")
         XCTAssertEqual(store.events.count, 18 + 15)
         XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261119)
+    }
+
+    // MARK: M5b - the Apple Calendar mirror window (AC-017, AC-004 row 4)
+
+    /// A real mirror over the fake backend and a temporary link file, attached to the store, with the store's clock.
+    private func mirrorRig(_ store: Store) -> (fake: FakeCalendarBackend, mirror: AppleCalendarMirror, url: URL) {
+        let fake = FakeCalendarBackend()
+        let url = CalendarTestSupport.freshLinksURL()
+        linkURLs.append(url)
+        let mirror = AppleCalendarMirror(backend: fake, linksURL: url, now: { store.replanNow() })
+        store.attachCalendar(mirror)
+        return (fake, mirror, url)
+    }
+
+    private func settle(_ mirror: AppleCalendarMirror, file: StaticString = #filePath, line: UInt = #line) async {
+        let settled = await CalendarTestSupport.settle(mirror)
+        XCTAssertTrue(settled, "the mirror did not settle", file: file, line: line)
+    }
+
+    private func links(_ url: URL) throws -> [String: CalendarLink] {
+        try XCTUnwrap(CalendarTestSupport.loadFile(url)).links
+    }
+
+    /// The nine Mondays of the window that opens on the fixture clock: Nov 2 ... Dec 28 2026.
+    private var firstWindowMondays: [(Int, Int)] { [(11, 2), (11, 9), (11, 16), (11, 23), (11, 30), (12, 7), (12, 14), (12, 21), (12, 28)] }
+
+    // MARK: AC-017 row 1 - the mirror gets the window only
+
+    func testRECURRULE_MirrorGetsWindowOnly() async throws {
+        let store = fixtureStore()
+        let rig = mirrorRig(store)
+        let series = standup()
+        XCTAssertTrue(store.addSeries(series))
+        await settle(rig.mirror)
+
+        let starts = rig.fake.events.values.map(\.start).sorted()
+        XCTAssertEqual(starts, firstWindowMondays.map { at(2026, $0.0, $0.1, 9) }, "Nov 2 ... Dec 28, none for January")
+        XCTAssertEqual(rig.fake.createCalls, 9)
+        XCTAssertEqual(Set(try links(rig.url).keys),
+                       Set(firstWindowMondays.map { series.occurrenceID(dayKey: 20260000 + $0.0 * 100 + $0.1).uuidString }))
+        // What the store hands the mirror: nine occurrences, although the series goes on (positive control).
+        XCTAssertEqual(store.mirrorActivities().count, 9)
+        XCTAssertEqual(store.activities(in: DateInterval(start: at(2027, 1, 4), end: at(2027, 1, 5))).count, 1)
+    }
+
+    // MARK: AC-017 row 2 - a link outside the window is kept
+
+    func testRECURRULE_OutOfWindowLinkIsRetained() async throws {
+        let store = fixtureStore()
+        let rig = mirrorRig(store)
+        XCTAssertTrue(store.addSeries(standup()))
+        await settle(rig.mirror)
+        XCTAssertEqual(rig.fake.createCalls, 9)
+
+        // The window moves on to Jan 4 ... Mar 1 2027; the November occurrences are live and out of it.
+        let later = at(2027, 1, 4, 8)
+        store.replanNow = { later }
+        store.reconcileCalendar()
+        await settle(rig.mirror)
+
+        XCTAssertEqual(rig.fake.removeCalls, 0, "a link outside the window is not removed")
+        XCTAssertEqual(rig.fake.createCalls, 18, "nine events for the new window")
+        let starts = rig.fake.events.values.map(\.start).sorted()
+        XCTAssertEqual(starts.count, 18)
+        XCTAssertEqual(starts.first, at(2026, 11, 2, 9))
+        XCTAssertEqual(starts.last, at(2027, 3, 1, 9))
+        XCTAssertEqual(try links(rig.url).count, 18)
+    }
+
+    // MARK: AC-017 row 3 - a skipped day and a deleted series lose their links
+
+    func testRECURRULE_SkippedAndDeletedLinksAreRemoved() async throws {
+        let store = fixtureStore()
+        let rig = mirrorRig(store)
+        let series = standup()
+        XCTAssertTrue(store.addSeries(series))
+        await settle(rig.mirror)
+        XCTAssertEqual(rig.fake.createCalls, 9)
+
+        let nov9 = series.occurrenceID(dayKey: 20261109)
+        store.deleteActivity(try XCTUnwrap(store.activity(id: nov9)))
+        await settle(rig.mirror)
+        XCTAssertEqual(rig.fake.removeCalls, 1, "the skipped occurrence's event is removed")
+        XCTAssertNil(try links(rig.url)[nov9.uuidString])
+        XCTAssertEqual(try links(rig.url).count, 8)
+        XCTAssertEqual(rig.fake.events.count, 8)
+
+        store.deleteRecurringSeries(series.id)
+        await settle(rig.mirror)
+        XCTAssertEqual(rig.fake.removeCalls, 9, "every link of the deleted series is removed")
+        XCTAssertTrue(try links(rig.url).isEmpty)
+        XCTAssertTrue(rig.fake.events.isEmpty)
+    }
+
+    // MARK: AC-017 row 5 and AC-004 row 4 - an unreadable series file keeps every link
+
+    func testRECURRULE_UnreadableFileKeepsEveryLink() async throws {
+        let store = fixtureStore()
+        let rig = mirrorRig(store)
+        XCTAssertTrue(store.addSeries(standup()))
+        await settle(rig.mirror)
+        XCTAssertEqual(try links(rig.url).count, 9)
+
+        // A relaunch on a series file that cannot be read: no series, the flag is up, the mirror is the same.
+        try write(Data("not json".utf8), "series.json")
+        let clock = fixtureClock
+        let again = relaunched()
+        again.replanNow = { clock }
+        XCTAssertTrue(again.seriesLoadFailed)
+        XCTAssertTrue(again.series.isEmpty)
+        let mirror = AppleCalendarMirror(backend: rig.fake, linksURL: rig.url, now: { again.replanNow() })
+        again.attachCalendar(mirror)
+        again.reconcileCalendar()
+        await settle(mirror)
+        XCTAssertEqual(rig.fake.removeCalls, 0, "no link is removed while the file is unreadable")
+        XCTAssertEqual(try links(rig.url).count, 9)
+        XCTAssertEqual(rig.fake.events.count, 9)
+
+        // Positive control: once the bad file is backed up and the new list written, the protection ends and the links
+        // of the series that were lost with it are removed (design 3.4, accepted).
+        XCTAssertTrue(again.saveSeries())
+        XCTAssertFalse(again.seriesLoadFailed)
+        await settle(mirror)
+        XCTAssertEqual(rig.fake.removeCalls, 9)
+        XCTAssertTrue(try links(rig.url).isEmpty)
+    }
+
+    // MARK: AC-017 row 4 - the planner without `retains` is unchanged
+
+    func testRECURRULE_PlannerWithoutRetainsIsUnchanged() {
+        func link(_ id: String) -> CalendarLink {
+            CalendarLink(eventId: "event-" + id, signature: CalendarDraft(stored("Linked", at(2026, 11, 3, 9), at(2026, 11, 3, 10))))
+        }
+        let orphan = UUID().uuidString
+        let other = UUID().uuidString
+        var file = CalendarLinkFile()
+        file.links[orphan] = link(orphan)
+        file.links[other] = link(other)
+        let now = fixtureClock
+
+        // Without the parameter, and with one that keeps nothing: every link of an activity that is gone is removed.
+        let plain = CalendarPlanner.plan(activities: [], file: file, now: now)
+        XCTAssertEqual(plain, CalendarPlanner.plan(activities: [], file: file, now: now, retains: { _ in false }))
+        XCTAssertEqual(Set(plain.removes.map(\.activityId)), [orphan, other])
+        XCTAssertTrue(plain.updates.isEmpty)
+        XCTAssertTrue(plain.creates.isEmpty)
+
+        // With a closure, the orphans are asked about, and a link it keeps is not removed.
+        var asked: [String] = []
+        let keeping = CalendarPlanner.plan(activities: [], file: file, now: now, retains: { key in
+            asked.append(key)
+            return key == other
+        })
+        XCTAssertEqual(keeping.removes.map(\.activityId), [orphan])
+        XCTAssertEqual(Set(asked), [orphan, other])
+
+        // It is asked about orphans only: the link of an activity that is in the list and has its sync turned off is
+        // removed whatever the closure says, and the closure is not asked about that key.
+        var off = stored("Off", at(2026, 11, 3, 9), at(2026, 11, 3, 10))
+        off.syncToCalendar = false
+        var offFile = CalendarLinkFile()
+        offFile.links[off.id.uuidString] = link(off.id.uuidString)
+        asked = []
+        let seenPlan = CalendarPlanner.plan(activities: [off], file: offFile, now: now, retains: { key in
+            asked.append(key)
+            return true
+        })
+        XCTAssertEqual(seenPlan.removes.map(\.activityId), [off.id.uuidString])
+        XCTAssertTrue(asked.isEmpty)
+    }
+
+    // MARK: AC-017 row 6 - a materialized copy is updated in place
+
+    func testRECURRULE_MaterializedCopyIsUpdatedInPlace() async throws {
+        let store = fixtureStore()
+        let rig = mirrorRig(store)
+        let series = standup()
+        XCTAssertTrue(store.addSeries(series))
+        await settle(rig.mirror)
+        let nov9 = series.occurrenceID(dayKey: 20261109)
+        let before = try XCTUnwrap(try links(rig.url)[nov9.uuidString], "the Nov 9 occurrence has a link")
+
+        XCTAssertTrue(store.modifyActivity(id: nov9, newTitle: "Standup (moved)"))
+        XCTAssertEqual(store.activities.count, 1, "the occurrence is a stored copy now")
+        await settle(rig.mirror)
+
+        let after = try XCTUnwrap(try links(rig.url)[nov9.uuidString])
+        XCTAssertEqual(after.eventId, before.eventId, "same key, same event")
+        XCTAssertEqual(rig.fake.events[after.eventId]?.title, "Standup (moved)")
+        XCTAssertEqual(rig.fake.createCalls, 9, "not created again")
+        XCTAssertEqual(rig.fake.removeCalls, 0, "not removed")
+        XCTAssertEqual(rig.fake.updateCalls, 1)
+        XCTAssertEqual(try links(rig.url).count, 9)
+    }
+
+    // MARK: AC-017 row 7 - `retains` is true only for a live occurrence
+
+    func testRECURRULE_RetainsIsTrueOnlyForLiveOccurrences() async throws {
+        let store = fixtureStore()
+        let rig = mirrorRig(store)
+        let mondays = standup()
+        let wednesdays = weekly("Gym", weekday: 4, startMinute: 18 * 60, endMinute: 19 * 60, first: 20261104, last: 20261125)
+        XCTAssertTrue(store.addSeries(mondays))
+        XCTAssertTrue(store.addSeries(wednesdays))
+        await settle(rig.mirror)
+        let retains = rig.mirror.retains
+
+        // Live: a Monday in the window, a Monday years out, the last Wednesday of the second series.
+        XCTAssertTrue(retains(mondays.occurrenceID(dayKey: 20261109).uuidString))
+        XCTAssertTrue(retains(mondays.occurrenceID(dayKey: 20290305).uuidString))
+        XCTAssertTrue(retains(wednesdays.occurrenceID(dayKey: 20261125).uuidString))
+        // A valid day of the series that the rule does not produce (a Tuesday of a Monday rule).
+        XCTAssertNotNil(store.series(forOccurrence: mondays.occurrenceID(dayKey: 20261103)), "it passes the syntax check")
+        XCTAssertFalse(retains(mondays.occurrenceID(dayKey: 20261103).uuidString))
+        // Before the first day, after the last day.
+        XCTAssertFalse(retains(mondays.occurrenceID(dayKey: 20261026).uuidString))
+        XCTAssertFalse(retains(wednesdays.occurrenceID(dayKey: 20261202).uuidString))
+        // A skipped day.
+        let nov16 = mondays.occurrenceID(dayKey: 20261116)
+        XCTAssertTrue(retains(nov16.uuidString))
+        store.deleteActivity(try XCTUnwrap(store.activity(id: nov16)))
+        XCTAssertFalse(retains(nov16.uuidString))
+        // An unknown id, a string that is no id, a stored activity that is no occurrence.
+        XCTAssertFalse(retains(UUID().uuidString))
+        XCTAssertFalse(retains("not an id"))
+        XCTAssertFalse(retains(""))
+        let plain = stored("Dentist", at(2026, 11, 3, 9), at(2026, 11, 3, 10))
+        store.activities.append(plain)
+        XCTAssertFalse(retains(plain.id.uuidString))
+        // A deleted series.
+        store.deleteRecurringSeries(wednesdays.id)
+        XCTAssertFalse(retains(wednesdays.occurrenceID(dayKey: 20261111).uuidString))
+
+        // An unreadable series file: true for every string.
+        try write(Data("not json".utf8), "series.json")
+        let again = relaunched()
+        XCTAssertTrue(again.seriesLoadFailed)
+        let mirror = AppleCalendarMirror(backend: rig.fake, linksURL: rig.url, now: { again.replanNow() })
+        again.attachCalendar(mirror)
+        for key in [UUID().uuidString, mondays.occurrenceID(dayKey: 20261103).uuidString, "not an id", ""] {
+            XCTAssertTrue(mirror.retains(key), "kept while the series file is unreadable: \(key)")
+        }
+        await settle(rig.mirror)
     }
 }

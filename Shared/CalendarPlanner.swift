@@ -69,7 +69,7 @@ enum CalendarPlanner {
     // @MX:ANCHOR: called by the mirror and by every planner test; the invariant is that an event besir
     // did not create (no link) is never named.
     static func plan(activities: [ActivityBlock], file: CalendarLinkFile, now: Date,
-                     calendar: Calendar = .current) -> Plan {
+                     calendar: Calendar = .current, retains: (String) -> Bool = { _ in false }) -> Plan {
         let startOfToday = calendar.startOfDay(for: now)
         var plan = Plan()
         var seen = Set<String>()

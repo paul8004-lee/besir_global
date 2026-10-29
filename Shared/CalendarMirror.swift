@@ -74,6 +74,8 @@ final class AppleCalendarMirror: CalendarMirroring {
     private(set) var running = false
     /// The access request is made at most once per app run, across the write pass and the read.
     private var requested = false
+    /// Stub: the planner is not given it yet.
+    var retains: (String) -> Bool = { _ in false }
 
     static var defaultLinksURL: URL {
         AppConfig.supportDirectory.appendingPathComponent("calendar-links.json")

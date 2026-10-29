@@ -1111,6 +1111,14 @@ final class Store: ObservableObject {
 
     func reconcileCalendar() { calendarMirror.reconcile(activities) }
 
+    /// How many days after today the Apple Calendar mirror is given occurrences of a repeat.
+    nonisolated static let mirrorWindowDays = 60
+
+    /// Stub: the stored activities only.
+    func mirrorActivities(now: Date? = nil, calendar: Calendar = .current) -> [ActivityBlock] {
+        activities
+    }
+
 
     /// 어떤 시간대 앞뒤로 사용자가 있을/가야 할 장소를 추정한다(판단은 `ScheduleLogic`이 한다).
     /// 식사 일정을 만들 때 출발지·복귀지를 미리 채워주는 데 쓴다.
