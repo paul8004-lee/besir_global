@@ -1527,4 +1527,98 @@ final class AgentDeliveryToolTests: XCTestCase {
         XCTAssertNil(lateResolution.json?["meal"])
         XCTAssertNil(late.orders.orders.first?.mealActivityID)
     }
+
+    // MARK: O37-O40 the delivery place sees the occurrences of repeating activities
+
+    /// A weekly repeating activity (Calendar numbering, Sunday = 1) from a first day, added to the rig's Store.
+    private func addRepeat(_ rig: DeliveryToolRig, weekday: Int, from startMinute: Int, to endMinute: Int, first: Int, place: Place?,
+                           file: StaticString = #filePath, line: UInt = #line) {
+        let series = RepeatSeries(id: RepeatSeries.newID(), title: "Repeating", location: place,
+                                  rule: RecurrenceRule(weekdays: [weekday], unit: .weekly), lunarCalendar: nil,
+                                  firstDayKey: first, lastDayKey: nil, startMinute: startMinute, endMinute: endMinute,
+                                  endDayDistance: 0, syncToCalendar: nil, skippedDayKeys: [], legPlan: nil,
+                                  legsFilledThroughDayKey: nil)
+        XCTAssertTrue(rig.store.addSeries(series), "the series was stored", file: file, line: line)
+    }
+
+    /// The text of a place as it shows on the card, found in a line of the card.
+    private func shows(_ card: AgentCard?, _ text: String) -> Bool {
+        card?.lines.contains { $0.contains(text) } ?? false
+    }
+
+    // The arrival is Wednesday 2026-10-28 19:40; the fixed clock is Tuesday 2026-10-27 09:00.
+    private static let wednesday = 4
+    private static let tuesday = 3
+    private static let firstWednesday = 20261028
+    private static let firstTuesday = 20261027
+
+    func testO37_ARepeatingEntryInProgressAtTheArrivalGivesTheDeliveryPlace() async throws {
+        let rig = makeRig()
+        addRepeat(rig, weekday: Self.wednesday, from: 19 * 60, to: 21 * 60, first: Self.firstWednesday, place: DeliveryToolFixture.library)
+        await rig.hold()
+        let card = try XCTUnwrap(rig.order().card, "the occurrence in progress at the arrival is the suggestion")
+        XCTAssertTrue(shows(card, "9 Library Road"))
+        XCTAssertEqual(rig.reads.count, 0)
+    }
+
+    func testO38_AOneOffAndARepeatingOccurrenceAtDifferentPlacesGiveNoSuggestion() async throws {
+        let rig = makeRig()
+        rig.seed("Team dinner", "2026-10-28T19:00", "2026-10-28T21:00", place: DeliveryToolFixture.library)
+        addRepeat(rig, weekday: Self.wednesday, from: 19 * 60 + 30, to: 20 * 60 + 30, first: Self.firstWednesday,
+                  place: DeliveryToolFixture.corner)
+        await rig.hold()
+        let card = rig.order().card
+        XCTAssertFalse(shows(card, "9 Library Road"), "two different places give none")
+        XCTAssertFalse(shows(card, "Corner Cafe"), "two different places give none")
+    }
+
+    func testO39_AOneOffAndARepeatingOccurrenceAtTheSamePlaceGiveThatOneText() async throws {
+        let rig = makeRig()
+        rig.seed("Team dinner", "2026-10-28T19:00", "2026-10-28T21:00", place: DeliveryToolFixture.library)
+        addRepeat(rig, weekday: Self.wednesday, from: 19 * 60 + 30, to: 20 * 60 + 30, first: Self.firstWednesday,
+                  place: DeliveryToolFixture.library)
+        await rig.hold()
+        let card = try XCTUnwrap(rig.order().card)
+        XCTAssertTrue(shows(card, "9 Library Road"))
+    }
+
+    func testO40_AnOccurrenceInProgressAtNowIsTheSecondAnchorAndTheEdgesOfTheIntervalHold() async throws {
+        // Only in progress now (Tuesday 08:00 to 10:00), nothing at the arrival: the second anchor.
+        let nowOnly = makeRig()
+        addRepeat(nowOnly, weekday: Self.tuesday, from: 8 * 60, to: 10 * 60, first: Self.firstTuesday, place: DeliveryToolFixture.corner)
+        await nowOnly.hold()
+        let nowCard = try XCTUnwrap(nowOnly.order().card, "the occurrence in progress now is the suggestion")
+        XCTAssertTrue(shows(nowCard, "Corner Cafe"))
+
+        // Entries at the arrival that differ give none, and the later anchor is not used.
+        let differ = makeRig()
+        differ.seed("Team dinner", "2026-10-28T19:00", "2026-10-28T21:00", place: DeliveryToolFixture.library)
+        differ.seed("Other", "2026-10-28T19:30", "2026-10-28T20:30", place: DeliveryToolFixture.restaurant)
+        addRepeat(differ, weekday: Self.tuesday, from: 8 * 60, to: 10 * 60, first: Self.firstTuesday, place: DeliveryToolFixture.corner)
+        await differ.hold()
+        let differCard = differ.order().card
+        XCTAssertFalse(shows(differCard, "Corner Cafe"), "the later anchor is not used")
+        XCTAssertFalse(shows(differCard, "9 Library Road"), "two different places give none")
+
+        // An occurrence that starts at the arrival minute counts.
+        let starts = makeRig()
+        addRepeat(starts, weekday: Self.wednesday, from: 19 * 60 + 40, to: 21 * 60, first: Self.firstWednesday, place: DeliveryToolFixture.library)
+        await starts.hold()
+        let startsCard = try XCTUnwrap(starts.order().card, "an occurrence that starts at the arrival minute counts")
+        XCTAssertTrue(shows(startsCard, "9 Library Road"))
+
+        // One that ends at the arrival minute does not.
+        let ends = makeRig()
+        addRepeat(ends, weekday: Self.wednesday, from: 18 * 60, to: 19 * 60 + 40, first: Self.firstWednesday, place: DeliveryToolFixture.library)
+        await ends.hold()
+        XCTAssertFalse(shows(ends.order().card, "9 Library Road"), "an occurrence that ends at the arrival minute does not count")
+
+        // One in progress at both anchors (now is 19:00 the same day) is read once and suggested.
+        let both = makeRig()
+        both.clock.now = TestClock.date("2026-10-28T19:00")
+        addRepeat(both, weekday: Self.wednesday, from: 18 * 60, to: 21 * 60, first: Self.firstWednesday, place: DeliveryToolFixture.library)
+        await both.hold()
+        let bothCard = try XCTUnwrap(both.order().card, "an occurrence in progress at both anchors is suggested")
+        XCTAssertTrue(shows(bothCard, "9 Library Road"))
+    }
 }
