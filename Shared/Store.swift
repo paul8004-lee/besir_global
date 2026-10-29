@@ -1332,14 +1332,29 @@ final class Store: ObservableObject {
         let startDay = cal.startOfDay(for: start)
         let startTod = cal.dateComponents([.hour, .minute], from: start)
         let endTod = cal.dateComponents([.hour, .minute], from: end)
-        let made = await addRecurringLinkedSeries(
-            title: title, location: location, rule: rule, startDate: startDay, endDate: active.endDate,
-            startHour: startTod.hour ?? 0, startMinute: startTod.minute ?? 0,
-            end: (hour: endTod.hour ?? 0, minute: endTod.minute ?? 0, dayDistance: distance),
-            outboundFrom: from, returnTo: to, outboundMode: outboundMode, returnMode: returnMode,
-            bufferMinutes: Self.clampBuffer(buffer), notifyLeadMinutes: Self.clampNotifyLead(notifyLead),
-            notifyEnabled: notifyOn, syncToCalendar: sync)
-        return made.activities > 0
+        let lunar: RepeatSeries.LunarChoice? = rule.unit == .lunar
+            ? (RecurrenceRule.defaultLunarIdentifier == .chinese ? .chinese : .dangi) : nil
+        // The repeat is refused, and nothing is made, when no occurrence lies after the current time inside the horizon.
+        let now = replanNow()
+        let hasUpcoming = rule.firstDate(from: startDay,
+                                         through: active.endDate ?? RecurrenceLine.endOfHorizon(from: startDay, calendar: cal),
+                                         calendar: cal, lunarCalendar: lunar?.identifier ?? RecurrenceRule.defaultLunarIdentifier) {
+            Self.occurrenceSpan(on: $0, startHour: startTod.hour ?? 0, startMinute: startTod.minute ?? 0,
+                                end: (endTod.hour ?? 0, endTod.minute ?? 0, distance), after: now, calendar: cal) != nil
+        } != nil
+        guard hasUpcoming else { return false }
+        // Travel legs: a direction is planned only when its toggle was on and its place was picked.
+        let legPlan: LegPlan? = (from == nil && to == nil) ? nil
+            : LegPlan(outboundFrom: from, returnTo: to, outboundMode: outboundMode, returnMode: returnMode,
+                      bufferMinutes: Self.clampBuffer(buffer), notifyLeadMinutes: Self.clampNotifyLead(notifyLead),
+                      notifyEnabled: notifyOn)
+        let made = RepeatSeries(id: RepeatSeries.newID(), title: title, location: location, rule: rule,
+                                lunarCalendar: lunar, firstDayKey: Self.dayKey(startDay, calendar: cal),
+                                lastDayKey: active.endDate.map { Self.dayKey($0, calendar: cal) },
+                                startMinute: (startTod.hour ?? 0) * 60 + (startTod.minute ?? 0),
+                                endMinute: (endTod.hour ?? 0) * 60 + (endTod.minute ?? 0),
+                                endDayDistance: distance, syncToCalendar: sync, legPlan: legPlan)
+        return addSeries(made)
     }
 
     /// recurrenceId로 반복 그룹의 이동 구간을 도착 순으로 돌려준다 — 멤버십·정렬 판단의 단일 출처(계약 5).
