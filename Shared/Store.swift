@@ -1350,19 +1350,23 @@ final class Store: ObservableObject {
         let result: (seconds: TimeInterval, source: String)?
     }
 
-    /// What one series still needs for the window at a clock: the occurrences and roles that have no leg yet.
+    /// What one series still needs for the window at a clock: the occurrences and roles that have no leg yet, and the
+    /// legs it made earlier that still have no travel time (a lookup failed, for example because the phone was offline).
     private struct LegFillWork {
         let series: RepeatSeries
         let plan: LegPlan
         let place: Place
         let endKey: Int
         let legs: [(occurrence: ActivityBlock, role: ScheduleAnchor)]
+        let untimed: [(id: UUID, role: ScheduleAnchor)]
     }
 
     /// Makes the legs of every series with a leg plan for the occurrences from today through `legWindowDays` that the
     /// series' high-water mark has not passed, removes the legs of unstored occurrences older than `legRetentionDays`,
-    /// moves the legs of unstored occurrences that are off their occurrence's anchor (a time zone change) onto it, and
-    /// saves `events` once and reschedules the alarms once per pass. Idempotent. One fill runs at a time: a call
+    /// moves the legs of unstored occurrences that are off their occurrence's anchor (a time zone change) onto it, gives a
+    /// travel time to the legs of unstored occurrences from today on that an earlier fill left without one (a lookup
+    /// failed; the high-water mark does not stop this retry), and saves `events` once and reschedules the alarms once per
+    /// pass. Idempotent. One fill runs at a time: a call
     /// during a running fill sets `fillAgain` and returns, and the running fill makes another pass, so a series saved
     /// meanwhile is not lost and no leg is made twice. The days are chosen before the awaits (the gate and the travel-time
     /// lookups) and chosen again after them, per chosen series, so a skip, a series delete, a leg add or a mark that
@@ -1397,7 +1401,9 @@ final class Store: ObservableObject {
 
     /// The days to fill for one series at `now`: `key >= today`, `key <= today + legWindowDays`, `key` above the series'
     /// mark, started after `now` (the per-occurrence gate of the removed writer), not skipped, not stored, and without a
-    /// stored leg of the role. Nil when the series is gone or cannot have legs (no place, or no direction in its plan).
+    /// stored leg of the role. The untimed legs are the legs of the same days (the high-water mark does not apply to
+    /// them) that are on the plan's route and mode and have no travel time. Nil when the series is gone or cannot have
+    /// legs (no place, or no direction in its plan).
     private func legFillWork(for seriesID: UUID, now: Date, calendar: Calendar) -> LegFillWork? {
         guard let s = series.first(where: { $0.id == seriesID }), let plan = s.legPlan, let place = s.location,
               plan.outboundFrom != nil || plan.returnTo != nil else { return nil }
@@ -1407,12 +1413,20 @@ final class Store: ObservableObject {
         let todayKey = Self.dayKey(today, calendar: calendar), endKey = Self.dayKey(windowEnd, calendar: calendar)
         let storedIDs = Set(activities.map { $0.id })
         var legs: [(occurrence: ActivityBlock, role: ScheduleAnchor)] = []
+        var untimed: [(id: UUID, role: ScheduleAnchor)] = []
         for occurrence in s.occurrences(in: DateInterval(start: today, end: after), calendar: calendar) {
             guard let dayKey = RepeatSeries.decode(occurrence.id)?.dayKey,
                   dayKey >= todayKey, dayKey <= endKey,
-                  s.legsFilledThroughDayKey.map({ dayKey > $0 }) ?? true,
                   occurrence.startDate > now, !storedIDs.contains(occurrence.id) else { continue }
             let present = explicitLegs(of: occurrence.id)
+            for leg in present where leg.travelSeconds == nil {
+                let role: ScheduleAnchor = leg.anchor == .departure ? .departure : .arrival
+                guard let route = legFillRoute(plan, place: place, role: role), leg.origin == route.origin,
+                      leg.destination == route.destination, leg.mode == route.mode else { continue }
+                untimed.append((leg.id, role))
+            }
+            // The mark applies to the legs to make only: a failed lookup leaves the mark at the window end.
+            guard s.legsFilledThroughDayKey.map({ dayKey > $0 }) ?? true else { continue }
             if plan.outboundFrom != nil, !present.contains(where: { ($0.anchor ?? .arrival) == .arrival }) {
                 legs.append((occurrence, .arrival))
             }
@@ -1420,7 +1434,7 @@ final class Store: ObservableObject {
                 legs.append((occurrence, .departure))
             }
         }
-        return LegFillWork(series: s, plan: plan, place: place, endKey: endKey, legs: legs)
+        return LegFillWork(series: s, plan: plan, place: place, endKey: endKey, legs: legs, untimed: untimed)
     }
 
     /// The travel time of a stored leg of the series in the direction of `role`, on the same route and by the same mode,
@@ -1438,14 +1452,16 @@ final class Store: ObservableObject {
     private func fillPass(now: Date) async {
         let calendar = Calendar.current
         // Choose: the series that can have legs, and the directions that need one lookup because no stored leg of the
-        // series and direction carries a travel time.
+        // series and direction carries a travel time. A direction needs one for the legs to make and for the untimed
+        // legs together, so a retry costs the lookup of the fill and no more.
         var chosen: [UUID] = []
         var lookups: [(key: LegFillKey, route: LegFillRoute)] = []
         for s in series {
             guard let work = legFillWork(for: s.id, now: now, calendar: calendar) else { continue }
             chosen.append(s.id)
             for role in [ScheduleAnchor.arrival, ScheduleAnchor.departure]
-            where work.legs.contains(where: { $0.role == role }) && storedLegSeconds(for: work, role: role) == nil {
+            where (work.legs.contains(where: { $0.role == role }) || work.untimed.contains(where: { $0.role == role }))
+                && storedLegSeconds(for: work, role: role) == nil {
                 if let route = legFillRoute(work.plan, place: work.place, role: role) {
                     lookups.append((LegFillKey(seriesID: s.id, role: role), route))
                 }
@@ -1462,6 +1478,7 @@ final class Store: ObservableObject {
 
         // Write, with no await from here on. Each chosen series is read again, so what changed meanwhile is respected.
         var made: [ScheduledEvent] = []
+        var retimed: [(id: UUID, role: ScheduleAnchor, seconds: TimeInterval, source: String?)] = []
         var updatedSeries = series
         var seriesChanged = false
         for id in chosen {
@@ -1485,6 +1502,18 @@ final class Store: ObservableObject {
                 made.append(makeSeriesLeg(for: work, route: route, occurrence: item.occurrence, role: item.role,
                                           seconds: seconds, source: source))
             }
+            // The legs an earlier fill left untimed get the time a stored leg carries, or else the lookup's. A failed
+            // lookup changes nothing, and the mark (about the legs to make) is not touched either way.
+            for item in work.untimed {
+                var seconds = storedLegSeconds(for: work, role: item.role)
+                var source: String?
+                if seconds == nil {
+                    guard let found = attempts[LegFillKey(seriesID: id, role: item.role)]?.result else { continue }
+                    seconds = found.seconds
+                    if lookupSourceUsed.insert(item.role).inserted { source = found.source }
+                }
+                if let seconds { retimed.append((item.id, item.role, seconds, source)) }
+            }
             if complete {
                 let mark = max(work.series.legsFilledThroughDayKey ?? 0, work.endKey)
                 if mark != work.series.legsFilledThroughDayKey {
@@ -1499,12 +1528,33 @@ final class Store: ObservableObject {
             for s in series { pruned += unstoredOccurrenceLegs(of: s.id).filter { $0.arrivalDate < cutoff } }
         }
         let realigned = realignedSeriesLegs(calendar: calendar)
-        if !made.isEmpty || !pruned.isEmpty || realigned != nil {
+        if !made.isEmpty || !pruned.isEmpty || realigned != nil || !retimed.isEmpty {
             for e in pruned { if let nid = e.notificationId { notifications.cancel(id: nid) } }
             let prunedIDs = Set(pruned.map { $0.id })
             var updated = realigned ?? events
             updated.removeAll { prunedIDs.contains($0.id) }
             updated.append(contentsOf: made)
+            // The retime follows the realignment, so a leg is timed from the date it now stands on. The alarm each helper
+            // hands over is cancelled and set again by the reschedule below, the way the legs to make are.
+            for item in retimed {
+                guard let i = updated.firstIndex(where: { $0.id == item.id }), updated[i].travelSeconds == nil else { continue }
+                var leg = updated[i]
+                if item.role == .arrival {
+                    if let source = item.source {
+                        applyCachedArrivalEstimate(to: &leg, travelSeconds: item.seconds, source: source)
+                    } else {
+                        applyCachedArrivalEstimate(to: &leg, travelSeconds: item.seconds)
+                    }
+                } else {
+                    let departure = leg.departureDate ?? leg.arrivalDate
+                    if let source = item.source {
+                        applyCachedDepartureEstimate(to: &leg, departureDate: departure, travelSeconds: item.seconds, source: source)
+                    } else {
+                        applyCachedDepartureEstimate(to: &leg, departureDate: departure, travelSeconds: item.seconds)
+                    }
+                }
+                updated[i] = leg
+            }
             updated.sort { $0.arrivalDate < $1.arrivalDate }
             events = updated
             // The save of the reschedule writes `events` once. The legs reach the disk before the mark: a crash between

@@ -3174,4 +3174,344 @@ final class RepeatSeriesStoreTests: XCTestCase {
         XCTAssertEqual(store.drvRescheduleCount, reschedules + 1)
         XCTAssertEqual(store.drvTravelLookupCount, lookups, "the travel time is copied from the stored legs")
     }
+
+    // MARK: SPEC-LEGTIME-001 (card t88) - a later fill gives a travel time to legs that have none
+
+    /// Every field the acceptance conventions compare. `fixedOnly` drops the times and the alarm id, to compare a retimed
+    /// leg with what it was before the retime.
+    private struct EventShape: Equatable {
+        var id: UUID
+        var title: String
+        var origin: Place?
+        var destination: Place
+        var mode: TransportMode
+        var bufferMinutes: Int
+        var notifyLeadMinutes: Int
+        var notifyEnabled: Bool?
+        var syncToCalendar: Bool?
+        var recurrenceId: UUID?
+        var linkedActivityId: UUID?
+        var anchor: ScheduleAnchor?
+        var travelSeconds: TimeInterval?
+        var arrivalDate: Date
+        var departureDate: Date?
+        var notificationId: String?
+
+        init(_ e: ScheduledEvent, fixedOnly: Bool = false) {
+            id = e.id
+            title = e.title
+            origin = e.origin
+            destination = e.destination
+            mode = e.mode
+            bufferMinutes = e.bufferMinutes
+            notifyLeadMinutes = e.notifyLeadMinutes
+            notifyEnabled = e.notifyEnabled
+            syncToCalendar = e.syncToCalendar
+            recurrenceId = e.recurrenceId
+            linkedActivityId = e.linkedActivityId
+            anchor = e.anchor
+            travelSeconds = fixedOnly ? nil : e.travelSeconds
+            arrivalDate = fixedOnly ? .distantPast : e.arrivalDate
+            departureDate = fixedOnly ? nil : e.departureDate
+            notificationId = fixedOnly ? nil : e.notificationId
+        }
+    }
+
+    /// The travel time a test's lookup closure answers with; nil is a lookup that failed (the phone is offline).
+    private final class LookupBox {
+        var seconds: TimeInterval?
+        init(_ seconds: TimeInterval?) { self.seconds = seconds }
+    }
+
+    /// A store at the fixture clock whose lookup answers with `box.seconds`, with the series added and filled once. With
+    /// no `seconds` the first fill is the offline one: it makes every leg of the window and gives none a travel time.
+    private func offlineFilledStandup(_ planned: RepeatSeries? = nil, seconds: TimeInterval? = nil) async
+        -> (store: Store, series: RepeatSeries, box: LookupBox) {
+        let store = fixtureStore()
+        let box = LookupBox(seconds)
+        store.drvTravelLookupOverride = { _, _, _ in box.seconds }
+        let s = planned ?? plannedStandup()
+        XCTAssertTrue(store.addSeries(s))
+        await store.fillSeriesLegs()
+        return (store, s, box)
+    }
+
+    private func eventsByID(_ store: Store) -> [UUID: ScheduledEvent] {
+        Dictionary(uniqueKeysWithValues: store.events.map { ($0.id, $0) })
+    }
+
+    /// Every event is what `before` recorded, except the ids in `except`. The alarm id is compared unless `alarm` is
+    /// false: a reschedule hands out new ids to every timed leg whose alarm is still ahead of the real clock, which a
+    /// class A test does not pin.
+    private func assertUnchanged(_ store: Store, before: [UUID: ScheduledEvent], except: Set<UUID> = [], alarm: Bool = true,
+                                 file: StaticString = #filePath, line: UInt = #line) {
+        for e in store.events where !except.contains(e.id) {
+            guard let old = before[e.id] else {
+                XCTFail("\(e.title) was not there before", file: file, line: line)
+                continue
+            }
+            var (now, was) = (EventShape(e), EventShape(old))
+            if !alarm { (now.notificationId, was.notificationId) = (nil, nil) }
+            XCTAssertEqual(now, was, "\(e.title) on \(e.arrivalDate)", file: file, line: line)
+        }
+    }
+
+    /// The pair of one day after a retime of 900 seconds: both timed, the outbound departure 900 s and the 5 minute
+    /// buffer before its unchanged arrival, the return arrival 900 s after its unchanged departure, every other field as
+    /// `before` recorded it. `dayKey` is a November 2026 day.
+    private func assertRetimed(_ store: Store, _ s: RepeatSeries, day dayKey: Int, before: [UUID: ScheduledEvent],
+                               file: StaticString = #filePath, line: UInt = #line) throws {
+        let d = dayKey - 20261100
+        let (out, back) = try legPair(store, s, dayKey)
+        XCTAssertEqual(out.travelSeconds, 900, "outbound of Nov \(d)", file: file, line: line)
+        XCTAssertEqual(out.arrivalDate, at(2026, 11, d, 9), "outbound arrival of Nov \(d)", file: file, line: line)
+        XCTAssertEqual(out.departureDate, at(2026, 11, d, 8, 40), "outbound departure of Nov \(d)", file: file, line: line)
+        XCTAssertEqual(back.travelSeconds, 900, "return of Nov \(d)", file: file, line: line)
+        XCTAssertEqual(back.departureDate, at(2026, 11, d, 9, 30), "return departure of Nov \(d)", file: file, line: line)
+        XCTAssertEqual(back.arrivalDate, at(2026, 11, d, 9, 45), "return arrival of Nov \(d)", file: file, line: line)
+        for leg in [out, back] {
+            let old = try XCTUnwrap(before[leg.id], file: file, line: line)
+            XCTAssertEqual(EventShape(leg, fixedOnly: true), EventShape(old, fixedOnly: true),
+                           "\(leg.title) of Nov \(d) keeps its other fields", file: file, line: line)
+        }
+    }
+
+    // MARK: AC-001, AC-004, AC-005 row 1
+
+    func testLEGTIME_LaterFillGivesAMissingTravelTimeToItsLegs() async throws {
+        let (store, s, box) = await offlineFilledStandup()
+        XCTAssertEqual(store.events.count, 6)
+        XCTAssertEqual(store.drvTravelLookupCount, 2, "one failed lookup per direction")
+        XCTAssertTrue(store.events.allSatisfy { $0.travelSeconds == nil })
+        for day in [20261102, 20261109, 20261116] {
+            let (out, back) = try legPair(store, s, day)
+            XCTAssertNil(out.departureDate)
+            XCTAssertEqual(back.departureDate, at(2026, 11, day - 20261100, 9, 30))
+        }
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116, "nothing is left to make")
+        let before = eventsByID(store)
+        let (saves, reschedules, lookups) = (store.drvSaveCount, store.drvRescheduleCount, store.drvTravelLookupCount)
+        let skipped = store.series[0].skippedDayKeys
+
+        box.seconds = 900
+        await store.fillSeriesLegs()
+
+        XCTAssertEqual(store.events.count, 6)
+        XCTAssertEqual(Set(store.events.map(\.id)), Set(before.keys))
+        for day in [20261102, 20261109, 20261116] { try assertRetimed(store, s, day: day, before: before) }
+        XCTAssertEqual(store.drvTravelLookupCount, lookups + 2, "one lookup per direction; the other legs take its result")
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+        XCTAssertEqual(store.series[0].skippedDayKeys, skipped)
+        XCTAssertEqual(legDayKeys(store, .arrival), [20261102, 20261109, 20261116])
+        XCTAssertEqual(legDayKeys(store, .departure), [20261102, 20261109, 20261116])
+        XCTAssertEqual(store.drvSaveCount, saves + 1, "one write")
+        XCTAssertEqual(store.drvRescheduleCount, reschedules + 1, "one reschedule")
+
+        let onDisk = relaunched().events
+        XCTAssertEqual(onDisk.count, 6)
+        XCTAssertTrue(onDisk.allSatisfy { $0.travelSeconds == 900 }, "the times are on disk")
+
+        let settled = eventsByID(store)
+        let (saves2, reschedules2, lookups2) = (store.drvSaveCount, store.drvRescheduleCount, store.drvTravelLookupCount)
+        await store.fillSeriesLegs()
+        XCTAssertEqual(Set(store.events.map(\.id)), Set(settled.keys))
+        assertUnchanged(store, before: settled)
+        XCTAssertEqual(store.drvTravelLookupCount, lookups2, "nothing is left to retry")
+        XCTAssertEqual(store.drvSaveCount, saves2)
+        XCTAssertEqual(store.drvRescheduleCount, reschedules2)
+    }
+
+    func testLEGTIME_LegsCopyATimeFromTheirTimedSiblings() async throws {
+        let (store, s, box) = await offlineFilledStandup(seconds: 900)
+        XCTAssertEqual(store.events.count, 6)
+        XCTAssertTrue(store.events.allSatisfy { $0.travelSeconds == 900 })
+        let nov16 = s.occurrenceID(dayKey: 20261116)
+        // The two legs of Nov 16 go back into the shape of a leg made offline.
+        store.events = store.events.map { e in
+            guard e.linkedActivityId == nov16 else { return e }
+            var e = e
+            e.travelSeconds = nil
+            e.notificationId = nil
+            if e.anchor == .departure { e.arrivalDate = e.departureDate ?? e.arrivalDate } else { e.departureDate = nil }
+            return e
+        }
+        box.seconds = nil
+        let before = eventsByID(store)
+        let (saves, lookups) = (store.drvSaveCount, store.drvTravelLookupCount)
+
+        await store.fillSeriesLegs()
+
+        try assertRetimed(store, s, day: 20261116, before: before)
+        XCTAssertEqual(store.drvTravelLookupCount, lookups, "no lookup, though the phone is offline")
+        XCTAssertEqual(store.drvSaveCount, saves + 1)
+        let retimed = Set(before.values.filter { $0.linkedActivityId == nov16 }.map(\.id))
+        XCTAssertEqual(retimed.count, 2)
+        assertUnchanged(store, before: before, except: retimed, alarm: false)
+        XCTAssertEqual(store.events.count, 6)
+    }
+
+    // MARK: AC-002, AC-004
+
+    func testLEGTIME_AFailedRetryChangesNothingAndTriesAgain() async throws {
+        let (store, _, box) = await offlineFilledStandup()
+        XCTAssertEqual(store.events.count, 6)
+        XCTAssertTrue(store.events.allSatisfy { $0.travelSeconds == nil })
+        let before = eventsByID(store)
+        let (saves, reschedules, lookups) = (store.drvSaveCount, store.drvRescheduleCount, store.drvTravelLookupCount)
+
+        await store.fillSeriesLegs()
+
+        XCTAssertEqual(Set(store.events.map(\.id)), Set(before.keys))
+        assertUnchanged(store, before: before)
+        XCTAssertEqual(store.drvSaveCount, saves, "a failed retry writes nothing")
+        XCTAssertEqual(store.drvRescheduleCount, reschedules)
+        XCTAssertEqual(store.drvTravelLookupCount, lookups + 2, "one lookup per direction, not one per leg")
+
+        box.seconds = 900
+        await store.fillSeriesLegs()
+
+        XCTAssertEqual(store.events.count, 6)
+        XCTAssertTrue(store.events.allSatisfy { $0.travelSeconds == 900 }, "the retry was still alive after a failure")
+        XCTAssertEqual(store.drvTravelLookupCount, lookups + 4)
+    }
+
+    func testLEGTIME_ARetryAndTheLegsToMakeShareOneLookup() async throws {
+        let (store, s, box) = await offlineFilledStandup()
+        XCTAssertEqual(store.events.count, 6)
+        XCTAssertTrue(store.events.allSatisfy { $0.travelSeconds == nil })
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+        let before = eventsByID(store)
+        let (saves, reschedules, lookups) = (store.drvSaveCount, store.drvRescheduleCount, store.drvTravelLookupCount)
+
+        // The next day, online: the window now ends Nov 23, so the pass makes two legs and also has untimed legs.
+        let clock = at(2026, 11, 9, 8)
+        store.replanNow = { clock }
+        box.seconds = 900
+        await store.fillSeriesLegs()
+
+        XCTAssertEqual(store.events.count, 8)
+        for day in [20261109, 20261116] { try assertRetimed(store, s, day: day, before: before) }
+        let (out, back) = try legPair(store, s, 20261123)
+        XCTAssertEqual(out.travelSeconds, 900, "the new outbound leg of Nov 23")
+        XCTAssertEqual(back.travelSeconds, 900, "the new return leg of Nov 23")
+        XCTAssertEqual(out.departureDate, at(2026, 11, 23, 8, 40))
+        XCTAssertEqual(back.arrivalDate, at(2026, 11, 23, 9, 45))
+        // The two legs of Nov 2 (a week before today) are what they were.
+        let nov2 = s.occurrenceID(dayKey: 20261102)
+        let started = Set(before.values.filter { $0.linkedActivityId == nov2 }.map(\.id))
+        XCTAssertEqual(started.count, 2)
+        for e in store.events where started.contains(e.id) {
+            let old = try XCTUnwrap(before[e.id])
+            XCTAssertEqual(EventShape(e), EventShape(old))
+        }
+        XCTAssertEqual(store.drvTravelLookupCount, lookups + 2, "one lookup per direction for the legs to make and the untimed legs")
+        XCTAssertEqual(store.drvSaveCount, saves + 1)
+        XCTAssertEqual(store.drvRescheduleCount, reschedules + 1)
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261123)
+    }
+
+    // MARK: AC-003
+
+    func testLEGTIME_RetryLeavesOtherEventsAlone() async throws {
+        var planned = plannedStandup()
+        planned.rule = RecurrenceRule(weekdays: [2, 4], unit: .weekly)
+        planned.skippedDayKeys = [20261104]
+        let (store, s, box) = await offlineFilledStandup(planned)
+        XCTAssertEqual(store.events.count, 8, "Mon and Wed of the window, Nov 4 skipped")
+        XCTAssertEqual(legDayKeys(store, .arrival), [20261102, 20261109, 20261111, 20261116])
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+        let nov9 = s.occurrenceID(dayKey: 20261109), nov11 = s.occurrenceID(dayKey: 20261111)
+        let nov16 = s.occurrenceID(dayKey: 20261116)
+
+        // Nov 9 is a stored copy the way a crash leaves it: the day is not skipped and the legs still carry the series id.
+        var copy = try XCTUnwrap(store.activity(id: nov9))
+        copy.recurrenceId = nil
+        store.activities.append(copy)
+        // The Nov 11 outbound leg is on another route than the plan's.
+        let elsewhere = Place(name: "Elsewhere", address: "3 Other Rd", latitude: 37.7, longitude: 127.2)
+        let routed = try XCTUnwrap(store.events.firstIndex { $0.linkedActivityId == nov11 && ($0.anchor ?? .arrival) == .arrival })
+        store.events[routed].origin = elsewhere
+        var skippedLeg = seriesLeg(s, 20261104, .arrival)
+        skippedLeg.travelSeconds = nil
+        skippedLeg.departureDate = nil
+        var farLeg = seriesLeg(s, 20261123, .arrival)
+        farLeg.travelSeconds = nil
+        farLeg.departureDate = nil
+        let plain = ScheduledEvent(title: "Standup", origin: home, destination: office, arrivalDate: at(2026, 11, 10, 9),
+                                   mode: .car, bufferMinutes: 5, notifyLeadMinutes: 10, recurrenceId: s.id)
+        store.events.append(contentsOf: [skippedLeg, farLeg, plain])
+        let clock = at(2026, 11, 2, 9, 10)   // the Nov 2 occurrence has started
+        store.replanNow = { clock }
+        box.seconds = 900
+
+        let before = eventsByID(store)
+        let (saves, reschedules, lookups) = (store.drvSaveCount, store.drvRescheduleCount, store.drvTravelLookupCount)
+        let (mark, skipped, seriesCount) = (store.series[0].legsFilledThroughDayKey, store.series[0].skippedDayKeys, store.series.count)
+
+        await store.fillSeriesLegs()
+
+        func leg(_ occurrence: UUID, _ role: ScheduleAnchor) throws -> ScheduledEvent {
+            try XCTUnwrap(store.events.first { $0.linkedActivityId == occurrence && ($0.anchor ?? .arrival) == role })
+        }
+        let (nov11Back, nov16Out, nov16Back) = try (leg(nov11, .departure), leg(nov16, .arrival), leg(nov16, .departure))
+        XCTAssertEqual(nov11Back.travelSeconds, 900)
+        XCTAssertEqual(nov11Back.arrivalDate, at(2026, 11, 11, 9, 45))
+        XCTAssertEqual(nov16Out.travelSeconds, 900)
+        XCTAssertEqual(nov16Out.departureDate, at(2026, 11, 16, 8, 40))
+        XCTAssertEqual(nov16Back.travelSeconds, 900)
+        XCTAssertEqual(nov16Back.arrivalDate, at(2026, 11, 16, 9, 45))
+        let changed = Set([nov11Back.id, nov16Out.id, nov16Back.id])
+        for e in [nov11Back, nov16Out, nov16Back] {
+            let old = try XCTUnwrap(before[e.id])
+            XCTAssertEqual(EventShape(e, fixedOnly: true), EventShape(old, fixedOnly: true))
+        }
+        assertUnchanged(store, before: before, except: changed)
+        XCTAssertEqual(store.events.count, before.count, "nothing made, nothing pruned")
+        XCTAssertEqual(store.series.count, seriesCount)
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, mark)
+        XCTAssertEqual(store.series[0].skippedDayKeys, skipped)
+        XCTAssertEqual(store.drvTravelLookupCount, lookups + 2, "one lookup per direction")
+        XCTAssertEqual(store.drvSaveCount, saves + 1)
+        XCTAssertEqual(store.drvRescheduleCount, reschedules + 1)
+    }
+
+    // MARK: AC-005 row 2 (class B: `rescheduleNearestNotifications` reads the real clock)
+
+    func testLEGTIME_RetryRunsInTheBackgroundPathAndSetsAlarms() async throws {
+        let d0 = classBMonday()
+        let store = EmptyStore.make()
+        let clock = d0.addingTimeInterval(8 * 3600)
+        store.replanNow = { clock }
+        let box = LookupBox(nil)
+        store.drvTravelLookupOverride = { _, _, _ in box.seconds }
+        var s = plannedStandup()
+        s.firstDayKey = key(d0)
+        XCTAssertTrue(store.addSeries(s))
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6)
+        XCTAssertTrue(store.events.allSatisfy { $0.travelSeconds == nil })
+        let (requests, reschedules, lookups) = (store.notifications.requestCount, store.drvRescheduleCount, store.drvTravelLookupCount)
+
+        box.seconds = 900
+        await store.backgroundRefresh()
+
+        XCTAssertEqual(store.events.count, 6)
+        for n in [0, 7, 14] {
+            let day = try XCTUnwrap(cal.date(byAdding: .day, value: n, to: d0))
+            let (out, back) = try legPair(store, s, key(day))
+            XCTAssertEqual(out.travelSeconds, 900, "outbound of day +\(n)")
+            XCTAssertEqual(back.travelSeconds, 900, "return of day +\(n)")
+            XCTAssertEqual(out.departureDate, cal.date(bySettingHour: 8, minute: 40, second: 0, of: day))
+            XCTAssertEqual(back.departureDate, cal.date(bySettingHour: 9, minute: 30, second: 0, of: day))
+            for leg in [out, back] {
+                XCTAssertNotNil(leg.notificationId, "\(leg.title) of day +\(n) has an alarm")
+                let alarm = NotificationManager.alarmTime(departure: try XCTUnwrap(leg.departureDate), leadMinutes: leg.notifyLeadMinutes)
+                XCTAssertGreaterThan(alarm, Date())
+            }
+        }
+        XCTAssertEqual(store.drvTravelLookupCount, lookups + 2, "the refresh makes no lookup")
+        XCTAssertEqual(store.drvRescheduleCount, reschedules + 2, "the fill's, since it retimed, and the refresh's own")
+        // 6 requests handed over by the retime, 6 by the fill's reschedule, 6 by the refresh's reschedule.
+        XCTAssertEqual(store.notifications.requestCount, requests + 18)
+    }
 }
