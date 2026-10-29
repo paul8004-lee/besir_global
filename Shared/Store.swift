@@ -1416,19 +1416,245 @@ final class Store: ObservableObject {
                                 startMinute: (startTod.hour ?? 0) * 60 + (startTod.minute ?? 0),
                                 endMinute: (endTod.hour ?? 0) * 60 + (endTod.minute ?? 0),
                                 endDayDistance: distance, syncToCalendar: sync, legPlan: legPlan)
-        return addSeries(made)
+        guard addSeries(made) else { return false }
+        // The legs of the next days are made before the save returns (a fill already running makes them in its next pass).
+        await fillSeriesLegs()
+        return true
     }
 
     // MARK: - Leg window fill (REQ-016, SPEC-RECURRULE-001)
 
-    /// Test seam, driver-visible like `drvTravelLookupOverride`; application logic never sets it. Awaited once per pass.
+    /// True while a fill runs. A call during it sets `fillAgain` and returns; the running fill then makes one more pass.
+    private var fillInFlight = false
+    private var fillAgain = false
+
+    /// Test seam, driver-visible like `drvTravelLookupOverride`; application logic never sets it. Awaited once per pass,
+    /// after the days to fill are chosen and before anything is written. A test closure suspends on its first call only,
+    /// because the pass that `fillAgain` asks for reaches the gate too.
     var drvFillGate: (() async -> Void)?
-    /// Driver-visible counter of the passes that reached the gate point; application logic never reads it.
+    /// Driver-visible counter of the passes that reached the gate point (before the closure runs); a test polls it to
+    /// know that a held call is at the gate. Application logic never reads it.
     var drvFillGateReached = 0
 
-    func fillSeriesLegs(now: Date? = nil) async {}
+    private struct LegFillKey: Hashable {
+        let seriesID: UUID
+        let role: ScheduleAnchor
+    }
 
-    func backgroundRefresh() async {}
+    private struct LegFillRoute {
+        let origin: Place
+        let destination: Place
+        let mode: TransportMode
+    }
+
+    private struct LegFillAttempt {
+        let result: (seconds: TimeInterval, source: String)?
+    }
+
+    /// What one series still needs for the window at a clock: the occurrences and roles that have no leg yet.
+    private struct LegFillWork {
+        let series: RepeatSeries
+        let plan: LegPlan
+        let place: Place
+        let endKey: Int
+        let legs: [(occurrence: ActivityBlock, role: ScheduleAnchor)]
+    }
+
+    /// Makes the legs of every series with a leg plan for the occurrences from today through `legWindowDays` that the
+    /// series' high-water mark has not passed, removes the legs of unstored occurrences older than `legRetentionDays`,
+    /// and saves `events` once and reschedules the alarms once per pass. Idempotent. One fill runs at a time: a call
+    /// during a running fill sets `fillAgain` and returns, and the running fill makes another pass, so a series saved
+    /// meanwhile is not lost and no leg is made twice. The days are chosen before the awaits (the gate and the travel-time
+    /// lookups) and chosen again after them, per chosen series, so a skip, a series delete, a leg add or a mark that
+    /// changed during an await is respected.
+    func fillSeriesLegs(now: Date? = nil) async {
+        guard !fillInFlight else {
+            fillAgain = true
+            return
+        }
+        fillInFlight = true
+        defer { fillInFlight = false }
+        repeat {
+            fillAgain = false
+            await fillPass(now: now ?? replanNow())
+        } while fillAgain
+    }
+
+    /// The fill of the foreground and of the background task: the legs of the window, the live re-estimates of the legs
+    /// that are about to start, and the nearest alarms, in that order.
+    func backgroundRefresh() async {
+        await fillSeriesLegs()
+        await refreshUpcomingEstimates(trigger: .background)
+        rescheduleNearestNotifications()
+    }
+
+    private func legFillRoute(_ plan: LegPlan, place: Place, role: ScheduleAnchor) -> LegFillRoute? {
+        if role == .arrival {
+            return plan.outboundFrom.map { LegFillRoute(origin: $0, destination: place, mode: plan.outboundMode) }
+        }
+        return plan.returnTo.map { LegFillRoute(origin: place, destination: $0, mode: plan.returnMode) }
+    }
+
+    /// The days to fill for one series at `now`: `key >= today`, `key <= today + legWindowDays`, `key` above the series'
+    /// mark, started after `now` (the per-occurrence gate of the removed writer), not skipped, not stored, and without a
+    /// stored leg of the role. Nil when the series is gone or cannot have legs (no place, or no direction in its plan).
+    private func legFillWork(for seriesID: UUID, now: Date, calendar: Calendar) -> LegFillWork? {
+        guard let s = series.first(where: { $0.id == seriesID }), let plan = s.legPlan, let place = s.location,
+              plan.outboundFrom != nil || plan.returnTo != nil else { return nil }
+        let today = calendar.startOfDay(for: now)
+        guard let windowEnd = calendar.date(byAdding: .day, value: Self.legWindowDays, to: today),
+              let after = calendar.date(byAdding: .day, value: 1, to: windowEnd) else { return nil }
+        let todayKey = Self.dayKey(today, calendar: calendar), endKey = Self.dayKey(windowEnd, calendar: calendar)
+        let storedIDs = Set(activities.map { $0.id })
+        var legs: [(occurrence: ActivityBlock, role: ScheduleAnchor)] = []
+        for occurrence in s.occurrences(in: DateInterval(start: today, end: after), calendar: calendar) {
+            guard let dayKey = RepeatSeries.decode(occurrence.id)?.dayKey,
+                  dayKey >= todayKey, dayKey <= endKey,
+                  s.legsFilledThroughDayKey.map({ dayKey > $0 }) ?? true,
+                  occurrence.startDate > now, !storedIDs.contains(occurrence.id) else { continue }
+            let present = explicitLegs(of: occurrence.id)
+            if plan.outboundFrom != nil, !present.contains(where: { ($0.anchor ?? .arrival) == .arrival }) {
+                legs.append((occurrence, .arrival))
+            }
+            if plan.returnTo != nil, !present.contains(where: { $0.anchor == .departure }) {
+                legs.append((occurrence, .departure))
+            }
+        }
+        return LegFillWork(series: s, plan: plan, place: place, endKey: endKey, legs: legs)
+    }
+
+    /// The travel time of a stored leg of the series in the direction of `role`, on the same route and by the same mode,
+    /// so a changed plan is not given the time of an old route. Legs of a stored copy count (they link to an occurrence).
+    private func storedLegSeconds(for work: LegFillWork, role: ScheduleAnchor) -> TimeInterval? {
+        guard let route = legFillRoute(work.plan, place: work.place, role: role) else { return nil }
+        return events.first { e in
+            guard e.travelSeconds != nil, (e.anchor ?? .arrival) == role, e.mode == route.mode,
+                  e.origin == route.origin, e.destination == route.destination else { return false }
+            return e.recurrenceId == work.series.id
+                || e.linkedActivityId.flatMap { series(forOccurrence: $0)?.0.id } == work.series.id
+        }?.travelSeconds
+    }
+
+    private func fillPass(now: Date) async {
+        let calendar = Calendar.current
+        // Choose: the series that can have legs, and the directions that need one lookup because no stored leg of the
+        // series and direction carries a travel time.
+        var chosen: [UUID] = []
+        var lookups: [(key: LegFillKey, route: LegFillRoute)] = []
+        for s in series {
+            guard let work = legFillWork(for: s.id, now: now, calendar: calendar) else { continue }
+            chosen.append(s.id)
+            for role in [ScheduleAnchor.arrival, ScheduleAnchor.departure]
+            where work.legs.contains(where: { $0.role == role }) && storedLegSeconds(for: work, role: role) == nil {
+                if let route = legFillRoute(work.plan, place: work.place, role: role) {
+                    lookups.append((LegFillKey(seriesID: s.id, role: role), route))
+                }
+            }
+        }
+        drvFillGateReached += 1
+        await drvFillGate?()
+        // The only other await: one lookup per direction per series.
+        var attempts: [LegFillKey: LegFillAttempt] = [:]
+        for item in lookups {
+            let found = await lookupTravelSeconds(item.route.mode, origin: item.route.origin, destination: item.route.destination)
+            attempts[item.key] = LegFillAttempt(result: found.map { (seconds: $0.seconds, source: $0.source) })
+        }
+
+        // Write, with no await from here on. Each chosen series is read again, so what changed meanwhile is respected.
+        var made: [ScheduledEvent] = []
+        var updatedSeries = series
+        var seriesChanged = false
+        for id in chosen {
+            guard let work = legFillWork(for: id, now: now, calendar: calendar),
+                  let index = updatedSeries.firstIndex(where: { $0.id == id }) else { continue }
+            var complete = true
+            var lookupSourceUsed = Set<ScheduleAnchor>()
+            for item in work.legs {
+                guard let route = legFillRoute(work.plan, place: work.place, role: item.role) else { continue }
+                var seconds = storedLegSeconds(for: work, role: item.role)
+                var source: String?
+                if seconds == nil {
+                    // No stored leg to copy from: the lookup of this fill, if one was made for the direction.
+                    guard let attempt = attempts[LegFillKey(seriesID: id, role: item.role)] else {
+                        complete = false   // the stored leg this relied on is gone; the next fill looks it up
+                        continue
+                    }
+                    seconds = attempt.result?.seconds
+                    if lookupSourceUsed.insert(item.role).inserted { source = attempt.result?.source }
+                }
+                made.append(makeSeriesLeg(for: work, route: route, occurrence: item.occurrence, role: item.role,
+                                          seconds: seconds, source: source))
+            }
+            if complete {
+                let mark = max(work.series.legsFilledThroughDayKey ?? 0, work.endKey)
+                if mark != work.series.legsFilledThroughDayKey {
+                    updatedSeries[index].legsFilledThroughDayKey = mark
+                    seriesChanged = true
+                }
+            }
+        }
+
+        var pruned: [ScheduledEvent] = []
+        if let cutoff = calendar.date(byAdding: .day, value: -Self.legRetentionDays, to: now) {
+            for s in series { pruned += unstoredOccurrenceLegs(of: s.id).filter { $0.arrivalDate < cutoff } }
+        }
+        if !made.isEmpty || !pruned.isEmpty {
+            for e in pruned { if let nid = e.notificationId { notifications.cancel(id: nid) } }
+            let prunedIDs = Set(pruned.map { $0.id })
+            var updated = events
+            updated.removeAll { prunedIDs.contains($0.id) }
+            updated.append(contentsOf: made)
+            updated.sort { $0.arrivalDate < $1.arrivalDate }
+            events = updated
+            // The save of the reschedule writes `events` once. The legs reach the disk before the mark: a crash between
+            // the two leaves legs and an old mark, and the role check of the next fill makes no second leg.
+            rescheduleNearestNotifications()
+        }
+        if seriesChanged {
+            series = updatedSeries
+            saveSeries()
+        }
+    }
+
+    /// One leg of the fill, built the way the removed writer built it: linked to the occurrence id, carrying the series
+    /// id, anchored on the start (outbound) or the end (return) of the occurrence. The travel time is copied (`seconds`);
+    /// a nil `seconds` (a failed lookup) leaves the leg with its direction and its fixed time, for a later re-estimate.
+    private func makeSeriesLeg(for work: LegFillWork, route: LegFillRoute, occurrence: ActivityBlock,
+                               role: ScheduleAnchor, seconds: TimeInterval?, source: String?) -> ScheduledEvent {
+        let outbound = role == .arrival
+        let anchorDate = outbound ? occurrence.startDate : occurrence.endDate
+        var event = ScheduledEvent(title: legTitle(role: role, activity: occurrence), origin: route.origin,
+                                   destination: route.destination, arrivalDate: anchorDate, mode: route.mode,
+                                   bufferMinutes: outbound ? work.plan.bufferMinutes : 0,
+                                   notifyLeadMinutes: work.plan.notifyLeadMinutes)
+        event.recurrenceId = work.series.id
+        event.linkedActivityId = occurrence.id
+        event.notifyEnabled = work.plan.notifyEnabled
+        event.syncToCalendar = work.series.syncToCalendar
+        if outbound {
+            event.anchor = .arrival
+            if let seconds {
+                if let source {
+                    applyCachedArrivalEstimate(to: &event, travelSeconds: seconds, source: source)
+                } else {
+                    applyCachedArrivalEstimate(to: &event, travelSeconds: seconds)
+                }
+            }
+        } else {
+            // The direction and the fixed departure are set before any estimate, so a failed lookup still leaves a leg a
+            // later re-estimate can pick up.
+            event.anchor = .departure
+            event.departureDate = anchorDate
+            if let seconds {
+                if let source {
+                    applyCachedDepartureEstimate(to: &event, departureDate: anchorDate, travelSeconds: seconds, source: source)
+                } else {
+                    applyCachedDepartureEstimate(to: &event, departureDate: anchorDate, travelSeconds: seconds)
+                }
+            }
+        }
+        return event
+    }
 
     /// recurrenceId로 반복 그룹의 이동 구간을 도착 순으로 돌려준다 — 멤버십·정렬 판단의 단일 출처(계약 5).
     func recurringSeries(_ recurrenceId: UUID) -> [ScheduledEvent] {

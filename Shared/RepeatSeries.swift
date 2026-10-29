@@ -28,6 +28,9 @@ struct RepeatSeries: Identifiable, Codable {
     var syncToCalendar: Bool?
     var skippedDayKeys: [Int] = []
     var legPlan: LegPlan?
+    // @MX:NOTE: the high-water mark of the leg fill. The fill never makes a leg for a day at or below it, so a leg the
+    // user deleted by hand does not come back at the next fill, and a skip, a whole-series move or a leg drag leaves it
+    // alone. `addLegToSeries` sets it only when it is nil; raising a mark that exists would hide days from the old role.
     var legsFilledThroughDayKey: Int?
 }
 
