@@ -294,6 +294,11 @@ final class AgentDeliveryTests: XCTestCase {
         }
         XCTAssertTrue(AgentDelivery.budgetFailureNotice.contains("(Simulated)"))
         XCTAssertEqual(AgentDelivery.unavailableNotice, "The delivery could not be ordered. Nothing was ordered.")
+        // The walk found a declined reply that did not say the delivery app refused: the instruction names the refusal and the fact
+        // that nothing was ordered, so the reply differs from the user's own Cancel.
+        XCTAssertTrue(AgentDelivery.declinedMessage.contains("Tell the user that the simulated delivery app could not take the order"),
+                      AgentDelivery.declinedMessage)
+        XCTAssertTrue(AgentDelivery.declinedMessage.contains("nothing was ordered"), AgentDelivery.declinedMessage)
         XCTAssertTrue(AgentDelivery.mealTitle(arrivalMinute: 1180).contains("Simulated"))
     }
 }

@@ -25,7 +25,7 @@ enum AgentDelivery {
     static let appliedMessage = "Tell the user the delivery is ordered with a simulated delivery app. Give the order id, the arrival time, the items, the delivery place (the address field) and the estimated total as facts, and say the total is an estimate. Give no advice."
     static let mealAddedSentence = "Say the meal entry was added to the schedule."
     static let mealMissedSentence = "Say the meal entry could not be added to the schedule."
-    static let declinedMessage = "The simulated delivery app could not take the order. Tell the user nothing was ordered, and ask what they want to do next."
+    static let declinedMessage = "The simulated delivery app could not take the order. Tell the user that the simulated delivery app could not take the order and that nothing was ordered, and ask what they want to do next."
     static let unavailableMessage = "The simulated delivery order could not be made. Tell the user nothing was ordered."
     static let unavailableNotice = "The delivery could not be ordered. Nothing was ordered."
     static let editRejectedMessage = "The delivery place or the meal title was empty. Tell the user nothing was ordered."
