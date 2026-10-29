@@ -804,9 +804,11 @@ final class Store: ObservableObject {
         repairSkippedDaysOfStoredOccurrences()
     }
 
-    /// A materialized occurrence is saved as a stored activity first and as a skipped day second. If the app died between
-    /// the two saves, a stored activity has the id of an occurrence that is not skipped, and deleting the copy would let
-    /// the computed occurrence come back. Add the day here and save once.
+    /// A materialized occurrence is saved as a stored activity first, as a skipped day second and as the legs' cleared
+    /// series id third. If the app died between the first two saves, a stored activity has the id of an occurrence that is
+    /// not skipped, and deleting the copy would let the computed occurrence come back: add the day here and save once.
+    /// If it died before the third, the copy's legs still carry the series id, whether or not the day is skipped: clear it
+    /// here and save `events` once, only when something was cleared.
     private func repairSkippedDaysOfStoredOccurrences() {
         var repaired = series
         var changed = false
@@ -817,9 +819,28 @@ final class Store: ObservableObject {
             repaired[index].skippedDayKeys.append(dayKey)
             changed = true
         }
-        guard changed else { return }
-        series = repaired
-        saveSeries()
+        if changed {
+            series = repaired
+            saveSeries()
+        }
+        healLegsOfStoredOccurrences()
+    }
+
+    /// Clears the series id of the legs linked to a stored copy of an occurrence when it is the id of the series that owns
+    /// the occurrence. A leg that carries another id is not touched. One assignment, one save, and none when nothing changed.
+    private func healLegsOfStoredOccurrences() {
+        var healed = events
+        var cleared = false
+        for stored in activities {
+            guard let (owner, _) = series(forOccurrence: stored.id) else { continue }
+            for i in healed.indices where healed[i].linkedActivityId == stored.id && healed[i].recurrenceId == owner.id {
+                healed[i].recurrenceId = nil
+                cleared = true
+            }
+        }
+        guard cleared else { return }
+        events = healed
+        save()
     }
 
     /// Writes `series.json`. When the file was unreadable at load, its bytes are first copied to `series.unreadable.json`
@@ -894,7 +915,8 @@ final class Store: ObservableObject {
     // `events.json`.
     // @MX:REASON: the copy, the skipped day and the legs' cleared `recurrenceId` must all reach the disk. Without the first
     // two a relaunch draws the occurrence twice; without the third `deleteRecurringSeries(series.id)` would find the copy's
-    // legs still carrying the series id and remove them. A crash between the first two saves is repaired on load.
+    // legs still carrying the series id and remove them. A crash between any two of the saves is repaired on load: the
+    // skipped day after the first, the legs' cleared series id after the first or the second.
     private func materialize(_ id: UUID) -> ActivityBlock? {
         guard !activities.contains(where: { $0.id == id }),
               let (owner, dayKey) = series(forOccurrence: id),
@@ -1760,16 +1782,24 @@ final class Store: ObservableObject {
 
     /// `Delete Entire Series` on a computed series: the series, the events that carry its id, and the legs of its
     /// unstored occurrences go, with their pending alarms and the upcoming meals logged against them. A materialized
-    /// copy and its legs (which no longer carry the series id) stay.
+    /// copy and its legs stay, even when a leg still carries the series id (the state a crash while saving the copy
+    /// leaves); that id is cleared, so no event keeps the id of a series that no longer exists.
     private func deleteComputedSeries(_ seriesID: UUID) {
+        let stored = Set(activities.map { $0.id })
         let unstored = unstoredOccurrenceLegs(of: seriesID)
         let unstoredIDs = Set(unstored.map { $0.id })
-        let group = events.filter { $0.recurrenceId == seriesID || unstoredIDs.contains($0.id) }
+        let group = events.filter { e in
+            if unstoredIDs.contains(e.id) { return true }
+            guard e.recurrenceId == seriesID else { return false }
+            return !(e.linkedActivityId.map { stored.contains($0) } ?? false)
+        }
         for e in group {
             if let nid = e.notificationId { notifications.cancel(id: nid) }
         }
         let groupIDs = Set(group.map { $0.id })
-        events.removeAll { groupIDs.contains($0.id) }
+        var kept = events.filter { !groupIDs.contains($0.id) }
+        for i in kept.indices where kept[i].recurrenceId == seriesID { kept[i].recurrenceId = nil }
+        events = kept
         save()
         series.removeAll { $0.id == seriesID }
         saveSeries()
