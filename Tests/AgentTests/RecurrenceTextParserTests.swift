@@ -202,4 +202,93 @@ final class RecurrenceTextParserTests: XCTestCase {
             XCTAssertNil(RecurrenceTextParser.parse(text, start: S, calendar: C), "`\(text)` must not be read")
         }
     }
+
+    // MARK: AC-008
+
+    private func rule(_ unit: RecurrenceRule.Unit, interval: Int = 1, weeks: Int = 1, weekdays: Set<Int> = [],
+                      days: [Int] = [], last: Bool = false, nth: Int? = nil, month: Int? = nil, day: Int? = nil,
+                      leap: Bool = false, dates: [Date] = [], skipHolidays: Bool = false) -> RecurrenceRule {
+        var r = RecurrenceRule()
+        r.unit = unit; r.interval = interval; r.everyNWeeks = weeks; r.weekdays = weekdays
+        r.monthDays = days; r.lastDayOfMonth = last; r.nthWeekOfMonth = nth; r.month = month; r.day = day
+        r.isLeapMonth = leap; r.explicitDates = dates; r.skipHolidays = skipHolidays
+        return r
+    }
+
+    func testRECURTEXT_SummaryWording() {
+        let rows: [(RecurrenceRule, Date?, String)] = [
+            (rule(.daily), nil, "every day"),
+            (rule(.daily, interval: 3), at(2026, 12, 1, 0), "every 3 days until Dec 1"),
+            (rule(.weekly, weekdays: [2, 3, 4, 5, 6]), nil, "every weekday"),
+            (rule(.weekly, weekdays: [7, 1]), nil, "every weekend"),
+            (rule(.weekly, weekdays: [2]), at(2026, 11, 30, 0), "every Mon until Nov 30"),
+            (rule(.weekly, weekdays: [2, 4, 6]), nil, "every Mon, Wed and Fri"),
+            (rule(.weekly), nil, "every week"),
+            (rule(.weekly, weeks: 2), nil, "every 2 weeks"),
+            (rule(.weekly, weeks: 2, weekdays: [2, 4]), at(2027, 1, 15, 0), "every 2 weeks on Mon and Wed until Jan 15, 2027"),
+            (rule(.monthly), nil, "every month"),
+            (rule(.monthly, interval: 2, days: [5, 20], last: true), nil, "every 2 months on the 5th, 20th and last day"),
+            (rule(.monthly, weekdays: [6], nth: -1), nil, "every month on the last Fri"),
+            (rule(.weekly, weekdays: [2], nth: 1), nil, "every month on the first Mon"),
+            (rule(.yearly, month: 3, day: 5), nil, "every year on Mar 5"),
+            (rule(.yearly, interval: 2), nil, "every 2 years"),
+            (rule(.lunar, month: 3, day: 5), nil, "every year by the Korean lunar calendar on month 3 day 5"),
+            (rule(.lunar, month: 3, day: 5, leap: true), nil,
+             "every year by the Korean lunar calendar on leap month 3 day 5"),
+            (rule(.dateList, dates: [at(2026, 11, 3, 0), at(2026, 11, 10, 0), at(2027, 1, 5, 0)]), at(2030, 1, 1, 0),
+             "Nov 3 · Nov 10 · Jan 5, 2027"),
+            (rule(.daily, skipHolidays: true), nil, "every day except Korean holidays"),
+        ]
+        for (r, end, expected) in rows {
+            XCTAssertEqual(RecurrenceLine.text(rule: r, start: S, endDate: end, calendar: C), expected)
+        }
+    }
+
+    // MARK: AC-009
+
+    /// The 45 inputs of table G1 (the rows of `testRECURTEXT_FrequencyTable`).
+    private let frequencyInputs = [
+        "daily", "Everyday", "every day", "every 3 days", "every three days", "every other day",
+        "every weekday", "every weekdays", "Weekdays", "every weekend", "weekends", "weekly", "every week",
+        "every 2 weeks", "every two weeks", "every other week", "every Monday", "EVERY  mon",
+        "every Mon,Wed and Fri", "every tues & thurs", "mondays and fridays", "weekly on Sunday",
+        "every week on sat", "every 2 weeks on Monday", "every other week on Mon, Wed", "every other Friday",
+        "monthly", "every month", "every 2 months", "every other month", "monthly on the 15th",
+        "every month on the 1st and 15th", "every 2 months on the 5th, 20th and last day",
+        "every month on the last day", "every first Monday", "every month on the last Friday",
+        "third Tuesday of every month", "every 2nd thu", "yearly", "annually", "every year", "every 2 years",
+        "every year on March 5", "yearly on mar 5th", "every 2 years on Dec 25",
+    ]
+
+    /// Parse, build the rule, write the summary, parse the summary: the same arguments and the same end.
+    private func roundTrip(_ text: String, start: Date, relative: Bool = false) {
+        guard let p1 = RecurrenceTextParser.parse(text, start: start, calendar: C),
+              let rule = RecurrenceRule.from(arguments: p1.arguments) else { return XCTFail("`\(text)` was not read") }
+        let summary = RecurrenceLine.text(rule: rule, start: start, endDate: p1.endDate, calendar: C)
+        guard let p2 = RecurrenceTextParser.parse(summary, start: start, calendar: C) else {
+            return XCTFail("`\(text)` wrote `\(summary)`, which was not read back")
+        }
+        XCTAssertTrue(NSDictionary(dictionary: p1.arguments).isEqual(to: p2.arguments), "`\(text)` -> `\(summary)`")
+        XCTAssertEqual(p1.endDate, p2.endDate, "`\(text)` -> `\(summary)`")
+        if relative { XCTAssertFalse(p2.endFollowsStart, summary) }
+    }
+
+    func testRECURTEXT_SummaryRoundTrip() {
+        XCTAssertEqual(frequencyInputs.count, 45)
+        var cases = 0
+        for input in frequencyInputs {
+            for tail in ["", " until Nov 30", " until Dec 5, 2027"] {
+                roundTrip(input + tail, start: S)
+                cases += 1
+            }
+        }
+        XCTAssertEqual(cases, 135)
+        roundTrip("every Monday for 4 weeks", start: S, relative: true)
+        roundTrip("daily for 14 days", start: S, relative: true)
+        roundTrip("daily for 1 day", start: S, relative: true)
+        roundTrip("every weekday for two weeks", start: S, relative: true)
+        roundTrip("every month on the 15th for 3 months", start: S, relative: true)
+        roundTrip("daily for 1 year", start: S, relative: true)
+        roundTrip("every Monday for 2 weeks", start: at(2026, 10, 26), relative: true)
+    }
 }

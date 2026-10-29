@@ -114,6 +114,21 @@ final class RecurrenceTextFormTests: XCTestCase {
         XCTAssertNil(none.recurrence.endDate)
     }
 
+    // MARK: AC-013
+
+    func testRECURTEXT_ScreenTextConstantsUnchanged() {
+        XCTAssertEqual(RecurrenceLine.label, "Repeat")
+        XCTAssertEqual(RecurrenceLine.placeholder, "Repeat")
+        XCTAssertEqual(RecurrenceLine.missingWeekdays, "Enter weekdays")
+        XCTAssertEqual(RecurrenceLine.missingMonthDays, "Enter days of the month")
+        XCTAssertEqual(RecurrenceLine.missingLunarDate, "Enter lunar date")
+        XCTAssertEqual(RecurrenceLine.missingDate, "Enter date")
+        XCTAssertEqual(RecurrenceLine.missingEndDate, "Enter end date")
+        XCTAssertEqual(RecurrenceLine.interpretFailed, "Couldn't interpret the repeat")
+        XCTAssertEqual(RecurrenceLine.tooFar, "End date is too far away")
+        XCTAssertEqual(RecurrenceLine.noOccurrence, "No matching dates")
+    }
+
     // MARK: AC-011
 
     func testRECURTEXT_SaveMakesTheSeries() async {
