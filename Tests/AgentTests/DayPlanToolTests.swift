@@ -135,6 +135,37 @@ final class DayPlanToolTests: XCTestCase {
         XCTAssertEqual(unchecked.problems, [], "an unchecked leg is no problem and no number")
     }
 
+    func testPLANDAY_T68_aLegOverSixHoursIsUncheckedNotLateAndExactlySixHoursStaysAsBefore() {
+        XCTAssertEqual(AgentDayPlan.maxLegSeconds, 6 * 3600)
+
+        var exactly = dayRoutes
+        exactly["Foo Kitchen>Mission Hall"] = 6 * 3600
+        let atLimit = run(events: [dayA()], news: [dayB(), dayC()], seconds: exactly)
+        XCTAssertNotNil(atLimit.legs[1].route, "exactly six hours is still a checked leg")
+        XCTAssertEqual(atLimit.legs[1].leave, date("13:40"), "19:45 - 6 h - 5 min")
+        XCTAssertEqual(atLimit.problems, [.late(from: 2, to: 3, minutes: 350)], "and late as before")
+
+        var over = dayRoutes
+        over["Foo Kitchen>Mission Hall"] = 6 * 3600 + 1
+        let past = run(events: [dayA()], news: [dayB(), dayC()], seconds: over)
+        XCTAssertEqual(past.legs.count, 2)
+        XCTAssertNil(past.legs[1].route, "one second over six hours is unchecked")
+        XCTAssertNil(past.legs[1].leave)
+        XCTAssertEqual(past.problems, [], "an unchecked leg is no problem and no number")
+        XCTAssertNotNil(past.legs[0].route, "the other leg is untouched")
+
+        let dinner = newStop("Dinner at Foo Kitchen", "18:30", "19:00", place: p2)
+        let gala = newStop("Spring Gala at Mission Hall", "19:00", "21:00", place: p3)
+        let walk = run(events: [], news: [dinner, gala], seconds: ["Foo Kitchen>Mission Hall": 297_780])
+        XCTAssertNil(walk.legs[0].route, "the walk's 82.7 h leg is unchecked")
+        XCTAssertEqual(walk.problems, [], "no 4968 min late")
+        let card = lines(check(walk))
+        XCTAssertTrue(card.contains("Travel time not checked"), "the existing line: \(card)")
+        XCTAssertFalse(card.contains { $0.contains("late") || $0.contains("4968") }, "no late line: \(card)")
+        let json = AgentDayPlan.resultJSON(check(walk), checksMade: 1)
+        XCTAssertTrue(json.contains(#""problems":[],"status":"ok","unchecked":[[1,2]]"#), "the model is told the leg is unchecked: \(json)")
+    }
+
     // MARK: arithmetic against all events (T59-T63)
 
     func testPLANDAY_T59_aStopTheModelNeverListedIsStillComparedWithAnEventOfTheApp() {
@@ -443,7 +474,7 @@ final class DayPlanToolTests: XCTestCase {
         let list = try XCTUnwrap(JSONSerialization.jsonObject(with: AgentTools.declarationsJSON()) as? [[String: Any]])
         let names = list.compactMap { $0["name"] as? String }
         XCTAssertEqual(names, ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places",
-                               "get_travel_time", "check_day_plan", "show_day_plan", "request_booking"])
+                               "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "request_booking"])
         XCTAssertEqual(AgentSession.knownToolNames(), Set(names))
 
         let expected: [String: String] = ["check_day_plan": "stops", "show_day_plan": "plan_id"]
