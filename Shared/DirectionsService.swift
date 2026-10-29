@@ -129,33 +129,76 @@ struct RouteLine: Equatable {
 }
 
 extension DirectionsService {
-    /// The route line between two places for the detail screen. Stub for the red run.
+    /// The route line between two places for the detail screen: the points, or one typed reason there are none.
+    /// It sends the line request (never live) through the same transport as the other lookups and records one packet
+    /// `Route line`, never a coordinate, the polyline text, a token or a host. A cancelled lookup returns an empty
+    /// line with no failure and records nothing, whether the answer was good or not.
     func routeLine(mode: TransportMode,
                    from origin: CLLocationCoordinate2D,
                    to dest: CLLocationCoordinate2D) async -> RouteLine {
-        RouteLine(failure: .lookupFailed)
+        guard config.hasProxy,
+              let request = GoogleRoutes.request(mode: mode, from: origin, to: dest,
+                                                 mask: GoogleRoutes.routeLineMask, config: config, polyline: true) else {
+            return RouteLine(failure: .notConfigured)
+        }
+        let summary = "Route line"
+        do {
+            let route = try GoogleRoutes.parse(try await GoogleRoutes.fetch(request, transport: transport))
+            guard !Task.isCancelled else { return RouteLine() }
+            guard let text = route.encodedPolyline, let points = GoogleRoutes.decodePolyline(text) else {
+                note(summary, .failed)
+                return RouteLine(failure: .lookupFailed)
+            }
+            note(summary, .ok)
+            return RouteLine(points: points)
+        } catch {
+            guard !Task.isCancelled else { return RouteLine() }
+            let failure = GoogleRoutes.failure(for: error, hasProxy: config.hasProxy)
+            if let failure { note(summary, Self.status(for: failure)) }
+            return RouteLine(failure: failure)
+        }
     }
 }
 
-/// What one line lookup is for. Stub for the red run.
+/// What one line lookup is for: the mode and both ends rounded to the nearest 0.0001 degree, so a location fix that
+/// stays inside one rounding cell is the same lookup. Nil when either end is missing or not a valid coordinate.
 struct RouteLineKey: Hashable {
     let mode: TransportMode
+    private let originLatitude: Int
+    private let originLongitude: Int
+    private let destinationLatitude: Int
+    private let destinationLongitude: Int
 
     init?(mode: TransportMode, origin: CLLocationCoordinate2D?, destination: CLLocationCoordinate2D?) {
-        return nil
+        guard let origin, let destination else { return nil }
+        guard MapFraming.isValid(origin), MapFraming.isValid(destination) else { return nil }
+        self.mode = mode
+        originLatitude = Self.units(origin.latitude)
+        originLongitude = Self.units(origin.longitude)
+        destinationLatitude = Self.units(destination.latitude)
+        destinationLongitude = Self.units(destination.longitude)
     }
+
+    private static func units(_ degrees: Double) -> Int { Int((degrees * 10_000).rounded()) }
 }
 
-/// The line the screen holds. Stub for the red run.
+/// The line the screen holds, and the key it belongs to. An answer is kept only while its key is the current one, so a
+/// late answer for an older lookup changes nothing.
 struct RouteLineSlot: Equatable {
     private(set) var key: RouteLineKey?
     private(set) var points: [RoutePoint] = []
 
+    /// A new lookup starts: the old line goes away at once.
     mutating func begin(_ key: RouteLineKey?) {
+        self.key = key
+        points = []
     }
 
+    /// True when the answer was for the current key and is now held.
     @discardableResult
     mutating func accept(_ points: [RoutePoint], for key: RouteLineKey) -> Bool {
-        false
+        guard key == self.key else { return false }
+        self.points = points
+        return true
     }
 }
