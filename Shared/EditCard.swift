@@ -241,13 +241,13 @@ extension EditCard {
     }
 }
 
-/// 실제로 만들어질 첫 회차의 시작 시각(REQ-020 (b) 카드 날짜 표시의 단일 출처, A.5·F9) —
-/// rule.dates에 "회차 자기 시작 > now" 필터를 건 첫 날이다. 카드가 이 계산을 따로 하면 "오늘
-/// 시작 시각이 지났는데 카드는 오늘 날짜를 보이는" 어긋남이 생긴다(계약 5). 시작 시각을 인자로
-/// 받는 이유: 반복마다 회차 시작이 다르다 — 호출자가 그 반복의 시작을 넣게 한다. Store의 생성 루프
-/// (addRecurringLinkedSeries)가 이 관문의 행동 기준이고, 드라이버가 둘의 일치를 잰다. 이 파일에
-/// 사는 이유: 실행부(카드 줄을 세우는 쪽)와 바퀴 날짜 표시가 같은 파일에서 읽어야 하는데, 이 파일이
-/// 이미 카드 시각 해석의 단일 출처(BesirTime)를 가지고 있어서다.
+/// The start of the first occurrence that will really be made (REQ-020 (b), the single source of the date the card
+/// shows): the first day of rule.dates whose own start is after now. If the card counted this itself it could show today
+/// although today's start time has passed (contract 5). The start time is an argument because each repeat has its own
+/// start; the caller passes that repeat's start. The save in Store (saveManualActivity) uses the same gate
+/// (occurrenceSpan), and the driver measures that the two agree. It lives in this file because the code that builds the
+/// card rows and the wheel's date display must read it from one file, and this file already holds the single source of
+/// card time reading (BesirTime).
 extension RecurrenceRule {
     /// 종료 날짜(그날 포함)까지에서 첫 회차.
     /// 찾는 순간 멈추는 firstDate를 쓴다: 종료 날짜를 아직 모르는 카드가 먼 범위를 넘겨도 목록 전체를 짓지 않는다.

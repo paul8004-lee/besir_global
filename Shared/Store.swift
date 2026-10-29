@@ -48,13 +48,6 @@ final class Store: ObservableObject {
         return start < d.end && end > d.start
     }
 
-    /// 반복 한 번에 만들 수 있는 회차 수(SPEC-UIKIT-019 REQ-007). 단위가 주 수가 아니라 **회차 수**인 이유:
-    /// 규칙이 N일·N개월·여러 날짜까지 넓어져 "몇 주"로는 규모를 못 잰다. 182 = 26주 매일, 곧 지금 최악
-    /// 규모(옛 26주 상한 × 7)라 새 부하를 더하지 않는다. 이동 토글과 무관하게 회차만 센다.
-    /// 후속 카드 t84(규칙 저장·그릴 때 계산)가 오면 없어질 S4 동안의 값이다.
-    /// nonisolated — maxBufferMinutes와 같은 이유(카드 입력 검증이 메인액터 밖에서 부른다).
-    nonisolated static let maxRecurrenceOccurrences = 182
-
     /// 한 구간(활동·이동)이 달력 점 계산에서 하루씩 걷히는 최대 날 수이자, 생성 시점에 활동
     /// 길이로 받아들이는 상한. 두 곳이 **같은 값**이어야 한다 — 걷기 상한만 있으면 상한 넘는
     /// 활동이 "점이 잘린 채" 저장되고, 생성 가드만 있으면 깨진 저장 데이터가 걷기를 비한정으로
@@ -249,9 +242,9 @@ final class Store: ObservableObject {
         return (activity.id, made)
     }
 
-    // 이동 없는 반복 활동만 만들던 addRecurringActivities는 SPEC-UIKIT-018 M3에서 없앴다 — 반복은
-    // 이제 활동이 늘 있고 이동은 선택인 한 경로(addRecurringLinkedSeries)로만 만든다. 두 생성 루프가
-    // 회차 관문(시작 지남·끝 ≤ 시작)을 따로 들고 있으면 한쪽만 늙는다(계약 5).
+    // The repeat that made activities without travel (addRecurringActivities) went in SPEC-UIKIT-018 M3, and the repeat
+    // that made one stored activity per day went in SPEC-RECURRULE-001: a repeat is now one stored RepeatSeries,
+    // made by saveManualActivity and drawn from its rule.
 
     /// 활동 블록 정보를 수정한다(제목·장소·시간).
     func updateActivity(_ updated: ActivityBlock) {
@@ -785,7 +778,7 @@ final class Store: ObservableObject {
         drvSaveActivitiesCount += 1   // t50 S1 — REQ-005 계수기(앱 논리 영향 없음)
         try? FileManager.default.createDirectory(at: AppConfig.supportDirectory, withIntermediateDirectories: true)
         try? JSONEncoder().encode(activities).write(to: activitiesURL)
-        calendarMirror.reconcile(activities)
+        calendarMirror.reconcile(mirrorActivities())
     }
 
     private func loadActivities() {
@@ -839,6 +832,8 @@ final class Store: ObservableObject {
         guard let data = try? JSONEncoder().encode(series),
               (try? data.write(to: seriesURL, options: .atomic)) != nil else { return false }
         seriesLoadFailed = false
+        // Every change of a series (a skipped day, a deleted series) reaches the mirror, so its link is removed.
+        calendarMirror.reconcile(mirrorActivities())
         return true
     }
 
@@ -1105,18 +1100,34 @@ final class Store: ObservableObject {
 
     func attachCalendar(_ mirror: AppleCalendarMirror) {
         mirror.onStatus = { [weak self] in self?.calendarStatus = $0 }
+        // A store that is gone keeps every link: nothing is left to say a link is dead.
+        mirror.retains = { [weak self] key in self?.retainsCalendarLink(key) ?? true }
         mirror.captureBaseline(activities)
         calendarMirror = mirror
     }
 
-    func reconcileCalendar() { calendarMirror.reconcile(activities) }
+    func reconcileCalendar() { calendarMirror.reconcile(mirrorActivities()) }
 
     /// How many days after today the Apple Calendar mirror is given occurrences of a repeat.
     nonisolated static let mirrorWindowDays = 60
 
-    /// Stub: the stored activities only.
+    /// What the Apple Calendar mirror is given: the stored activities plus the occurrences of every series from the start
+    /// of today to `mirrorWindowDays` days later (a stored activity wins over an occurrence of the same id).
     func mirrorActivities(now: Date? = nil, calendar: Calendar = .current) -> [ActivityBlock] {
-        activities
+        let start = calendar.startOfDay(for: now ?? replanNow())
+        guard let end = calendar.date(byAdding: .day, value: Self.mirrorWindowDays, to: start) else { return activities }
+        return activities + computedOccurrences(in: DateInterval(start: start, end: end), calendar: calendar)
+    }
+
+    /// Whether the calendar link of an activity that is not in the mirror's list must stay: always while `series.json` is
+    /// unreadable (the series that were lost with it are unknown), else when the key is a live occurrence of an existing
+    /// series (a day the rule produces and that is not skipped). Anything else is an activity that is gone.
+    // @MX:NOTE: a live occurrence outside the window is kept, not removed; only a skipped day, a deleted series or an id
+    // that is no occurrence loses its event (REQ-017).
+    func retainsCalendarLink(_ key: String) -> Bool {
+        if seriesLoadFailed { return true }
+        guard let id = UUID(uuidString: key), series(forOccurrence: id) != nil else { return false }
+        return activity(id: id) != nil
     }
 
 
@@ -1219,148 +1230,14 @@ final class Store: ObservableObject {
         return (start, stop)
     }
 
-    /// 반복 활동 한 벌을 통째로 만든다 — 회차마다 활동 하나와, 켠 편에 따라 그 활동에 연결된 가는
-    /// 이동·오는 이동(SPEC-UIKIT-018 REQ-002·REQ-011 — AI의 반복 create_activity가 부른다). 활동과
-    /// 이동을 메모리에서 전부 만든 뒤 저장은 activities·events 각 한 번, 알림 재예약도 한 번으로
-    /// 끝낸다(SPEC-ONTIME-008 REQ-005 — 구간 종류마다 저장·재예약을 되풀이하던 옛 경로의 교훈).
-    ///
-    /// **활동이 늘 있다.** 옛 시그니처는 복귀 시각 하나가 "활동의 끝"과 "오는 이동이 있다"를 함께
-    /// 뜻해서, 복귀 시각이 없으면 활동 없이 연결 없는 출근 이동만 생겼다(018 REQ-001·REQ-006 —
-    /// 활동 없는 이동 금지). 그 둘을 갈랐다: 끝은 `end`, 오는 이동은 `returnTo`가 있을 때만이다.
-    /// 이동은 같은 회차 루프에서 막 만든 활동 id로 **생성 시에** 연결한다(시각·장소 대조로 짝짓지
-    /// 않는다) — 이 함수에서는 연결 없는 이동이 생길 수 없다. 점심을 같은 요청으로 따로 만들던
-    /// 두 번째 반복도 없앴다(O-E1·O-S3-12 — 점심은 AI가 반복 활동을 하나 더 만든다).
-    ///
-    /// 장소가 없으면(O-S3-13) 이동을 만들지 않는다 — 이동의 한쪽 끝이 활동 장소다(addLeg의 noPlace
-    /// 거절과 같은 규칙). **회차별 관문**: 그날 시작이 지났거나 끝이 시작보다 뒤가 아니면 그날의
-    /// 활동과 이동을 통째로 만들지 않는다. 날짜 거리(`end.dayDistance`)는 회차 날에서의 절대 거리이고,
-    /// 0…1 자르기와 24시간 상한 판정은 실행부가 단일 출처로 맡는다 — 여기서 다시 자르면 같은 판정이
-    /// 두 벌이 된다(계약 5).
-    ///
-    /// 이동시간 조회는 편마다 첫 회차만 하고 나머지는 그 값을 복사한다(SPEC-ONTIME-008 REQ-005).
-    /// 반환값은 번호와 종류별 건수 — 호출자가 결과 문장을 쓸 수 있게.
-    @discardableResult
-    func addRecurringLinkedSeries(title: String,
-                                   location: Place?,
-                                   rule: RecurrenceRule,
-                                   startDate: Date,
-                                   endDate: Date,
-                                   startHour: Int, startMinute: Int,
-                                   end: (hour: Int, minute: Int, dayDistance: Int),
-                                   outboundFrom: Place?,
-                                   returnTo: Place?,
-                                   outboundMode: TransportMode,
-                                   returnMode: TransportMode,
-                                   bufferMinutes: Int,
-                                   notifyLeadMinutes: Int,
-                                   notifyEnabled: Bool,
-                                   syncToCalendar: Bool) async
-        -> (recurrenceId: UUID, activities: Int, outboundLegs: Int, returnLegs: Int) {
-        let calendar = Calendar.current
-        let now = Date()
-        let rid = UUID()
-        // 종료 날짜(그날 포함)까지의 회차 수가 상한을 넘으면 **잘라서 만들지 않고** 하나도 만들지 않는다
-        // (REQ-007 — 옛 26주 자르기는 사용자가 모르게 시리즈를 줄였다). 셈은 전개 **전에** 한다:
-        // 9999년 같은 먼 종료 날짜가 전개로 메인 액터를 막으면 안 되기 때문이다. 정확히 상한이면 허용.
-        // 카드는 같은 셈 함수(RecurrenceRule.occurrenceCount)로 먼저 잠그므로 여기는 마지막 방어선이다.
-        guard rule.occurrenceCount(from: startDate, through: endDate, limit: Self.maxRecurrenceOccurrences,
-                                   calendar: calendar) <= Self.maxRecurrenceOccurrences else {
-            return (recurrenceId: rid, activities: 0, outboundLegs: 0, returnLegs: 0)
-        }
-        var newActivities: [ActivityBlock] = []
-        var newEvents: [ScheduledEvent] = []
-        var outboundCount = 0
-        var returnCount = 0
-        // REQ-005 — 편마다 "첫 회차만 조회" 상태. await를 건너며 값이 유지되어야 해서
-        // 참조형 하나로 접는다(튜플 inout은 async 경계를 못 넘는다).
-        final class LegSeries { var seconds: TimeInterval? = nil; var firstDone = false }
-        let outCache = LegSeries(), retCache = LegSeries()
-
-        // 구간 하나를 만들어 편의 캐시에 따라 조회/복사를 적용한다(REQ-005: 첫 회차만 실제 조회).
-        func makeLeg(_ cache: LegSeries, _ legTitle: String, from: Place, to: Place, mode: TransportMode,
-                     anchor: RecurrenceAnchor, anchorDate: Date, buffer: Int,
-                     linked: UUID) async -> ScheduledEvent {
-            var event = ScheduledEvent(title: legTitle, origin: from, destination: to,
-                                       arrivalDate: anchorDate, mode: mode,
-                                       bufferMinutes: buffer, notifyLeadMinutes: notifyLeadMinutes)
-            event.recurrenceId = rid
-            event.linkedActivityId = linked
-            event.notifyEnabled = notifyEnabled
-            event.syncToCalendar = syncToCalendar
-            switch anchor {
-            case .arrival:
-                event.anchor = .arrival
-                if !cache.firstDone {
-                    await applyEstimate(to: &event)
-                    cache.seconds = event.travelSeconds
-                    cache.firstDone = true
-                } else if let seconds = cache.seconds {
-                    applyCachedArrivalEstimate(to: &event, travelSeconds: seconds)
-                }
-            case .departure:
-                // 방향과 출발 시각은 조회 결과와 무관하게 먼저 세운다(addLegToSeries와 같은 이유, t50 N-1) —
-                // 첫 조회가 실패해 캐시가 비면 둘째 회차부터 복사가 없어, 출발 시각이 빈 채로 저장돼
-                // 재조회 대상에서 빠진다.
-                event.anchor = .departure
-                event.departureDate = anchorDate
-                if !cache.firstDone {
-                    await applyDepartureAnchoredEstimate(to: &event, departureDate: anchorDate)
-                    cache.seconds = event.travelSeconds
-                    cache.firstDone = true
-                } else if let seconds = cache.seconds {
-                    applyCachedDepartureEstimate(to: &event, departureDate: anchorDate, travelSeconds: seconds)
-                }
-            }
-            return event
-        }
-
-        for day in rule.dates(from: startDate, through: endDate, calendar: calendar) {
-            guard let span = Self.occurrenceSpan(on: day, startHour: startHour, startMinute: startMinute, end: end,
-                                                 after: now, calendar: calendar) else { continue }
-            let start = span.start, stop = span.stop
-            var activity = ActivityBlock(title: title, location: location, startDate: start, endDate: stop,
-                                         recurrenceId: rid)
-            activity.syncToCalendar = syncToCalendar
-            newActivities.append(activity)
-            guard let place = location else { continue }
-            if let from = outboundFrom {
-                newEvents.append(await makeLeg(outCache, title, from: from, to: place, mode: outboundMode,
-                                               anchor: .arrival(hour: startHour, minute: startMinute),
-                                               anchorDate: start, buffer: bufferMinutes, linked: activity.id))
-                outboundCount += 1
-            }
-            if let to = returnTo {
-                // 오는 편 여유는 0이다 — addActivityWithTravel이 복귀 구간에 박는 값과 같다.
-                newEvents.append(await makeLeg(retCache, "\(title) (return)", from: place, to: to, mode: returnMode,
-                                               anchor: .departure(hour: end.hour, minute: end.minute),
-                                               anchorDate: stop, buffer: 0, linked: activity.id))
-                returnCount += 1
-            }
-        }
-
-        if !newActivities.isEmpty {
-            activities.append(contentsOf: newActivities)
-            activities.sort { $0.startDate < $1.startDate }
-            saveActivities()
-        }
-        if !newEvents.isEmpty {
-            events.append(contentsOf: newEvents)
-            events.sort { $0.arrivalDate < $1.arrivalDate }
-            // events 저장은 이 재예약 꼬리의 save()가 배치 전체를 한 번에 쓴다 — 여기서 따로 save()를
-            // 부르면 REQ-005의 "저장 1"이 두 번이 된다. 알림 64건 한도는 기존 생성 경로와 같은 이유로
-            // 가까운 것부터 다시 채운다(rescheduleNearestNotifications 주석).
-            rescheduleNearestNotifications()
-        }
-        return (recurrenceId: rid, activities: newActivities.count,
-                outboundLegs: outboundCount, returnLegs: returnCount)
-    }
-
-    /// 수동 새 활동 카드의 저장(SPEC-UIKIT-019 REQ-001·002) — 화면(AddActivityView)의 저장이 부른다. 반복 글이 비었으면 한 번짜리
-    /// 활동(addActivityWithTravel), 반복이 서 있으면 반복 시리즈(addRecurringLinkedSeries)다. 반복 규칙은 저장해 둔 규칙이 아니라
-    /// 해석 인자에서 **다시 읽는다**(RecurrenceRule.from(arguments:)) — AI 실행부와 같은 규칙 짓기 함수·같은 전개 함수를 지나야
-    /// 두 카드가 같은 글에서 같은 날짜를 만든다(계약 5, AC-002). 카드가 다 차 있지 않거나(빠진 항목·해석 실패·0회·상한 초과는
-    /// 카드가 이미 잠근다) 반복 회차의 끝이 시작 뒤 24시간 밖이면 아무것도 만들지 않고 false다. 만든 활동이 있으면 true.
-    /// 화면이 쥔 좌표 사전은 폼(form.confirmedPlaces)에 있어 이름을 다시 검색하지 않는다.
+    /// The save of the manual New Activity card (SPEC-UIKIT-019, SPEC-RECURRULE-001), called by AddActivityView. An empty
+    /// Repeat makes one stored activity (`addActivityWithTravel`). A repeat that stands makes one stored `RepeatSeries`
+    /// (no copy per day): the rule is read again from the interpreted arguments (`RecurrenceRule.from(arguments:)`), the
+    /// same rule-making and expansion code as the agent, so both cards make the same dates. The travel legs of the next
+    /// `legWindowDays` days are made before the call returns (`fillSeriesLegs`). Nothing is made, and the result is false,
+    /// when the card is not ready, an occurrence would end outside 24 hours after its start, no occurrence lies after the
+    /// current time inside the horizon, or the series file cannot be written. The coordinates the screen holds are in the
+    /// form (`form.confirmedPlaces`), so a name is not searched again.
     @discardableResult
     func saveManualActivity(_ form: LegCardForm, calendarDefault: Bool) async -> Bool {
         let card = form.card
@@ -1708,9 +1585,9 @@ final class Store: ObservableObject {
                                    alreadyHasRoleCount: hasRole, noPlaceCount: noPlace)
     }
 
-    /// "반복 전체" 이동 추가(REQ-016) — 두 번째 생성 진입점(생성은 addRecurringLinkedSeries,
-    /// 단발 추가는 addLeg). 대상 집합은 선택창을 열 때 잡은 targetActivityIds(preview의
-    /// eligibleIds)를 그대로 받는다. 같은 저장 안 순서(P-12): ② 형제에 이동 추가 → ③ 편집 회차도
+    /// Adds a leg to the whole series (REQ-016). It is the second way legs are made (the fill is the first; a single
+    /// occurrence goes through addLeg). The target set is the targetActivityIds taken when the dialog opened (the preview's
+    /// eligibleIds), taken as they are. 같은 저장 안 순서(P-12): ② 형제에 이동 추가 → ③ 편집 회차도
     /// 이동을 받는다(editedDetaches면 번호 없이) → ④ 편집 회차의 빠짐이 맨 끝. 조회는 첫 회차만
     /// 하고 나머지는 복사하며(REQ-005) 저장·재예약은 activities·events 각 한 번이다. 캘린더 동의는
     /// 회차마다 그 활동의 wantsCalendarSync를 따른다(addLeg와 같은 규칙 — autoAddToCalendar는
@@ -1807,8 +1684,8 @@ final class Store: ObservableObject {
             }
         }
         if detachedActivity { saveActivities() }
-        // 이 재예약 꼬리의 save()가 events 배치 전체를 한 번에 쓴다(addRecurringLinkedSeries와
-        // 같은 구조 — 여기서 따로 save()를 부르면 "저장 1"이 두 번이 된다).
+        // The save() at the tail of this reschedule writes the whole events batch once (the leg fill has the same
+        // shape); a save() of its own here would make the single save two.
         rescheduleNearestNotifications()
         return (added, skippedExisting, skippedNoPlace)
     }
@@ -1919,8 +1796,8 @@ final class Store: ObservableObject {
         let ids = recurringSeries(recurrenceId).map(\.id)
         guard !ids.isEmpty else { return 0 }
 
-        // API 절약을 위해 첫 회차만 실제로 새 이동시간을 조회하고 나머지는 그 값을 복사한다
-        // (addRecurringLinkedSeries와 같은 전략).
+        // To save API calls only the first occurrence looks up the new travel time and the rest copy it (the leg fill
+        // does the same).
         var cachedTravelSeconds: TimeInterval?
         var firstDone = false
         for id in ids {
@@ -2070,10 +1947,11 @@ final class Store: ObservableObject {
     }
 
     /// 출발지·목적지·수단으로 이동시간을 계산해 출발시각/알림을 세팅한다(기존 알림은 갱신).
-    /// @MX:NOTE keepOnFailure는 refresh 재조회에만 켠다 — 나머지 다섯 호출 그룹(addEvent·
-    /// addRecurringLinkedSeries·updateRecurringSeries·updateEvent·구글 가져오기)은 직전 값이 없거나
-    /// 틀려서 "실패해도 유지"가 의미가 없다(SPEC-ONTIME-005 REQ-003, plan F1). 켜면 조회가
-    /// 성공한 뒤에만 옛 알림을 취소·비워, 오프라인 재진입이 이동시간과 알림을 지우지 않게 한다(REQ-001).
+    /// @MX:NOTE keepOnFailure is switched on for the refresh lookup only; the other call groups (addEvent,
+    /// updateRecurringSeries, updateEvent, the Google import) have no earlier value, or a wrong one, so "keep on failure"
+    /// means nothing there (SPEC-ONTIME-005 REQ-003, plan F1). When it is on, the old alarm is
+    /// cancelled and cleared only after the lookup succeeded, so an offline re-entry does not erase the travel time and
+    /// the alarm (REQ-001).
     @discardableResult
     private func applyEstimate(to event: inout ScheduledEvent, keepOnFailure: Bool = false,
                                live: Bool = false) async -> RefreshAlarmDecision? {

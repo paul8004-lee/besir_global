@@ -74,7 +74,11 @@ final class AppleCalendarMirror: CalendarMirroring {
     private(set) var running = false
     /// The access request is made at most once per app run, across the write pass and the read.
     private var requested = false
-    /// Stub: the planner is not given it yet.
+    /// Whether the link of an activity that is not in the list a pass is given must stay. `Store.attachCalendar` sets it.
+    // @MX:NOTE: the list a pass gets holds only the occurrences of a repeat inside the mirror window, so a live
+    // occurrence outside it looks like a deleted activity. `retains` is how the store says "still alive, keep the
+    // event" (and "keep everything" while the series file is unreadable); without it the planner would remove the
+    // event of every occurrence that leaves the window.
     var retains: (String) -> Bool = { _ in false }
 
     static var defaultLinksURL: URL {
@@ -132,7 +136,7 @@ final class AppleCalendarMirror: CalendarMirroring {
             file = loaded
         }
 
-        let plan = CalendarPlanner.plan(activities: list, file: file, now: now())
+        let plan = CalendarPlanner.plan(activities: list, file: file, now: now(), retains: retains)
 
         // Baseline ids of activities that are gone are dropped and saved here, before the access gate,
         // so every exit below has already pruned.
