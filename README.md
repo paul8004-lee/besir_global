@@ -107,6 +107,7 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **Camera guard and 500 m place radius** — the camera snap refuses a photo until the capture session runs, and a sign photographed up to 500 m from its place now finds it (was 250 m) — [#49](https://github.com/paul8004-lee/besir_global/pull/49)
 - **Time wheel commits what it shows** — opening an unset Start or End time on a new activity makes the time its wheel shows the value at once, so Add is live without turning the wheel — [#50](https://github.com/paul8004-lee/besir_global/pull/50)
 - **Repeat legs follow their occurrence** — deleting a whole series keeps the travel legs of an occurrence already saved on its own, and after a time zone change the legs of repeat occurrences move onto the occurrence so the departure alarm fires at the right time — [#57](https://github.com/paul8004-lee/besir_global/pull/57)
+- **Tap away closes the time wheel** — with a time wheel open on New Activity, an activity or New Event, a tap on the empty area outside the edit card closes it, the same as a tap on the card's own empty space — [#58](https://github.com/paul8004-lee/besir_global/pull/58)
 
 Some baseline files are edited in place, only for two reasons: the English localization of the app UI, and the split of the app and App Group identifiers from the earlier app. Both are listed as lines above when they land. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 

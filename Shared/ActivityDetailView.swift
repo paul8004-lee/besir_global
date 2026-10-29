@@ -83,6 +83,8 @@ struct ActivityDetailView: View {
     /// '현재 위치' 행의 측위 대기. 행을 다시 타면 이전 대기를 취소한다 — 대기가 둘 나란히 돌면
     /// 같은 확정이 두 번 일어난다(AddEventView.prefillTask와 같은 형태).
     @State private var originLocationTask: Task<Void, Never>?
+    // Bumped by a tap on the empty sheet area; the card closes its open wheel when it changes.
+    @State private var outsideTapCount = 0
 
     private var activity: ActivityBlock? {
         store.activity(id: activityId)
@@ -102,7 +104,8 @@ struct ActivityDetailView: View {
                     // .task가 딱 한 번 일으킨다.
                     if let card = form?.card {
                         EditCardView(card: card, busy: saving, actions: actions,
-                                     chrome: EditCardChrome(header: nil, confirmTitle: nil))
+                                     chrome: EditCardChrome(header: nil, confirmTitle: nil),
+                                     outsideTapCount: outsideTapCount)
                     }
                     ForEach(seriesReport) { line in
                         if line.done {
@@ -139,6 +142,7 @@ struct ActivityDetailView: View {
                 }
                 .padding(24)
             }
+            .onTapGesture { outsideTapCount += 1 }
             .background(Theme.bg)
             .navigationTitle("Edit Activity")
             #if os(iOS)
