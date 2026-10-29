@@ -2,7 +2,7 @@ import XCTest
 import UserNotifications
 @testable import besir
 
-/// SPEC-SHAREOPEN-001: the fixed doorbell notification a share posts, T1 to T7 (T8 follows with the manager method).
+/// SPEC-SHAREOPEN-001: the fixed doorbell notification a share posts, T1 to T8.
 /// Every test uses `FakeNudgeCenter`; none touches the real notification center.
 @MainActor
 final class ShareNudgeTests: XCTestCase {
@@ -90,6 +90,12 @@ final class ShareNudgeTests: XCTestCase {
     func testSHAREOPEN_ClearRemovesOnlyTheNudge() {
         let center = FakeNudgeCenter()
         ShareNudge.clear(center: center)
+        XCTAssertEqual(center.removed, [["besir.share.nudge"]])
+    }
+
+    func testSHAREOPEN_ManagerClearShareNudgeUsesTheGivenCenter() {
+        let center = FakeNudgeCenter()
+        NotificationManager().clearShareNudge(center: center)
         XCTAssertEqual(center.removed, [["besir.share.nudge"]])
     }
 }
