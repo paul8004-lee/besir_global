@@ -732,9 +732,9 @@ final class BudgetClientTests: XCTestCase {
         // Every earlier case keeps its raw value and names.
         XCTAssertEqual(ConnectionParty.allCases.map(\.rawValue),
                        ["instagram", "shareSheet", "besir", "museSpark", "imageReader", "googlePlaces", "googleRoutes", "appleCalendar",
-                        "bookingPartner", "budgetPartner"])
+                        "bookingPartner", "budgetPartner", "deliveryPartner"])
         XCTAssertEqual(ConnectionKind.allCases.map(\.rawValue),
-                       ["share", "imageRead", "placeSearch", "route", "agentMessage", "agentToolCall", "calendarSave", "booking", "budget"])
+                       ["share", "imageRead", "placeSearch", "route", "agentMessage", "agentToolCall", "calendarSave", "booking", "budget", "delivery"])
         XCTAssertEqual(ConnectionParty.bookingPartner.displayName, "Example Tables (Simulated)")
         XCTAssertEqual(ConnectionParty.museSpark.displayName, "Muse Spark")
         XCTAssertEqual(ConnectionKind.booking.displayName, "Booking")

@@ -113,22 +113,12 @@ struct AgentChatView: View {
     private func cardView(_ card: AgentCard) -> some View {
         let pending = session.pendingCard === card
         return VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(card.lines.enumerated()), id: \.offset) { index, line in
-                Text(verbatim: line)
-                    .font(index == 0 ? .headline : .body)
-                    .foregroundStyle(Theme.ink)
-            }
+            AgentCardRows(card: card, editors: card.editors, pending: pending, locked: session.isResolving)
             if card.showsGoogleMark {
                 GoogleMapsAttribution()
             }
             if pending {
-                HStack(spacing: 12) {
-                    Button("Confirm") { Task { await session.confirmCard() } }
-                        .buttonStyle(.borderedProminent)
-                    Button("Cancel") { Task { await session.cancelCard() } }
-                        .buttonStyle(.bordered)
-                }
-                .disabled(session.isResolving)
+                AgentCardActions(session: session, card: card, editors: card.editors)
             } else if let mark = card.mark {
                 Text(verbatim: mark.rawValue)
                     .font(.footnote)
@@ -156,6 +146,96 @@ struct AgentChatView: View {
         guard session.canSend, !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         session.send(draft)
         draft = ""
+    }
+}
+
+/// The rows of a card. While the card waits, the rows of its editable values are controls bound to the card's editors (SPEC-DELIVERY-001);
+/// the labels are the fixed words of `AgentDelivery`. It observes the editors because `cardView(_:)` observes only the session.
+private struct AgentCardRows: View {
+    let card: AgentCard
+    @ObservedObject var editors: AgentCardEditors
+    let pending: Bool
+    /// True while the session applies the card: no control takes an edit then.
+    let locked: Bool
+
+    var body: some View {
+        ForEach(Array(card.rows.enumerated()), id: \.offset) { index, row in
+            switch row {
+            case .text(let line):
+                lineView(line, index)
+            case .delivery(let line, let mark):
+                if pending, let delivery = editors.delivery {
+                    VStack(alignment: .leading, spacing: 2) {
+                        TextField(AgentDelivery.deliveryPlaceLabel, text: binding(delivery))
+                            .textFieldStyle(.roundedBorder)
+                        markView(mark)
+                    }
+                    .disabled(locked)
+                } else {
+                    lineView(line, index)
+                }
+            case .meal(let line, let mark):
+                if pending, let on = editors.mealOn {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle(isOn: Binding(get: { on.isOn }, set: { on.isOn = $0 })) {
+                            Text(verbatim: AgentDelivery.mealSwitchLabel)
+                        }
+                        if on.isOn, let title = editors.mealTitle, let start = editors.mealStart {
+                            TextField(AgentDelivery.mealTitleLabel, text: binding(title))
+                                .textFieldStyle(.roundedBorder)
+                            DatePicker(AgentDelivery.mealStartLabel, selection: Binding(get: { start.start }, set: { start.start = $0 }),
+                                       displayedComponents: .hourAndMinute)
+                                .environment(\.calendar, start.calendar)
+                                .environment(\.timeZone, start.calendar.timeZone)
+                            markView(mark)
+                        }
+                    }
+                    .disabled(locked)
+                } else if let line {
+                    lineView(line, index)
+                }
+            }
+        }
+    }
+
+    private func binding(_ field: AgentCardText) -> Binding<String> {
+        Binding(get: { field.text }, set: { field.text = $0 })
+    }
+
+    private func lineView(_ line: String, _ index: Int) -> some View {
+        Text(verbatim: line)
+            .font(index == 0 ? .headline : .body)
+            .foregroundStyle(Theme.ink)
+    }
+
+    /// The mark a line holds (`(suggested ...)`), drawn beside its control.
+    @ViewBuilder
+    private func markView(_ mark: String) -> some View {
+        let text = mark.trimmingCharacters(in: .whitespaces)
+        if !text.isEmpty {
+            Text(verbatim: text)
+                .font(.footnote)
+                .foregroundStyle(Theme.muted)
+        }
+    }
+}
+
+/// Confirm and Cancel of a pending card. Confirm is disabled while an edited value is blank; both are disabled while the session
+/// applies the card.
+private struct AgentCardActions: View {
+    @ObservedObject var session: AgentSession
+    let card: AgentCard
+    @ObservedObject var editors: AgentCardEditors
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button("Confirm") { Task { await session.confirmCard() } }
+                .buttonStyle(.borderedProminent)
+                .disabled(!card.canConfirm)
+            Button("Cancel") { Task { await session.cancelCard() } }
+                .buttonStyle(.bordered)
+        }
+        .disabled(session.isResolving)
     }
 }
 

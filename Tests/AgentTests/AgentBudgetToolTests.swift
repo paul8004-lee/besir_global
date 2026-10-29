@@ -198,13 +198,13 @@ final class AgentBudgetToolTests: XCTestCase {
 
     func testBUDGET_G01_ElevenDeclarationsTheNewTwoSitBeforeRequestBookingAndAreStrict() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 11)
+        XCTAssertEqual(decls.count, 13)
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places",
-                        "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "request_booking"])
+                        "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "get_delivery_options", "order_delivery", "request_booking"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 11)
+        XCTAssertEqual(recorded.count, 13)
         for index in decls.indices {
             XCTAssertTrue((decls[index] as AnyObject).isEqual(recorded[index]), "declaration \(index) differs from the fixture")
         }
