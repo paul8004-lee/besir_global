@@ -2697,4 +2697,29 @@ final class RepeatSeriesStoreTests: XCTestCase {
         }
         await settle(rig.mirror)
     }
+
+    // MARK: SPEC-REPEATFIX-001 (card t82) - repairs of the stored repeat rule
+
+    // MARK: AC-007 - the fill chooses its days again after its awaits
+
+    func testREPEATFIX_FillChoosesDaysAgainAfterItsAwaits() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let series = plannedStandup()
+        XCTAssertTrue(store.addSeries(series))
+        let nov9 = series.occurrenceID(dayKey: 20261109)
+        // Runs once per pass, after the days are chosen and before anything is written: the occurrence goes meanwhile.
+        store.drvFillGate = {
+            if let occurrence = store.activity(id: nov9) { store.deleteActivity(occurrence) }
+        }
+
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.drvFillGateReached, 1)
+        XCTAssertEqual(store.series[0].skippedDayKeys, [20261109])
+        XCTAssertEqual(store.events.count, 4, "legs for Nov 2 and Nov 16 only")
+        XCTAssertEqual(legDayKeys(store, .arrival), [20261102, 20261116])
+        XCTAssertEqual(legDayKeys(store, .departure), [20261102, 20261116])
+        XCTAssertTrue(store.events.allSatisfy { $0.linkedActivityId != nov9 }, "no leg for the deleted occurrence")
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+    }
 }
