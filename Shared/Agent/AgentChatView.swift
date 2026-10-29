@@ -94,7 +94,11 @@ struct AgentChatView: View {
                 Spacer(minLength: 40)
             }
         case .card(let card):
-            cardView(card)
+            if let fieldCard = card.fieldCard {
+                AgentFieldCardContent(session: session, card: card, fieldCard: fieldCard, pending: session.pendingCard === card)
+            } else {
+                cardView(card)
+            }
         case .notice(let line):
             Text(verbatim: line)
                 .font(.footnote)
@@ -220,18 +224,59 @@ private struct AgentCardRows: View {
     }
 }
 
+/// SPEC-CHOICECARD-001: a card drawn from a partner's field list. While it waits, the edit card draws it (its own background and
+/// border, built once by the model and never rebuilt here, as `AddActivityView` rules for its card); the chat's Confirm and Cancel
+/// sit below it. Once resolved, the lines the model holds are drawn as plain text inside the chat's own border. It observes the
+/// model because `row(_:)` observes only the session.
+private struct AgentFieldCardContent: View {
+    @ObservedObject var session: AgentSession
+    let card: AgentCard
+    @ObservedObject var fieldCard: AgentFieldCard
+    let pending: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if pending {
+                EditCardView(card: fieldCard.card, busy: session.isResolving, actions: fieldCard.actions,
+                             chrome: EditCardChrome(header: fieldCard.header, confirmTitle: nil))
+            } else {
+                ForEach(Array(fieldCard.lines.enumerated()), id: \.offset) { index, line in
+                    Text(verbatim: line)
+                        .font(index == 0 ? .headline : .body)
+                        .foregroundStyle(Theme.ink)
+                }
+            }
+            if card.showsGoogleMark {
+                GoogleMapsAttribution()
+            }
+            if pending {
+                AgentCardActions(session: session, card: card, editors: card.editors, fieldReady: fieldCard.isReady)
+            } else if let mark = card.mark {
+                Text(verbatim: mark.rawValue)
+                    .font(.footnote)
+                    .foregroundStyle(Theme.muted)
+            }
+        }
+        .padding(pending ? 0 : 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(pending ? Color.clear : Theme.line))
+    }
+}
+
 /// Confirm and Cancel of a pending card. Confirm is disabled while an edited value is blank; both are disabled while the session
 /// applies the card.
 private struct AgentCardActions: View {
     @ObservedObject var session: AgentSession
     let card: AgentCard
     @ObservedObject var editors: AgentCardEditors
+    /// The readiness of a field card, passed as a value so that a change redraws the buttons; the other forms leave it true.
+    var fieldReady = true
 
     var body: some View {
         HStack(spacing: 12) {
             Button("Confirm") { Task { await session.confirmCard() } }
                 .buttonStyle(.borderedProminent)
-                .disabled(!card.canConfirm)
+                .disabled(!(fieldReady && card.canConfirm))
             Button("Cancel") { Task { await session.cancelCard() } }
                 .buttonStyle(.bordered)
         }

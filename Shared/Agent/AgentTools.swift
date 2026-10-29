@@ -353,15 +353,15 @@ enum AgentCardRow: Equatable {
 @MainActor
 final class AgentCard {
     /// The lines in order, the heading first; for a card with editors they are read from the editors.
-    var lines: [String] { makeRows == nil ? fixedLines : rows.compactMap(\.line) }
+    var lines: [String] { fieldCard?.lines ?? (makeRows == nil ? fixedLines : rows.compactMap(\.line)) }
     /// SPEC-CHOICECARD-001: the model of a card drawn from a partner's field list; nil for the other two forms.
-    private(set) var fieldCard: AgentFieldCard?
+    let fieldCard: AgentFieldCard?
     /// The rows in order; a row of an editable value tells the view where a control goes.
     var rows: [AgentCardRow] { makeRows?() ?? fixedLines.map { .text($0) } }
     /// The values the user can change in this card (empty for every card but a delivery card).
     let editors: AgentCardEditors
     /// False while an edited value is blank; the chat disables Confirm then.
-    var canConfirm: Bool { editors.canConfirm }
+    var canConfirm: Bool { fieldCard?.isReady ?? editors.canConfirm }
     /// The actions the card offers.
     let actions = ["Confirm", "Cancel"]
     /// Nil while the card is pending.
@@ -379,6 +379,7 @@ final class AgentCard {
          onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         fixedLines = lines
         makeRows = nil
+        fieldCard = nil
         editors = AgentCardEditors()
         self.showsGoogleMark = showsGoogleMark
         self.onConfirm = onConfirm
@@ -389,6 +390,7 @@ final class AgentCard {
          onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         fixedLines = []
         makeRows = rows
+        fieldCard = nil
         self.editors = editors
         self.showsGoogleMark = showsGoogleMark
         self.onConfirm = onConfirm
@@ -399,6 +401,7 @@ final class AgentCard {
          onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         fixedLines = []
         makeRows = nil
+        self.fieldCard = fieldCard
         editors = AgentCardEditors()
         self.showsGoogleMark = showsGoogleMark
         self.onConfirm = onConfirm
@@ -412,6 +415,7 @@ final class AgentCard {
         switch how {
         case .confirm:
             editors.freeze()
+            fieldCard?.freeze()
             let (resolution, result) = await onConfirm()
             mark = result
             return resolution
