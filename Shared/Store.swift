@@ -103,6 +103,10 @@ final class Store: ObservableObject {
     /// The clock of the new code only (debounce, `now` of the classification, `checkedAt`). The baseline reads of `Date()`
     /// stay as they are.
     var replanNow: () -> Date = { Date() }
+    /// How many days after today the leg window of a repeat reaches, and how many days after its day a leg of an
+    /// unstored occurrence is kept.
+    nonisolated static let legWindowDays = 14
+    nonisolated static let legRetentionDays = 30
     /// Where the Muse Spark draft request goes; a test replaces it.
     var replanDraftSend: ReplanDraftClient.Send = { try await URLSession(configuration: .ephemeral).data(for: $0) }
     /// When the last successful live lookup of an event finished.
