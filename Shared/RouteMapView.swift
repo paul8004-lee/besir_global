@@ -25,10 +25,13 @@ struct RouteMapView: View {
     let origin: CLLocationCoordinate2D?
     let destination: CLLocationCoordinate2D?
     let destinationName: String
+    /// The route between the two places; fewer than two usable points means no line.
+    var routeLine: [RoutePoint] = []
 
     var body: some View {
         if GoogleMapsSetup.shared.isConfigured {
-            GoogleMapRepresentable(origin: origin, destination: destination, destinationName: destinationName)
+            GoogleMapRepresentable(origin: origin, destination: destination, destinationName: destinationName,
+                                   routeLine: routeLine)
         } else {
             MapUnavailableNotice()
         }
@@ -59,6 +62,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
     let origin: CLLocationCoordinate2D?
     let destination: CLLocationCoordinate2D?
     let destinationName: String
+    let routeLine: [RoutePoint]
 
     /// Space kept free at the left and bottom so the caller's rounded clip cannot cut the logo or the copyright text.
     private static let edgePadding: CGFloat = 12
@@ -70,7 +74,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
         // The key goes to the SDK here, before the first map view exists, and never at launch.
         _ = GoogleMapsSetup.shared.start()
 
-        let initial = Self.camera(for: MapFraming.plan(origin: origin, destination: destination))
+        let initial = Self.camera(for: MapFraming.plan(origin: origin, destination: destination, path: routeLine))
         let options = GMSMapViewOptions()
         options.camera = initial
         let map = GMSMapView(options: options)
@@ -88,7 +92,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
         host.onLayout = { [weak coordinator] in coordinator?.didLayout() }
         host.onAppearanceChange = { [weak coordinator] in coordinator?.beginReassert() }
         coordinator.update(origin: origin, destination: destination, name: destinationName,
-                           dark: context.environment.colorScheme == .dark)
+                           dark: context.environment.colorScheme == .dark, routeLine: routeLine)
         coordinator.sync()
         return host
     }
@@ -96,7 +100,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
     func updateUIView(_ host: MapHostView, context: Context) {
         let coordinator = context.coordinator
         coordinator.update(origin: origin, destination: destination, name: destinationName,
-                           dark: context.environment.colorScheme == .dark)
+                           dark: context.environment.colorScheme == .dark, routeLine: routeLine)
         coordinator.sync()
     }
 
@@ -118,18 +122,29 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
         private var lastMarkers: [MapMarkerSpec] = []
         private var lastFraming: MapFraming?
         private var lastDark: Bool?
+        private var lastLine: RouteLineSpec?
+        private var lastLineDark: Bool?
 
         private var origin: CLLocationCoordinate2D?
         private var destination: CLLocationCoordinate2D?
         private var name = ""
         private var dark = false
+        private var routeLine: [RoutePoint] = []
         private var destinationMarker: GMSMarker?
+        /// The markers and the line are removed one by one; the map is never cleared, so one never takes the other off.
+        private var drawnMarkers: [GMSMarker] = []
+        private var polyline: GMSPolyline?
 
-        func update(origin: CLLocationCoordinate2D?, destination: CLLocationCoordinate2D?, name: String, dark: Bool) {
+        /// The colours of both the markers and the line resolve for the same appearance.
+        private var traits: UITraitCollection { UITraitCollection(userInterfaceStyle: dark ? .dark : .light) }
+
+        func update(origin: CLLocationCoordinate2D?, destination: CLLocationCoordinate2D?, name: String, dark: Bool,
+                    routeLine: [RoutePoint]) {
             self.origin = origin
             self.destination = destination
             self.name = name
             self.dark = dark
+            self.routeLine = routeLine
         }
 
         /// The first non-empty layout lets the camera fit run; every later layout re-checks the newest inputs.
@@ -150,19 +165,41 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
                 if appearanceChanged { beginReassert() }
             }
 
+            syncLine(on: map)
+
             reselect()
 
             guard hasSize else { return }
-            let plan = MapFraming.plan(origin: origin, destination: destination)
+            let plan = MapFraming.plan(origin: origin, destination: destination, path: routeLine)
             if plan != lastFraming {
                 apply(plan, to: map)
                 lastFraming = plan
             }
         }
 
+        /// The line changes only when its points change or the appearance changes while a line is showing.
+        private func syncLine(on map: GMSMapView) {
+            let spec = RouteLineSpec.make(routeLine)
+            guard RouteLineSpec.needsRedraw(last: lastLine, next: spec, colourSchemeChanged: lastLineDark != dark) else { return }
+            polyline?.map = nil
+            polyline = nil
+            if let spec {
+                let path = GMSMutablePath()
+                for point in spec.points { path.add(CLLocationCoordinate2D(latitude: point.latitude, longitude: point.longitude)) }
+                let line = GMSPolyline(path: path)
+                line.strokeWidth = CGFloat(RouteLineSpec.width)
+                line.strokeColor = UIColor(Theme.travel).resolvedColor(with: traits)
+                line.map = map
+                polyline = line
+            }
+            lastLine = spec
+            lastLineDark = dark
+        }
+
         private func replaceMarkers(_ specs: [MapMarkerSpec], on map: GMSMapView) {
-            let traits = UITraitCollection(userInterfaceStyle: dark ? .dark : .light)
-            map.clear()
+            map.selectedMarker = nil
+            for marker in drawnMarkers { marker.map = nil }
+            drawnMarkers = []
             destinationMarker = nil
             for spec in specs {
                 let marker = GMSMarker(position: CLLocationCoordinate2D(latitude: spec.latitude, longitude: spec.longitude))
@@ -170,6 +207,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
                 let tint = spec.role == .origin ? Theme.travel : Theme.warn
                 marker.icon = GMSMarker.markerImage(with: UIColor(tint).resolvedColor(with: traits))
                 marker.map = map
+                drawnMarkers.append(marker)
                 if spec.role == .destination { destinationMarker = marker }
             }
             map.selectedMarker = destinationMarker
@@ -252,6 +290,7 @@ struct RouteMapView: View {
     let origin: CLLocationCoordinate2D?
     let destination: CLLocationCoordinate2D?
     let destinationName: String
+    var routeLine: [RoutePoint] = []
 
     var body: some View { MapUnavailableNotice() }
 }
