@@ -36,6 +36,7 @@ targets:
         CFBundleDisplayName: besir
         NSLocationWhenInUseUsageDescription: "besir uses your current location to calculate your departure time."
         NSCalendarsFullAccessUsageDescription: "besir saves the events you confirm to your calendar and reads today's events to plan your day."
+        NSCameraUsageDescription: "besir uses the camera to read a sign or a poster you take a photo of."
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
