@@ -106,3 +106,4 @@ Some baseline files are edited in place, only for two reasons: the English local
 - **be fun sir** — suggest leisure and events that fit the day's schedule
 - **be rich sir** — track spending tied to each plan
 - **More connections** — real partner apps in place of the simulated reservation partner, and outgoing records to budget and health apps (Apple Health, Plaid, Ticketmaster and others), each one confirmed by the user
+- **besir memory** — remembers the user's choices over time and shows recommendations that fit them; the user always makes the choice and besir never picks for them, so the app grows to fit each user
