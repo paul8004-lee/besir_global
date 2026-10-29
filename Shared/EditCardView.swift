@@ -719,7 +719,12 @@ struct EditCardView: View {
         collapseOtherEditors(except: field.id)
         draft[field.id] = typedLabel(field) == nil ? "" : (field.chosen ?? "")
         customOpen.insert(field.id)
-        if field.kind == .datetime { dialOpenedAt[field.id] = Date() }
+        let now = Date()
+        if field.kind == .datetime { dialOpenedAt[field.id] = now }
+        // Commit the seed the wheel is about to show, so the card holds it without a turn; the wheel stays open.
+        if card.commitsSeedWhenOpened(field) {
+            actions.closeDial?(field.id, currentBasis(field), now)
+        }
     }
 
     /// 다이얼이 서 있는 동안의 now — 열린 순간 잡은 값이 없으면(열림 길이 둘뿐이라 드문 폴백) 지금.
