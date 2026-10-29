@@ -907,6 +907,8 @@ extension EndWheelSpec {
         /// 풀리는데 저장은 지난 회차를 건너뛰어 0건이 된다(019 안전성 렌즈 m-2). 그 쌍이면 기존 0회 안내로 잠그고, 글이나 시작이
         /// 바뀌면 쌍이 달라져 저절로 다시 판정한다(운영자 §30 — 새 문구 없음).
         var noFutureFor: (text: String, start: Date)? = nil
+        /// The end came from a `for N units` clause, which is counted from the start, so it moves when the start moves.
+        var endFollowsStart = false
     }
 
     /// 칩을 탭했을 때의 전이 — 생성 카드의 choose(field:value:place:)에서 구간 네 분기와 공통
@@ -1083,10 +1085,21 @@ extension EndWheelSpec {
                 card.fields[ei].note = EndWheelSpec.notAfterBaseMessage
             }
         }
-        // 시작이 바뀌면 이미 해석된 규칙으로 회차를 그 자리에서 다시 센다(SPEC-UIKIT-019 L-22) — 해석은 다시 부르지 않는다.
-        // 반복 글 안의 종료 날짜는 글에 박혀 있어 그대로다.
-        if card.fields[i].key == "start_iso" { refreshRecurrenceNote() }
+        // A new start recounts the occurrences with the rule already read (SPEC-UIKIT-019 L-22); the text is not read again.
+        // An end date written in the text stays, but a `for N units` end is counted from the start, so it is moved first.
+        if card.fields[i].key == "start_iso" {
+            reanchorRelativeEnd()
+            refreshRecurrenceNote()
+        }
         return true
+    }
+
+    /// @MX:NOTE: Only a relative end (`for N units`) moves with the start; an absolute end (`until Nov 30`) is a date the
+    /// user typed and stays as it is. The rule, arguments and text are unchanged: only `endDate` is recomputed.
+    private mutating func reanchorRelativeEnd(calendar: Calendar = .current) {
+        guard recurrence.endFollowsStart, let text = recurrence.interpretedText, let start = startDate,
+              let again = RecurrenceTextParser.parse(text, start: start, calendar: calendar) else { return }
+        recurrence.endDate = again.endDate
     }
 
     /// 다이얼을 닫을 때의 동작(REQ-006 F1·REQ-010) — 줄에 값이 있으면 값은 그대로 두고 그 줄의
@@ -1282,7 +1295,8 @@ extension EndWheelSpec {
     /// 해석 결과를 그 글에 붙인다. `arguments`가 nil이면 해석 실패다. 결과가 돌아오는 사이 글이 또 바뀌었으면 버린다 —
     /// 옛 글의 결과가 새 글에 붙으면 사용자가 본 글과 다른 규칙이 만들어진다(await 너머 재조회, H1). 반복으로 읽히면
     /// 종료 줄을 시각만 고르는 반복 끝 바퀴로 다시 세운다(L-28 — 이미 고른 시각은 지킨다).
-    mutating func applyRecurrenceInterpretation(arguments: [String: Any]?, endDate: Date?, for text: String) {
+    mutating func applyRecurrenceInterpretation(arguments: [String: Any]?, endDate: Date?, for text: String,
+                                                endFollowsStart: Bool = false) {
         guard recurrenceText == text else { return }
         guard let arguments else {
             // 실패는 해석된 글로 남기지 않는다(failedText 주석) — 같은 글로 칸을 다시 마치면 다시 해석한다.
@@ -1291,9 +1305,20 @@ extension EndWheelSpec {
             return
         }
         recurrence = RecurrenceState(interpretedText: text, arguments: arguments,
-                                     rule: RecurrenceRule.from(arguments: arguments), endDate: endDate)
+                                     rule: RecurrenceRule.from(arguments: arguments), endDate: endDate,
+                                     endFollowsStart: endFollowsStart)
         if recurrence.rule != nil { setEndRowRecurring(true) }
         refreshRecurrenceNote()
+    }
+
+    /// Reads the Repeat text by rule (no network): begin, parse, apply. True when a text was read.
+    @discardableResult
+    mutating func commitRecurrenceByRules(calendar: Calendar = .current) -> Bool {
+        guard let request = beginRecurrenceCommit() else { return false }
+        let parsed = RecurrenceTextParser.parse(request.text, start: request.start, calendar: calendar)
+        applyRecurrenceInterpretation(arguments: parsed?.arguments, endDate: parsed?.endDate, for: request.text,
+                                      endFollowsStart: parsed?.endFollowsStart ?? false)
+        return true
     }
 
     /// AI 카드의 처음 글(O-S4-9 (나)) — 호출의 구조 인자를 되살린 글을 해석된 글로 심는다. 해석한 적은 없지만 그 인자가
@@ -1498,55 +1523,83 @@ extension EndWheelSpec {
         return nil
     }
 
-    /// AI 카드 반복 줄의 처음 글(plan §4.1 — 운영자 확정 꼴) — 구조 인자에서 읽은 규칙을 같은 꼴의 글로 되살리고, 종료
-    /// 날짜가 있으면 붙인다. 시작(첫 회차 날짜)과 같은 해의 날짜는 "M월 D일", 다른 해면 "YYYY년 M월 D일". 요일은 월→일 순
-    /// 한 글자를 `·`로 잇고, 여러 날짜는 날짜를 ` · `로 잇되 종료 부분이 없다(마지막 날이 종료).
+    /// "1st", "2nd", "3rd", "4th", "11th", "21st" ...
+    private static func ordinal(_ n: Int) -> String {
+        let suffix: String
+        if (11...13).contains(n % 100) { suffix = "th" } else {
+            switch n % 10 {
+            case 1: suffix = "st"
+            case 2: suffix = "nd"
+            case 3: suffix = "rd"
+            default: suffix = "th"
+            }
+        }
+        return "\(n)\(suffix)"
+    }
+
+    /// `a`, `a and b`, `a, b and c`.
+    private static func list(_ items: [String]) -> String {
+        guard let last = items.last else { return "" }
+        return items.count == 1 ? last : items.dropLast().joined(separator: ", ") + " and " + last
+    }
+
+    /// The repeat summary in English (table G2 of the card's SPEC), in the forms `RecurrenceTextParser` reads back:
+    /// `every Mon, Wed and Fri until Nov 30`, `every 2 weeks`, `every month on the 5th and last day`. A date is
+    /// `Mon D`, with `, YYYY` added when its year differs from the start's; a multi-date repeat lists its dates and
+    /// has no end part (its last day is the end).
     static func text(rule: RecurrenceRule, start: Date, endDate: Date?, calendar: Calendar = .current) -> String {
         let startYear = calendar.component(.year, from: start)
-        func dateText(_ d: Date) -> String {
+        func monthDay(_ month: Int, _ day: Int) -> String {
+            "\(RecurrenceTextParser.monthAbbreviations[max(0, min(11, month - 1))]) \(day)"
+        }
+        func dateString(_ d: Date) -> String {
             let c = calendar.dateComponents([.year, .month, .day], from: d)
-            let md = "\(c.month ?? 0)월 \(c.day ?? 0)일"
-            return c.year == startYear ? md : "\(c.year ?? 0)년 " + md
+            let md = monthDay(c.month ?? 1, c.day ?? 1)
+            return c.year == startYear ? md : md + ", \(c.year ?? 0)"
         }
         let weekdayOrder: [Int] = [2, 3, 4, 5, 6, 7, 1]
-        let weekdayNames: [Int: String] = [1: "일", 2: "월", 3: "화", 4: "수", 5: "목", 6: "금", 7: "토"]
-        let shortDays: [String] = weekdayOrder.filter { rule.weekdays.contains($0) }.compactMap { weekdayNames[$0] }
-        let nthNames: [Int: String] = [1: "첫째", 2: "둘째", 3: "셋째", 4: "넷째", -1: "마지막"]
-        func nthText(_ nth: Int) -> String {
-            let days = shortDays.map { $0 + "요일" }.joined(separator: "·")
-            return [nthNames[nth] ?? "", days].filter { !$0.isEmpty }.joined(separator: " ")
+        let shortDays: [String] = weekdayOrder.filter { rule.weekdays.contains($0) }
+            .compactMap { RecurrenceTextParser.weekdayAbbreviations[$0] }
+        func nthPhrase(_ nth: Int) -> String {
+            "on the \(RecurrenceTextParser.nthNames[nth] ?? "") \(list(shortDays))"
         }
-        var parts: [String] = []
+        var line: String
         switch rule.unit {
         case .daily:
-            parts.append(rule.interval == 1 ? "매일" : "\(rule.interval)일마다")
+            line = rule.interval == 1 ? "every day" : "every \(rule.interval) days"
         case .weekly:
             if let nth = rule.nthWeekOfMonth {
-                // 단위 이름 없이 요일 + 몇째 주로 온 옛 모양은 "매월 n째 요일"이다(같은 날짜를 낸다).
-                parts += ["매월", nthText(nth)]
+                // A legacy weekday + week-number shape without a unit name means "every month on the nth weekday".
+                line = "every month " + nthPhrase(nth)
+            } else if rule.everyNWeeks == 1 {
+                if rule.weekdays == [2, 3, 4, 5, 6] {
+                    line = "every weekday"
+                } else if rule.weekdays == [7, 1] {
+                    line = "every weekend"
+                } else {
+                    line = shortDays.isEmpty ? "every week" : "every \(list(shortDays))"
+                }
             } else {
-                let n = rule.everyNWeeks
-                parts.append(n == 1 ? "매주" : n == 2 ? "격주" : "\(n)주마다")
-                if !shortDays.isEmpty { parts.append(shortDays.joined(separator: "·")) }
+                line = "every \(rule.everyNWeeks) weeks" + (shortDays.isEmpty ? "" : " on \(list(shortDays))")
             }
         case .monthly:
-            parts.append(rule.interval == 1 ? "매월" : "\(rule.interval)개월마다")
-            var days: [String] = rule.monthDays.sorted().map { "\($0)일" }
-            if rule.lastDayOfMonth { days.append("마지막 날") }
-            if !days.isEmpty { parts.append(days.joined(separator: "·")) }
-            if let nth = rule.nthWeekOfMonth, !rule.weekdays.isEmpty { parts.append(nthText(nth)) }
+            line = rule.interval == 1 ? "every month" : "every \(rule.interval) months"
+            var days: [String] = rule.monthDays.sorted().map { ordinal($0) }
+            if rule.lastDayOfMonth { days.append("last day") }
+            if !days.isEmpty { line += " on the \(list(days))" }
+            if let nth = rule.nthWeekOfMonth, !rule.weekdays.isEmpty { line += " " + nthPhrase(nth) }
         case .yearly:
-            parts.append(rule.interval == 1 ? "매년" : "\(rule.interval)년마다")
-            if let m = rule.month, let d = rule.day { parts.append("\(m)월 \(d)일") }
+            line = rule.interval == 1 ? "every year" : "every \(rule.interval) years"
+            if let m = rule.month, let d = rule.day { line += " on " + monthDay(m, d) }
         case .lunar:
-            parts.append("음력 매년")
-            if let m = rule.month, let d = rule.day { parts.append((rule.isLeapMonth ? "윤" : "") + "\(m)월 \(d)일") }
+            line = "every year by the Korean lunar calendar"
+            if let m = rule.month, let d = rule.day { line += " on " + (rule.isLeapMonth ? "leap " : "") + "month \(m) day \(d)" }
         case .dateList:
-            return rule.explicitDates.sorted().map { dateText($0) }.joined(separator: " · ")
+            return rule.explicitDates.sorted().map { dateString($0) }.joined(separator: " · ")
         }
-        if rule.skipHolidays { parts.append("공휴일 빼고") }
-        if let endDate { parts.append(dateText(endDate) + "까지") }
-        return parts.joined(separator: " ")
+        if rule.skipHolidays { line += " except Korean holidays" }
+        if let endDate { line += " until " + dateString(endDate) }
+        return line
     }
 }
 
