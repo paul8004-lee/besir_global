@@ -255,6 +255,11 @@ final class Store: ObservableObject {
 
     /// 활동 블록 정보를 수정한다(제목·장소·시간).
     func updateActivity(_ updated: ActivityBlock) {
+        var updated = updated
+        // A computed occurrence becomes a stored copy first and leaves the series (REQ-014).
+        if !activities.contains(where: { $0.id == updated.id }), resolveStored(updated.id) != nil {
+            updated.recurrenceId = nil
+        }
         guard let idx = activities.firstIndex(where: { $0.id == updated.id }) else { return }
         activities[idx] = updated
         activities.sort { $0.startDate < $1.startDate }
@@ -277,7 +282,8 @@ final class Store: ObservableObject {
                         newEnd: Date? = nil,
                         newPlace: Place? = nil,
                         clearPlace: Bool = false) -> Bool {
-        guard let current = activities.first(where: { $0.id == id }) else { return false }
+        // A computed occurrence is read, not stored: it becomes a stored copy only below, when something changed.
+        guard let current = activity(id: id) else { return false }
         var changed = false
 
         // 장소를 지우면 명시적으로 연결된 구간도 함께 지운다 — 구간은 활동 장소가 있어야
@@ -300,7 +306,7 @@ final class Store: ObservableObject {
             }
         }
         // 위에서 옮겼을 수 있으니 최신 값을 다시 읽는다.
-        guard var updated = activities.first(where: { $0.id == id }) else { return changed }
+        guard var updated = activity(id: id) else { return changed }
         let endBefore = updated.endDate
         // moveActivity가 구간을 이미 평행이동했을 수 있으니 id로 다시 읽은 **현재값**을 잔차
         // 재정렬의 기준으로 쓴다(빠짐 전에 잡은 id — 옛 스냅샷을 쓰면 이동량이 두 번 붙는다).
@@ -309,6 +315,7 @@ final class Store: ObservableObject {
         if let newPlace, newPlace != updated.location { updated.location = newPlace; changed = true }
         if clearPlace, updated.location != nil { updated.location = nil; changed = true }
         if let newEnd, newEnd != updated.endDate, newEnd > updated.startDate { updated.endDate = newEnd; changed = true }
+        // `updateActivity` makes the stored copy of a computed occurrence, and only here, once `changed` is known.
         if changed { updateActivity(updated) }
 
         // 복귀 구간 재정렬은 endDate가 **실제로** 바뀐 경우에만 한다 — 끝 ≤ 시작으로 거절된
@@ -382,6 +389,10 @@ final class Store: ObservableObject {
     /// 부른다.
     @discardableResult
     func detachOccurrence(activityId: UUID) -> Bool {
+        // A computed occurrence has no record to clear: it becomes a stored copy, which has left the series.
+        if !series.isEmpty, !activities.contains(where: { $0.id == activityId }), materialize(activityId) != nil {
+            return true
+        }
         let cleared = clearSeriesMembership(activityId: activityId)
         if cleared.activity { saveActivities() }
         if cleared.legs { save() }
@@ -537,7 +548,7 @@ final class Store: ObservableObject {
                 notifyEnabled: Bool = true,
                 travelSecondsHint: TimeInterval? = nil,
                 syncToCalendar: Bool? = nil) async -> LegOutcome {
-        guard let activity = activities.first(where: { $0.id == activityId }) else {
+        guard let activity = self.activity(id: activityId) else {
             return .refused(reason: .activityMissing)
         }
         // 같은 역할이 이미 있으면 거절 — 이벤트 수가 불변이어야 카드의 저장 diff가 빈자리를 믿는다.
@@ -567,7 +578,7 @@ final class Store: ObservableObject {
         // await 뒤 배열이 바뀌었을 수 있으니 활동을 다시 본다 — 지워졌으면 방금 만든 구간을
         // 되돌린다(보상 검사). leg를 검색이 아니라 반환값으로 얻는 건 같은 제목·시각 구간이
         // 이미 있을 때 엉뚱한 쪽을 집는 일을 막는다(addEvent가 레코드를 돌려주는 이유와 같다).
-        guard activities.contains(where: { $0.id == activityId }) else {
+        guard self.activity(id: activityId) != nil else {
             deleteEvent(leg)
             return .refused(reason: .activityMissing)
         }
@@ -599,7 +610,7 @@ final class Store: ObservableObject {
                    syncToCalendar: Bool? = nil) async -> LegOutcome {
         guard let leg = events.first(where: { $0.id == legId }) else { return .failed }
         let role = leg.anchor ?? .arrival
-        let activity = leg.linkedActivityId.flatMap { id in activities.first { $0.id == id } }
+        let activity = leg.linkedActivityId.flatMap { id in self.activity(id: id) }
         let anchorDate = activity.map { legAnchor(role: role, activity: $0) }
             ?? (role == .departure ? (leg.departureDate ?? leg.arrivalDate) : leg.arrivalDate)
         let title = activity.map { legTitle(role: role, activity: $0) } ?? leg.title
@@ -664,7 +675,7 @@ final class Store: ObservableObject {
     func realignLegs(of activityId: UUID,
                      outboundTravelSecondsHint: TimeInterval? = nil,
                      returnTravelSecondsHint: TimeInterval? = nil) async -> (outbound: LegOutcome?, `return`: LegOutcome?) {
-        guard let activity = activities.first(where: { $0.id == activityId }) else { return (nil, nil) }
+        guard let activity = self.activity(id: activityId) else { return (nil, nil) }
         var results: [ScheduleAnchor: LegOutcome] = [:]
         for role in [ScheduleAnchor.arrival, ScheduleAnchor.departure] {
             guard let leg = events.first(where: { $0.linkedActivityId == activityId && ($0.anchor ?? .arrival) == role })
@@ -879,6 +890,42 @@ final class Store: ObservableObject {
               let day = RepeatSeries.date(forDayKey: dayKey, calendar: calendar),
               let interval = calendar.dateInterval(of: .day, for: day) else { return nil }
         return owner.occurrences(in: interval, calendar: calendar).first { $0.id == id }
+    }
+
+    /// Makes a stored copy of a computed occurrence: same id, `recurrenceId` nil, the day added to the series' skipped
+    /// days, and the `recurrenceId` of the legs linked to the id cleared (what `clearSeriesMembership` does for a stored
+    /// copy). Returns the copy, or nil when the id is stored already or is not a live occurrence.
+    // @MX:WARN: writes three files in a row: `activities.json`, `series.json` and, when it cleared a leg's `recurrenceId`,
+    // `events.json`.
+    // @MX:REASON: the copy, the skipped day and the legs' cleared `recurrenceId` must all reach the disk. Without the first
+    // two a relaunch draws the occurrence twice; without the third `deleteRecurringSeries(series.id)` would find the copy's
+    // legs still carrying the series id and remove them. A crash between the first two saves is repaired on load.
+    private func materialize(_ id: UUID) -> ActivityBlock? {
+        guard !activities.contains(where: { $0.id == id }),
+              let (owner, dayKey) = series(forOccurrence: id),
+              let index = series.firstIndex(where: { $0.id == owner.id }),
+              var copy = activity(id: id) else { return nil }
+        copy.recurrenceId = nil
+        activities.append(copy)
+        activities.sort { $0.startDate < $1.startDate }
+        series[index].skippedDayKeys.append(dayKey)
+        // Mutate a copy of `events` and assign it once, as `clearSeriesMembership` does (the `didSet` runs once).
+        var legs = events
+        var clearedLegs = false
+        for i in legs.indices where legs[i].linkedActivityId == id && legs[i].recurrenceId != nil {
+            legs[i].recurrenceId = nil
+            clearedLegs = true
+        }
+        if clearedLegs { events = legs }
+        saveActivities()
+        saveSeries()
+        if clearedLegs { save() }
+        return copy
+    }
+
+    /// The stored activity with this id, else the stored copy that `materialize` makes of the computed occurrence.
+    private func resolveStored(_ id: UUID) -> ActivityBlock? {
+        activities.first(where: { $0.id == id }) ?? materialize(id)
     }
 
     /// Stored activities that overlap `interval`, plus the series occurrences that do, with a stored activity winning
@@ -1396,7 +1443,7 @@ final class Store: ObservableObject {
     }
 
     func previewSeriesLegAdd(activityId: UUID, role: ScheduleAnchor) -> SeriesLegAddPreview? {
-        guard let edited = activities.first(where: { $0.id == activityId }),
+        guard let edited = activity(id: activityId),
               let rid = edited.recurrenceId else { return nil }
         let now = replanNow()
         var eligible: [UUID] = []
@@ -1443,7 +1490,7 @@ final class Store: ObservableObject {
         for tid in targetActivityIds {
             // 선택창과 저장 사이에 회차가 바뀌거나 사라졌을 수 있다 — 조사와 같은 판정으로 다시
             // 걸러 센다(건너뜀 건수가 선택창 숫자와 어긋나지 않게).
-            guard let occurrence = activities.first(where: { $0.id == tid }) else { continue }
+            guard let occurrence = activity(id: tid) else { continue }
             if explicitLegs(of: tid).contains(where: { ($0.anchor ?? .arrival) == role }) {
                 skippedExisting += 1
                 continue
@@ -1505,14 +1552,50 @@ final class Store: ObservableObject {
         // 순서 ④ — 편집 회차의 빠짐은 이동 추가 **뒤, 저장 직전**에(REQ-016). 몸통(저장 없음)을
         // 직접 써 activities·events 저장을 각 한 번으로 유지한다(REQ-005).
         var detachedActivity = false
+        // A computed series keeps the role in its leg plan, so later fills carry it.
+        recordLegRole(role, inSeries: seriesId, outerPlace: outerPlace, mode: mode, bufferMinutes: bufferMinutes,
+                      notifyLeadMinutes: notifyLeadMinutes, notifyEnabled: notifyEnabled)
         if editedDetaches {
-            detachedActivity = clearSeriesMembership(activityId: editedActivityId).activity
+            // A computed edited occurrence becomes a stored copy (and saves itself); a stored one is cleared as before.
+            if materialize(editedActivityId) == nil {
+                detachedActivity = clearSeriesMembership(activityId: editedActivityId).activity
+            }
         }
         if detachedActivity { saveActivities() }
         // 이 재예약 꼬리의 save()가 events 배치 전체를 한 번에 쓴다(addRecurringLinkedSeries와
         // 같은 구조 — 여기서 따로 save()를 부르면 "저장 1"이 두 번이 된다).
         rescheduleNearestNotifications()
         return (added, skippedExisting, skippedNoPlace)
+    }
+
+    /// Writes the role of a whole-series leg add into the leg plan of a computed series (created when it had none) and,
+    /// only when the series has no mark yet, sets the mark to the key of today + `legWindowDays` so the next fill does not
+    /// make the same legs again. A mark that exists is left alone: raising it would hide the days between the old mark
+    /// and the window end from the old role, which no fill has made yet.
+    private func recordLegRole(_ role: ScheduleAnchor, inSeries seriesID: UUID, outerPlace: Place, mode: TransportMode,
+                               bufferMinutes: Int, notifyLeadMinutes: Int, notifyEnabled: Bool) {
+        guard let index = series.firstIndex(where: { $0.id == seriesID }) else { return }
+        var updated = series[index]
+        var plan = updated.legPlan ?? LegPlan(outboundFrom: nil, returnTo: nil, outboundMode: mode, returnMode: mode,
+                                              bufferMinutes: role == .arrival ? bufferMinutes : 0,
+                                              notifyLeadMinutes: notifyLeadMinutes, notifyEnabled: notifyEnabled)
+        if role == .arrival {
+            plan.outboundFrom = outerPlace
+            plan.outboundMode = mode
+            plan.bufferMinutes = bufferMinutes
+        } else {
+            plan.returnTo = outerPlace
+            plan.returnMode = mode
+        }
+        updated.legPlan = plan
+        if updated.legsFilledThroughDayKey == nil {
+            let calendar = Calendar.current
+            if let end = calendar.date(byAdding: .day, value: Self.legWindowDays, to: calendar.startOfDay(for: replanNow())) {
+                updated.legsFilledThroughDayKey = Self.dayKey(end, calendar: calendar)
+            }
+        }
+        series[index] = updated
+        saveSeries()
     }
 
     /// 반복 일정 그룹 전체를 한 번에 삭제한다(이동 구간 + 활동 블록 + 알림 포함).
@@ -1522,6 +1605,11 @@ final class Store: ObservableObject {
     /// (알림 취소·식사 기록)는 아래 이미 있는 흐름을 그대로 확장한 것 — 두 벌로
     /// 만들지 않는다(계약 5).
     func deleteRecurringSeries(_ recurrenceId: UUID) {
+        // A computed series has no records to remove: the rule goes, with the legs of its unstored occurrences.
+        if series.contains(where: { $0.id == recurrenceId }) {
+            deleteComputedSeries(recurrenceId)
+            return
+        }
         let activityGroup = activities.filter { $0.recurrenceId == recurrenceId }
         let activityIDs = Set(activityGroup.map { $0.id })
         // 같은 번호의 구간은 앞의 필터에 이미 들어 있으므로 여기선 제외해 group에 중복을 만들지 않는다.
@@ -1543,6 +1631,35 @@ final class Store: ObservableObject {
         saveActivities()
         removeUpcomingMeals(eventIDs: Set(group.map { $0.id }),
                             activityIDs: activityIDs)
+    }
+
+    /// The legs of the unstored occurrences of a computed series: events whose linked activity id is an occurrence id of
+    /// the series and has no stored activity. A materialized copy keeps its legs, so its id is left out.
+    private func unstoredOccurrenceLegs(of seriesID: UUID) -> [ScheduledEvent] {
+        let stored = Set(activities.map { $0.id })
+        return events.filter { e in
+            guard let link = e.linkedActivityId, !stored.contains(link),
+                  let (owner, _) = series(forOccurrence: link) else { return false }
+            return owner.id == seriesID
+        }
+    }
+
+    /// `Delete Entire Series` on a computed series: the series, the events that carry its id, and the legs of its
+    /// unstored occurrences go, with their pending alarms and the upcoming meals logged against them. A materialized
+    /// copy and its legs (which no longer carry the series id) stay.
+    private func deleteComputedSeries(_ seriesID: UUID) {
+        let unstored = unstoredOccurrenceLegs(of: seriesID)
+        let unstoredIDs = Set(unstored.map { $0.id })
+        let group = events.filter { $0.recurrenceId == seriesID || unstoredIDs.contains($0.id) }
+        for e in group {
+            if let nid = e.notificationId { notifications.cancel(id: nid) }
+        }
+        let groupIDs = Set(group.map { $0.id })
+        events.removeAll { groupIDs.contains($0.id) }
+        save()
+        series.removeAll { $0.id == seriesID }
+        saveSeries()
+        removeUpcomingMeals(eventIDs: groupIDs, activityIDs: Set(group.compactMap { $0.linkedActivityId }))
     }
 
     /// 반복 일정 그룹 전체의 이동수단·버퍼·알림 리드타임을 바꾸고 이동시간을 다시 계산한다(새로
@@ -1844,6 +1961,8 @@ final class Store: ObservableObject {
         if wholeSeries, let rid = activity.recurrenceId {
             targets = activities.filter { $0.recurrenceId == rid }
         } else {
+            // A computed occurrence becomes a stored copy before it is shifted (REQ-014).
+            _ = resolveStored(activity.id)
             targets = [activity]
         }
         // 활동에 명시적으로 연결된 이동 구간만 같이 옮긴다(REQ-012) — 연결 없는 옛 반복 이동은 제자리다.
@@ -1948,7 +2067,28 @@ final class Store: ObservableObject {
     /// 충돌하지 않는다. 빠진 회차는 번호가 비워져 있어 자연히 빠진다(§4.2).
     func siblingOccurrences(of activity: ActivityBlock) -> [ActivityBlock] {
         guard let rid = activity.recurrenceId else { return [] }
+        if let owner = series.first(where: { $0.id == rid }) {
+            return computedSiblings(of: activity, in: owner)
+        }
         return activities.filter { $0.recurrenceId == rid }
+    }
+
+    /// The siblings of a computed occurrence: the occurrences of its series from today through `legWindowDays` that are
+    /// not skipped and not stored, plus the occurrence being edited itself when it starts after `replanNow()`, so the leg
+    /// the user asked for on the screen in front of them is made even when that occurrence lies months ahead.
+    private func computedSiblings(of activity: ActivityBlock, in owner: RepeatSeries) -> [ActivityBlock] {
+        let calendar = Calendar.current
+        let now = replanNow()
+        guard let end = calendar.date(byAdding: .day, value: Self.legWindowDays + 1, to: calendar.startOfDay(for: now))
+        else { return [] }
+        let stored = Set(activities.map { $0.id })
+        var siblings = owner.occurrences(in: DateInterval(start: calendar.startOfDay(for: now), end: end), calendar: calendar)
+            .filter { !stored.contains($0.id) }
+        if activity.startDate > now, !siblings.contains(where: { $0.id == activity.id }),
+           let edited = self.activity(id: activity.id), edited.recurrenceId == owner.id {
+            siblings.append(edited)
+        }
+        return Self.sortedByStart(siblings)
     }
 
     /// 소유 활동이 있는 구간 드래그의 확정(REQ-001·002·010·011). 유효 Δ는 effectiveDragMinutes
@@ -2014,7 +2154,9 @@ final class Store: ObservableObject {
         } else {
             delta = effectiveDragMinutes(leg: leg, owner: owner, requestedMinutes: requestedMinutes)
         }
-        guard delta != 0, let idx = activities.firstIndex(where: { $0.id == owner.id }) else { return }
+        // A computed owner becomes a stored copy once the drag really moves something (REQ-014).
+        guard delta != 0, resolveStored(owner.id) != nil,
+              let idx = activities.firstIndex(where: { $0.id == owner.id }) else { return }
         if isReturnLeg {
             activities[idx].endDate = activities[idx].endDate.addingTimeInterval(Double(delta) * 60)
         } else {
@@ -2802,9 +2944,27 @@ final class Store: ObservableObject {
         guard !list.isEmpty else { return }
         let ids = Set(list.map { $0.id })
         removeExplicitLegs(of: ids)
+        skipComputedOccurrences(ids)
         activities.removeAll { ids.contains($0.id) }
         saveActivities()
         removeUpcomingMeals(activityIDs: ids)
+    }
+
+    /// Deleting a computed occurrence adds its day to the series' skipped days; there is no record to remove. An id that
+    /// is stored, is skipped already, or is not a live occurrence changes nothing here.
+    private func skipComputedOccurrences(_ ids: Set<UUID>) {
+        guard !series.isEmpty else { return }
+        var updated = series
+        var changed = false
+        for id in ids where !activities.contains(where: { $0.id == id }) {
+            guard let (owner, dayKey) = series(forOccurrence: id), activity(id: id) != nil,
+                  let index = updated.firstIndex(where: { $0.id == owner.id }) else { continue }
+            updated[index].skippedDayKeys.append(dayKey)
+            changed = true
+        }
+        guard changed else { return }
+        series = updated
+        saveSeries()
     }
 
     /// 활동들의 명시적 연결 구간(linkedActivityId)만 지운다 — 반복 번호만 공유하는 연결 없는 구간은
