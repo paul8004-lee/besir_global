@@ -1361,7 +1361,8 @@ final class Store: ObservableObject {
 
     /// Makes the legs of every series with a leg plan for the occurrences from today through `legWindowDays` that the
     /// series' high-water mark has not passed, removes the legs of unstored occurrences older than `legRetentionDays`,
-    /// and saves `events` once and reschedules the alarms once per pass. Idempotent. One fill runs at a time: a call
+    /// moves the legs of unstored occurrences that are off their occurrence's anchor (a time zone change) onto it, and
+    /// saves `events` once and reschedules the alarms once per pass. Idempotent. One fill runs at a time: a call
     /// during a running fill sets `fillAgain` and returns, and the running fill makes another pass, so a series saved
     /// meanwhile is not lost and no leg is made twice. The days are chosen before the awaits (the gate and the travel-time
     /// lookups) and chosen again after them, per chosen series, so a skip, a series delete, a leg add or a mark that
@@ -1497,10 +1498,11 @@ final class Store: ObservableObject {
         if let cutoff = calendar.date(byAdding: .day, value: -Self.legRetentionDays, to: now) {
             for s in series { pruned += unstoredOccurrenceLegs(of: s.id).filter { $0.arrivalDate < cutoff } }
         }
-        if !made.isEmpty || !pruned.isEmpty {
+        let realigned = realignedSeriesLegs(calendar: calendar)
+        if !made.isEmpty || !pruned.isEmpty || realigned != nil {
             for e in pruned { if let nid = e.notificationId { notifications.cancel(id: nid) } }
             let prunedIDs = Set(pruned.map { $0.id })
-            var updated = events
+            var updated = realigned ?? events
             updated.removeAll { prunedIDs.contains($0.id) }
             updated.append(contentsOf: made)
             updated.sort { $0.arrivalDate < $1.arrivalDate }
@@ -1513,6 +1515,38 @@ final class Store: ObservableObject {
             series = updatedSeries
             saveSeries()
         }
+    }
+
+    /// The events with the legs of live computed occurrences moved onto their occurrence's anchor, or nil when none is off
+    /// it. A leg of a stored copy, an event with no link and a link that is no live occurrence (a skipped day, no series) are
+    /// left alone. The anchor side (the one `anchorDate` reads) is set to the occurrence's time exactly and the other side
+    /// moves by the same difference, so the travel time, buffer, lead, ids and `recurrenceId` stay. No clock, no await.
+    // @MX:NOTE: every leg of an unstored occurrence sits on its occurrence's anchor (the start for an outbound leg, the end
+    // for a return leg): each writer builds it there and each path that moves one leg off it materializes the occurrence.
+    // A computed occurrence follows `Calendar.current`, a leg is an absolute date, so after a time zone change the two
+    // part; the fill pass checks the invariant and moves the legs, whether or not the zone changed.
+    private func realignedSeriesLegs(calendar: Calendar) -> [ScheduledEvent]? {
+        guard !series.isEmpty else { return nil }
+        let stored = Set(activities.map { $0.id })
+        var shifted = events
+        var moved = false
+        for i in shifted.indices {
+            guard let link = shifted[i].linkedActivityId, !stored.contains(link),
+                  let occurrence = activity(id: link, calendar: calendar) else { continue }
+            let event = shifted[i]
+            let departureAnchored = event.anchor == .departure
+            let delta = (departureAnchored ? occurrence.endDate : occurrence.startDate).timeIntervalSince(event.anchorDate)
+            guard delta != 0 else { continue }
+            if departureAnchored, event.departureDate != nil {
+                shifted[i].departureDate = occurrence.endDate
+                shifted[i].arrivalDate = event.arrivalDate.addingTimeInterval(delta)
+            } else {
+                shifted[i].arrivalDate = departureAnchored ? occurrence.endDate : occurrence.startDate
+                shifted[i].departureDate = event.departureDate?.addingTimeInterval(delta)
+            }
+            moved = true
+        }
+        return moved ? shifted : nil
     }
 
     /// One leg of the fill, built the way the removed writer built it: linked to the occurrence id, carrying the series
