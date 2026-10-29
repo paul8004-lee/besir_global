@@ -145,9 +145,8 @@ struct AddActivityView: View {
         // 도착해야 확정이므로 여기서 갈라진다. 권한 판정·측위 대기는 PlaceLineResolve(EditCard.swift)가
         // 단독으로 안다.
         if place == nil, value == PlaceTokens.currentLocation,
-           let key = form?.card.fields.first(where: { $0.id == field })?.key,
-           key == LegRowKeys.originQuery || key == "location_query" {
-            pickCurrentLocationRow(field, isOrigin: key == LegRowKeys.originQuery)
+           let row = form?.card.fields.first(where: { $0.id == field }), row.offersCurrentLocation {
+            pickCurrentLocationRow(field, permissionNote: PlaceLineResolve.permissionNote(for: row))
             return
         }
         form?.choose(field: field, value: value, place: place)
@@ -165,9 +164,7 @@ struct AddActivityView: View {
     /// 값이 되지 않고 안내 문구만 띄운다(chosen이 nil이라 저장은 이미 잠겨 있다). 좌표가 이미 있으면
     /// 그 자리에서 확정하고, 없으면 측위를 기다리는 동안 줄의 busy가 알린다. 문구만 줄에 맞게
     /// 갈린다(O-S1-4 — 장소 줄에는 '출발지'라는 낱말이 맞지 않다).
-    private func pickCurrentLocationRow(_ field: UUID, isOrigin: Bool) {
-        let permissionNote = isOrigin ? PlaceLineResolve.locationPermissionNote
-                                      : PlaceLineResolve.locationPermissionNoteForPlace
+    private func pickCurrentLocationRow(_ field: UUID, permissionNote: String) {
         if PlaceLineResolve.isLocationBlocked(location) {
             setRowNote(field, permissionNote)
             return
