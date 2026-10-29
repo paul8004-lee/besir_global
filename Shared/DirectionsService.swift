@@ -119,3 +119,43 @@ struct DirectionsService {
         }
     }
 }
+
+// MARK: - Route line
+
+/// The line of one trip: its points, or the one reason there are none. Both empty means the lookup was cut off.
+struct RouteLine: Equatable {
+    var points: [RoutePoint] = []
+    var failure: TravelFailure?
+}
+
+extension DirectionsService {
+    /// The route line between two places for the detail screen. Stub for the red run.
+    func routeLine(mode: TransportMode,
+                   from origin: CLLocationCoordinate2D,
+                   to dest: CLLocationCoordinate2D) async -> RouteLine {
+        RouteLine(failure: .lookupFailed)
+    }
+}
+
+/// What one line lookup is for. Stub for the red run.
+struct RouteLineKey: Hashable {
+    let mode: TransportMode
+
+    init?(mode: TransportMode, origin: CLLocationCoordinate2D?, destination: CLLocationCoordinate2D?) {
+        return nil
+    }
+}
+
+/// The line the screen holds. Stub for the red run.
+struct RouteLineSlot: Equatable {
+    private(set) var key: RouteLineKey?
+    private(set) var points: [RoutePoint] = []
+
+    mutating func begin(_ key: RouteLineKey?) {
+    }
+
+    @discardableResult
+    mutating func accept(_ points: [RoutePoint], for key: RouteLineKey) -> Bool {
+        false
+    }
+}
