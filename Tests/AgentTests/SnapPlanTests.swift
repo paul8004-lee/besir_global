@@ -55,7 +55,7 @@ final class SnapPlanTests: XCTestCase {
         XCTAssertEqual(SnapPlan.clean(blueBottle), "Blue Bottle")
         XCTAssertNil(SnapPlan.clean("  \n "))
         XCTAssertNil(SnapPlan.clean(nil))
-        XCTAssertEqual(SnapPlan.radiusMeters, 250)
+        XCTAssertEqual(SnapPlan.radiusMeters, 500)
         XCTAssertEqual(SnapPlan.candidateLimit, 3)
     }
 

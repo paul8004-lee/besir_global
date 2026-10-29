@@ -40,7 +40,7 @@ enum SnapDecision: Equatable {
 /// The pure rules of the camera snap: constants, the lookup query, the routing by kind and the suggested meal time.
 /// Dates, zone and values come in as arguments, so a test needs no clock, no camera and no network.
 enum SnapPlan {
-    static let radiusMeters = 250
+    static let radiusMeters = 500
     static let candidateLimit = 3
     static let queryMax = 60
     static let queryMin = 2
