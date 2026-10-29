@@ -106,6 +106,7 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **Example Delivery (Simulated)** — a simulated delivery app: ask for food to arrive at a set time, confirm one card, and the order, an optional meal entry and the estimated total sent to Example Budget follow; facts only, no advice — [#45](https://github.com/paul8004-lee/besir_global/pull/45)
 - **Camera guard and 500 m place radius** — the camera snap refuses a photo until the capture session runs, and a sign photographed up to 500 m from its place now finds it (was 250 m) — [#49](https://github.com/paul8004-lee/besir_global/pull/49)
 - **Time wheel commits what it shows** — opening an unset Start or End time on a new activity makes the time its wheel shows the value at once, so Add is live without turning the wheel — [#50](https://github.com/paul8004-lee/besir_global/pull/50)
+- **Tap away closes the time wheel** — with a time wheel open on New Activity, an activity or New Event, a tap on the empty area outside the edit card closes it, the same as a tap on the card's own empty space — [#58](https://github.com/paul8004-lee/besir_global/pull/58)
 
 Some baseline files are edited in place, only for two reasons: the English localization of the app UI, and the split of the app and App Group identifiers from the earlier app. Both are listed as lines above when they land. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
