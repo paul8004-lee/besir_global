@@ -731,6 +731,10 @@ extension EditCard {
         return spec.fixedBase
     }
 
+    /// Whether opening this row's wheel should commit the value the wheel shows: a time row with no chosen value.
+    /// The caller commits through `closeDial`, the same path closing the wheel takes, so no second value rule exists.
+    func commitsSeedWhenOpened(_ field: EditField) -> Bool { field.kind == .datetime && field.chosen == nil }
+
     /// '지금'의 다음 정각 — 옛 뷰 전용 nextWholeHour(EditCardView)를 모델로 옮긴 것(REQ-006 F1).
     /// '지금'을 인자로 받는 이유: 드라이버가 시각을 고정해 사본 대조를 결정적으로 만들기
     /// 위해서다(AC-012) — 몸통에서 Date()를 직접 읽으면 같은 질문에 답이 매번 달라져 잴 수가
