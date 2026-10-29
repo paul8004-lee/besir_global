@@ -216,10 +216,11 @@ final class SharedImport: ObservableObject {
         let current = now()
         let today = PlanMyDay.events(activities: activities(), entries: entries ?? [], now: current, calendar: calendar)
         let events = prepare(today.events)
-        let message = PlanMyDay.compose(now: current, zone: calendar.timeZone, mode: mode, events: events, shared: usable)
+        let message = PlanMyDay.compose(now: current, zone: calendar.timeZone, mode: mode, events: events, shared: usable,
+                                        calendarAvailable: entries != nil)
         let shown = PlanMyDay.shownLine(sharedCount: usable.count, eventCount: events.count, calendarAvailable: entries != nil, cut: today.cut)
         let dayEnd = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: current)) ?? current
-        let context = DayPlanContext(mode: mode, events: events, checkWindowEnd: dayEnd)
+        let context = DayPlanContext(mode: mode, events: events, checkWindowEnd: dayEnd, calendarAvailable: entries != nil)
 
         connections.offerFlow(flow)
         let accepted = hand(message, shown, context)

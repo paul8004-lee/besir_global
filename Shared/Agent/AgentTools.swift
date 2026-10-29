@@ -583,7 +583,10 @@ final class AgentToolbox {
         // Stable: a besir activity and a calendar entry starting together keep the Store item first.
         let ordered = hits.enumerated().sorted { ($0.element.start, $0.offset) < ($1.element.start, $1.offset) }.map(\.element.item)
         let items = Array(ordered.prefix(Self.maxItems))
-        return .result(Self.encode(["items": items, "count": items.count, "truncated": ordered.count > Self.maxItems]))
+        var result: [String: Any] = ["items": items, "count": items.count, "truncated": ordered.count > Self.maxItems]
+        // Only in a plan turn whose calendar could not be read: an empty list is then not a clear day.
+        if dayPlan?.calendarAvailable == false { result["calendar_available"] = false }
+        return .result(Self.encode(result))
     }
 
     private func create(_ values: [String: String]) throws -> AgentToolOutcome {
