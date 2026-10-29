@@ -235,6 +235,9 @@ final class AgentDeliveryTests: XCTestCase {
                        ["simulated": true, "status": "unavailable"] as NSDictionary)
         let message = try XCTUnwrap(withMeal["message"] as? String)
         XCTAssertTrue(message.contains(AgentDelivery.appliedMessage))
+        // The walk found the reply without the delivery place: the message names it and the result key that holds it.
+        XCTAssertTrue(message.contains("the delivery place"), message)
+        XCTAssertTrue(message.contains("address"), message)
         XCTAssertTrue(message.contains(AgentDelivery.mealAddedSentence))
         XCTAssertTrue(message.contains(AgentDelivery.budgetRecordedSentence))
         XCTAssertFalse(message.contains(AgentDelivery.mealMissedSentence))
