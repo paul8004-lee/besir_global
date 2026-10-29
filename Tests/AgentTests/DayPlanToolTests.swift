@@ -376,10 +376,15 @@ final class DayPlanToolTests: XCTestCase {
     /// the event e1, is not registered. The routes stub answers 1080 s, then 600 s: the day fixture of acceptance.md.
     @MainActor
     private func planRig(routes: RoutesTransportStub = PlaceStubs.routesSequence([1080, 600]), routesConfig: AppConfig = PlaceSentinel.config,
-                         mode: TransportMode = .car, events: [PlanMyDay.Event]? = nil) -> PlaceRig {
+                         mode: TransportMode = .car, events: [PlanMyDay.Event]? = nil, calendarAvailable: Bool? = nil) -> PlaceRig {
         let rig = PlaceRig(routes: routes, routesConfig: routesConfig)
         _ = rig.tools.registry.register([p2, p3, p4])
-        rig.tools.beginDayPlan(DayPlanContext(mode: mode, events: events ?? [dayA()], checkWindowEnd: dayEnd))
+        // With no value the 3-argument form is used, so the context's own default is what a test sees.
+        if let calendarAvailable {
+            rig.tools.beginDayPlan(DayPlanContext(mode: mode, events: events ?? [dayA()], checkWindowEnd: dayEnd, calendarAvailable: calendarAvailable))
+        } else {
+            rig.tools.beginDayPlan(DayPlanContext(mode: mode, events: events ?? [dayA()], checkWindowEnd: dayEnd))
+        }
         return rig
     }
 
@@ -1513,6 +1518,63 @@ final class DayPlanToolTests: XCTestCase {
         rig.tools.endDayPlan()
         let outside = await rig.run("list_activities", args)
         XCTAssertEqual(outside.json?["count"] as? Int, 0, "no plan turn: the calendar event is not listed")
+    }
+
+    // MARK: SPEC-CALUNREAD-001: the plan-turn list says when the calendar could not be read (card t62)
+
+    private let listArgs = ["from": "2026-10-27T00:00", "to": "2026-10-27T23:59"]
+
+    /// One Gym activity on the day, with no place and no calendar sync, so its list item has no `location` key.
+    private func gymActivity() -> ActivityBlock {
+        var gym = ActivityBlock(title: "Gym", startDate: date("10:00"), endDate: date("11:00"))
+        gym.syncToCalendar = false
+        return gym
+    }
+
+    @MainActor
+    func testCALUNREAD_T06_aPlanTurnListWithAnUnreadableCalendarCarriesTheFlagAndKeepsTheStoreItems() async throws {
+        let unread = planRig(events: [], calendarAvailable: false)
+        let twin = planRig(events: [])
+        let gym = gymActivity()
+        unread.store.activities.append(gym)
+        twin.store.activities.append(gym)
+        let flagged = await unread.run("list_activities", listArgs)
+        let plain = await twin.run("list_activities", listArgs)
+        let json = try XCTUnwrap(flagged.json)
+        let twinJSON = try XCTUnwrap(plain.json)
+        XCTAssertEqual(json["count"] as? Int, 1, "a real list, so the comparison below cannot pass on two empty ones")
+        XCTAssertEqual((json["items"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(json["calendar_available"] as? Bool, false)
+        XCTAssertTrue(flagged.text?.contains("\"calendar_available\":false") ?? false)
+        XCTAssertEqual(json["count"] as? Int, twinJSON["count"] as? Int)
+        XCTAssertEqual(json["truncated"] as? Bool, twinJSON["truncated"] as? Bool)
+        XCTAssertEqual(json["items"] as? NSArray, twinJSON["items"] as? NSArray)
+        XCTAssertEqual(Set(json.keys), Set(twinJSON.keys).union(["calendar_available"]))
+    }
+
+    @MainActor
+    func testCALUNREAD_T07_aPlanTurnListWithAReadableCalendarHasNoFlagKeyAtAll() async throws {
+        for (label, rig) in [("default context", planRig()), ("explicit true", planRig(calendarAvailable: true))] {
+            let listed = await rig.run("list_activities", listArgs)
+            XCTAssertEqual(listed.json?["count"] as? Int, 1, "\(label): the calendar event e1 is listed")
+            XCTAssertEqual(Set(listed.json?.keys.map { $0 } ?? []), ["items", "count", "truncated"], label)
+            XCTAssertFalse(listed.text?.contains("calendar_available") ?? true, label)
+        }
+    }
+
+    @MainActor
+    func testCALUNREAD_T08_outsideAPlanTurnTheListHasNoFlagKeyEvenAfterAnUnreadablePlanTurnEnded() async throws {
+        let empty = #"{"count":0,"items":[],"truncated":false}"#
+        let never = PlaceRig()
+        let outside = await never.run("list_activities", listArgs)
+        XCTAssertEqual(outside.text, empty, "a toolbox that never began a plan turn")
+
+        let ended = planRig(events: [], calendarAvailable: false)
+        let during = await ended.run("list_activities", listArgs)
+        XCTAssertTrue(during.text?.contains("calendar_available") ?? false, "positive control: the unreadable plan turn does carry the key")
+        ended.tools.endDayPlan()
+        let after = await ended.run("list_activities", listArgs)
+        XCTAssertEqual(after.text, empty, "the plan turn is over")
     }
 }
 

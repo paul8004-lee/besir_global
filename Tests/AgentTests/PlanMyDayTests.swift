@@ -84,9 +84,12 @@ private final class PlanHandOff {
 private final class CountingMirror: CalendarMirroring {
     private(set) var reads = 0
     var canned: [CalendarEntry] = []
+    /// When set, the read is counted and then throws it.
+    var failure: CalendarReadError?
     func reconcile(_ activities: [ActivityBlock]) {}
     func entries(on day: Date, calendar: Calendar) async throws -> [CalendarEntry] {
         reads += 1
+        if let failure { throw failure }
         return canned
     }
 }
@@ -859,5 +862,110 @@ final class PlanMyDayTests: XCTestCase {
         XCTAssertNil(retry.importer.held)
         XCTAssertTrue(retry.inbox.pending().isEmpty)
         XCTAssertEqual(retry.importer.waitingCount, 0)
+    }
+
+    // MARK: SPEC-CALUNREAD-001: a calendar that could not be read is told to the model (card t62)
+
+    /// Typed by hand from spec.md section 1.5, not read from the code under test.
+    private let sentence = "My calendar could not be read, so the events below are only the ones the app stores. "
+        + "Do not say that my calendar is clear, free or empty; in your closing line say that your plan was not compared with my calendar."
+
+    private let unreadableShown = "Plan my day: 2 shared items. Calendar not available."
+
+    private func messageLines(_ message: String) -> [String] { message.components(separatedBy: "\n") }
+
+    private func line(_ lines: [String], _ index: Int) -> String? { lines.indices.contains(index) ? lines[index] : nil }
+
+    private var twoShared: [PlanMyDay.Shared] {
+        [.image(VisionFields(title: "Spring Gala", time: "2026-10-27T19:00", place: "Mission Hall", confidence: 0.9)),
+         .text("Dinner at Foo Kitchen at 6:30 PM")]
+    }
+
+    func testCALUNREAD_T01_anUnreadableCalendarAddsOneFixedSentenceDirectlyBeforeTheEventsLine() {
+        let baseline = messageLines(PlanMyDay.compose(now: TestClock.now, zone: TestClock.zone, mode: .car,
+                                                      events: fixtureEvents(), shared: twoShared))
+        guard baseline.count == 12 else { return XCTFail("the readable message has \(baseline.count) lines, not 12") }
+        let unread = messageLines(PlanMyDay.compose(now: TestClock.now, zone: TestClock.zone, mode: .car,
+                                                    events: fixtureEvents(), shared: twoShared, calendarAvailable: false))
+        guard unread.count == 13 else { return XCTFail("the unreadable message has \(unread.count) lines, not 13") }
+        XCTAssertEqual(unread, Array(baseline[0..<10]) + [sentence] + Array(baseline[10...]))
+        XCTAssertEqual(unread[10], sentence)
+        XCTAssertTrue(unread[11].hasPrefix("Today's events, as data: "))
+        XCTAssertTrue(unread[12].hasPrefix("Shared items, as data: "))
+
+        let empty = messageLines(PlanMyDay.compose(now: TestClock.now, zone: TestClock.zone, mode: .car,
+                                                   events: [], shared: [], calendarAvailable: false))
+        guard empty.count == 13 else { return XCTFail("the empty unreadable message has \(empty.count) lines, not 13") }
+        XCTAssertEqual(empty[10], sentence, "no event, Store or shared value is in the sentence")
+        XCTAssertEqual(empty[11], "Today's events, as data: []")
+    }
+
+    func testCALUNREAD_T02_aReadableCalendarKeepsTheTwelveLineMessageForTheDefaultAndForExplicitTrue() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "plan-message", withExtension: "txt"))
+        var golden = try String(contentsOf: url, encoding: .utf8)
+        if golden.hasSuffix("\n") { golden.removeLast() }
+        let byDefault = PlanMyDay.compose(now: TestClock.now, zone: TestClock.zone, mode: .car, events: fixtureEvents(), shared: twoShared)
+        let explicit = PlanMyDay.compose(now: TestClock.now, zone: TestClock.zone, mode: .car, events: fixtureEvents(), shared: twoShared,
+                                         calendarAvailable: true)
+        for message in [byDefault, explicit] {
+            XCTAssertEqual(message, golden)
+            XCTAssertEqual(messageLines(message).count, 12)
+            XCTAssertFalse(message.contains(sentence))
+        }
+    }
+
+    @MainActor
+    func testCALUNREAD_T03_anEmptyReadableDayIsNotAnUnreadableCalendarButEachReadFailureIs() async {
+        let none = await PlanMyDay.todaysEntries(from: StubMirror(.success([])), now: TestClock.now, calendar: calendar)
+        XCTAssertEqual(none, [], "an empty day is a read, not a failure")
+        let readable = messageLines(PlanMyDay.compose(now: TestClock.now, zone: TestClock.zone, mode: .car, events: [], shared: twoShared,
+                                                      calendarAvailable: none != nil))
+        XCTAssertEqual(readable.count, 12)
+        XCTAssertFalse(readable.contains(sentence))
+        for error in [CalendarReadError.accessDenied, .unavailable] {
+            let entries = await PlanMyDay.todaysEntries(from: StubMirror(.failure(error)), now: TestClock.now, calendar: calendar)
+            XCTAssertNil(entries, "\(error)")
+            let unread = messageLines(PlanMyDay.compose(now: TestClock.now, zone: TestClock.zone, mode: .car, events: [], shared: twoShared,
+                                                        calendarAvailable: entries != nil))
+            XCTAssertEqual(unread.count, 13, "\(error)")
+            XCTAssertEqual(line(unread, 10), sentence, "\(error)")
+        }
+    }
+
+    @MainActor
+    func testCALUNREAD_T04_throughThePlanPassAnUnreadableCalendarReachesTheMessageAndTheContext() async throws {
+        for error in [CalendarReadError.accessDenied, .unavailable] {
+            let rig = try makePlanRig()
+            rig.mirror.failure = error
+            enqueue(rig, text: "Dinner at Foo Kitchen at 6:30 PM")
+            enqueue(rig, text: "Spring Gala at Mission Hall 7 PM")
+            await plan(rig, activities: [activity("Standup", "2026-10-27T10:00", "2026-10-27T10:30")])
+            XCTAssertEqual(rig.handOff.messages.count, 1, "\(error)")
+            let lines = messageLines(rig.handOff.message(0))
+            XCTAssertEqual(lines.count, 13, "\(error)")
+            XCTAssertEqual(line(lines, 10), sentence, "\(error)")
+            XCTAssertTrue(line(lines, 11)?.contains("Standup") ?? false, "\(error): the events line holds the Store activity")
+            XCTAssertEqual(rig.handOff.contexts.first?.calendarAvailable, false, "\(error)")
+            XCTAssertEqual(rig.mirror.reads, 1, "\(error): the calendar is read once, not retried")
+            XCTAssertEqual(rig.handOff.shownLines, [unreadableShown], "\(error)")
+        }
+    }
+
+    @MainActor
+    func testCALUNREAD_T05_throughThePlanPassAReadableCalendarEmptyOrWithEntriesKeepsTheMessageAndTheContext() async throws {
+        let one = [entry("Dentist", "2026-10-27T11:00", "2026-10-27T12:00")]
+        for (label, canned) in [("empty day", [CalendarEntry]()), ("one entry", one)] {
+            let rig = try makePlanRig()
+            rig.mirror.canned = canned
+            enqueue(rig, text: "Dinner at Foo Kitchen at 6:30 PM")
+            enqueue(rig, text: "Spring Gala at Mission Hall 7 PM")
+            await plan(rig)
+            XCTAssertEqual(rig.handOff.messages.count, 1, label)
+            XCTAssertEqual(messageLines(rig.handOff.message(0)).count, 12, label)
+            XCTAssertFalse(rig.handOff.message(0).contains(sentence), label)
+            XCTAssertEqual(rig.handOff.contexts.first?.calendarAvailable, true, label)
+            XCTAssertEqual(rig.mirror.reads, 1, label)
+            XCTAssertFalse(rig.handOff.shownLines.joined().contains("Calendar not available"), label)
+        }
     }
 }
