@@ -2697,4 +2697,481 @@ final class RepeatSeriesStoreTests: XCTestCase {
         }
         await settle(rig.mirror)
     }
+
+    // MARK: SPEC-REPEATFIX-001 (card t82) - repairs of the stored repeat rule
+
+    // MARK: AC-007 - the fill chooses its days again after its awaits
+
+    func testREPEATFIX_FillChoosesDaysAgainAfterItsAwaits() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let series = plannedStandup()
+        XCTAssertTrue(store.addSeries(series))
+        let nov9 = series.occurrenceID(dayKey: 20261109)
+        // Runs once per pass, after the days are chosen and before anything is written: the occurrence goes meanwhile.
+        store.drvFillGate = {
+            if let occurrence = store.activity(id: nov9) { store.deleteActivity(occurrence) }
+        }
+
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.drvFillGateReached, 1)
+        XCTAssertEqual(store.series[0].skippedDayKeys, [20261109])
+        XCTAssertEqual(store.events.count, 4, "legs for Nov 2 and Nov 16 only")
+        XCTAssertEqual(legDayKeys(store, .arrival), [20261102, 20261116])
+        XCTAssertEqual(legDayKeys(store, .departure), [20261102, 20261116])
+        XCTAssertTrue(store.events.allSatisfy { $0.linkedActivityId != nov9 }, "no leg for the deleted occurrence")
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+    }
+
+    // MARK: AC-001 - Delete Entire Series keeps the legs and meals of a stored copy
+
+    func testREPEATFIX_DeleteSeriesKeepsLegsLinkedToAStoredCopy() async throws {
+        let d0 = classBMonday()
+        func day(_ n: Int, _ hour: Int = 0) -> Date { d0.addingTimeInterval(Double(n) * 86400 + Double(hour) * 3600) }
+        let store = EmptyStore.make()
+        let clock = day(0, 8)
+        store.replanNow = { clock }
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        var series = standup()
+        series.firstDayKey = key(d0)
+        XCTAssertTrue(store.addSeries(series))
+        let ids = [0, 7, 14].map { series.occurrenceID(dayKey: key(day($0))) }
+        try await addBothLegs(store, series, edited: ids[0])
+        XCTAssertEqual(store.events.count, 6)
+        XCTAssertTrue(store.modifyActivity(id: ids[1], newTitle: "Standup (moved)"))
+
+        // The crash state, put back by hand: the copy's legs carry the series id again, and an old-style event with the
+        // series id and no link exists. No relaunch happens, so the load-time heal does not run.
+        store.events = store.events.map { e in
+            var e = e
+            if e.linkedActivityId == ids[1] { e.recurrenceId = series.id }
+            return e
+        }
+        store.events.append(ScheduledEvent(title: "Old leg", destination: office, arrivalDate: day(3, 9),
+                                           mode: .car, bufferMinutes: 5, notifyLeadMinutes: 10, recurrenceId: series.id))
+        store.addMeal(category: .cooking, title: "Goes", scheduledEventId: try XCTUnwrap(store.legs(of: ids[2]).return).id,
+                      plannedAt: day(14, 12), loggedAt: day(-1))
+        store.addMeal(category: .cooking, title: "Stays", scheduledEventId: try XCTUnwrap(store.legs(of: ids[1]).return).id,
+                      plannedAt: day(7, 12), loggedAt: day(-1))
+        let keptLegs = store.events.filter { $0.linkedActivityId == ids[1] }
+        XCTAssertEqual(keptLegs.count, 2)
+        XCTAssertTrue(keptLegs.allSatisfy { $0.recurrenceId == series.id && $0.notificationId != nil },
+                      "class B: the copy's legs are in the crash state and have alarms")
+        let alarms = Dictionary(uniqueKeysWithValues: keptLegs.map { ($0.id, $0.notificationId) })
+
+        let saves = store.drvSaveCount
+        store.deleteRecurringSeries(series.id)
+
+        // Row 1
+        XCTAssertTrue(store.series.isEmpty)
+        XCTAssertEqual(store.activities.map(\.id), [ids[1]])
+        XCTAssertEqual(store.events.count, 2, "the copy's two legs stay; the other four legs and `unlinked` go")
+        XCTAssertTrue(store.events.allSatisfy { $0.linkedActivityId == ids[1] })
+        XCTAssertEqual(store.meals.map(\.title), ["Stays"])
+        for leg in store.events { XCTAssertEqual(leg.notificationId, alarms[leg.id] ?? nil, "the kept alarm is untouched") }
+        // Row 2
+        XCTAssertTrue(store.events.allSatisfy { $0.recurrenceId == nil }, "no event keeps the id of a series that is gone")
+        // Row 3
+        let again = relaunched()
+        XCTAssertEqual(again.events.count, 2)
+        XCTAssertTrue(again.events.allSatisfy { $0.recurrenceId == nil })
+        XCTAssertEqual(again.activities.map(\.id), [ids[1]])
+        XCTAssertTrue(again.series.isEmpty)
+        // Row 4
+        XCTAssertEqual(store.drvSaveCount, saves + 1, "events.json is written once")
+    }
+
+    // MARK: AC-002 - the load heals the crash state
+
+    /// A store with a leg plan whose six legs (Nov 2, 9, 16) are filled and on disk, plus the pieces of the crash state of
+    /// `materialize` for Nov 9: the stored copy (not yet saved), the ids of the two fill-made legs of the day, and, when
+    /// asked, a `foreign` event linked to the day that carries another series' id (written with `save()`).
+    private struct HealRig {
+        let store: Store
+        let series: RepeatSeries
+        let nov9: UUID
+        let copy: ActivityBlock
+        let fillLegIDs: Set<UUID>
+        let foreign: ScheduledEvent?
+    }
+
+    private func healRig(withForeign: Bool) async throws -> HealRig {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let s = plannedStandup()
+        XCTAssertTrue(store.addSeries(s))
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6)
+        let nov9 = s.occurrenceID(dayKey: 20261109)
+        var copy = try XCTUnwrap(store.activity(id: nov9))
+        copy.recurrenceId = nil
+        let fillLegIDs = Set(store.events.filter { $0.linkedActivityId == nov9 }.map(\.id))
+        XCTAssertEqual(fillLegIDs.count, 2)
+        var foreign: ScheduledEvent?
+        if withForeign {
+            var f = ScheduledEvent(title: "Foreign leg", destination: office, arrivalDate: at(2026, 11, 9, 9),
+                                   mode: .car, bufferMinutes: 5, notifyLeadMinutes: 10, recurrenceId: UUID(),
+                                   linkedActivityId: nov9)
+            f.travelSeconds = 900
+            store.events.append(f)
+            store.save()
+            foreign = f
+        }
+        return HealRig(store: store, series: s, nov9: nov9, copy: copy, fillLegIDs: fillLegIDs, foreign: foreign)
+    }
+
+    /// Row 1 and 2 share what the relaunched store must show.
+    private func assertHealed(_ r: HealRig, _ reloaded: Store) {
+        for leg in reloaded.events where r.fillLegIDs.contains(leg.id) {
+            XCTAssertNil(leg.recurrenceId, "the copy's fill-made leg lost the series id")
+        }
+        XCTAssertEqual(reloaded.events.filter { r.fillLegIDs.contains($0.id) }.count, 2)
+        XCTAssertEqual(reloaded.events.first { $0.id == r.foreign?.id }?.recurrenceId, r.foreign?.recurrenceId,
+                       "an event of another series is not touched")
+        let others = reloaded.events.filter { $0.linkedActivityId != r.nov9 }
+        XCTAssertEqual(others.count, 4)
+        XCTAssertTrue(others.allSatisfy { $0.recurrenceId == r.series.id }, "the legs of Nov 2 and Nov 16 keep the series id")
+    }
+
+    func testREPEATFIX_LoadClearsSeriesIdOnCopyLegsWhenTheDayIsNotSkipped() async throws {
+        let r = try await healRig(withForeign: true)
+        // The app died after the first save of `materialize`: the copy is on disk, nothing else.
+        try write(JSONEncoder().encode([r.copy]), "activities.json")
+
+        let reloaded = relaunched()
+        XCTAssertEqual(reloaded.series[0].skippedDayKeys, [20261109], "the existing repair")
+        assertHealed(r, reloaded)
+        XCTAssertEqual(reloaded.drvSaveCount, 1, "events.json is written once")
+
+        let second = relaunched()
+        assertHealed(r, second)
+        XCTAssertEqual(second.drvSaveCount, 0, "nothing is left to heal")
+    }
+
+    func testREPEATFIX_LoadClearsSeriesIdOnCopyLegsWhenTheDayIsSkipped() async throws {
+        let r = try await healRig(withForeign: true)
+        // The app died after the second save: the copy and the skipped day are on disk, the legs are not.
+        try write(JSONEncoder().encode([r.copy]), "activities.json")
+        var skipped = r.store.series[0]
+        skipped.skippedDayKeys = [20261109]
+        try write(JSONEncoder().encode([skipped]), "series.json")
+
+        let reloaded = relaunched()
+        XCTAssertEqual(reloaded.series[0].skippedDayKeys, [20261109], "still one entry")
+        assertHealed(r, reloaded)
+        XCTAssertEqual(reloaded.drvSaveCount, 1)
+
+        reloaded.deleteRecurringSeries(r.series.id)
+        XCTAssertEqual(reloaded.events.count, 3, "the three events linked to the copy are what is left")
+        XCTAssertTrue(reloaded.events.allSatisfy { $0.linkedActivityId == r.nov9 })
+    }
+
+    func testREPEATFIX_LoadWithNothingToHealWritesNoEvents() async throws {
+        // (a) No copy.
+        _ = try await healRig(withForeign: false)
+        let aBytes = bytes("events.json")
+        XCTAssertNotNil(aBytes)
+        let aStore = relaunched()
+        XCTAssertEqual(aStore.drvSaveCount, 0)
+        XCTAssertEqual(bytes("events.json"), aBytes)
+
+        // (b) A copy whose legs already have no series id: the state after `materialize`.
+        let b = try await healRig(withForeign: false)
+        XCTAssertTrue(b.store.modifyActivity(id: b.nov9, newTitle: "Standup (moved)"))
+        let bBytes = bytes("events.json")
+        let bStore = relaunched()
+        XCTAssertEqual(bStore.drvSaveCount, 0)
+        XCTAssertEqual(bytes("events.json"), bBytes)
+
+        // (c) The series file is unreadable, with the copy and the legs of the crash state: nothing owns the legs.
+        let c = try await healRig(withForeign: false)
+        try write(JSONEncoder().encode([c.copy]), "activities.json")
+        try write(Data("not json".utf8), "series.json")
+        let cBytes = bytes("events.json")
+        let cStore = relaunched()
+        XCTAssertTrue(cStore.seriesLoadFailed)
+        XCTAssertEqual(cStore.drvSaveCount, 0)
+        XCTAssertEqual(bytes("events.json"), cBytes)
+        XCTAssertEqual(cStore.events.filter { c.fillLegIDs.contains($0.id) }.count, 2)
+        XCTAssertTrue(cStore.events.allSatisfy { $0.recurrenceId == c.series.id }, "the legs still carry the series id")
+    }
+
+    // MARK: AC-003 to AC-006 - the legs follow their occurrence after a time zone change
+
+    private var losAngeles: TimeZone { TimeZone(identifier: "America/Los_Angeles")! }
+
+    /// "An event is unchanged" except for its two dates and its alarm id (the dates have rows of their own).
+    private func sameExceptDates(_ a: ScheduledEvent, _ b: ScheduledEvent) -> Bool {
+        let checks: [Bool] = [
+            a.id == b.id, a.title == b.title, a.origin == b.origin, a.destination == b.destination, a.mode == b.mode,
+            a.bufferMinutes == b.bufferMinutes, a.notifyLeadMinutes == b.notifyLeadMinutes,
+            a.notifyEnabled == b.notifyEnabled, a.syncToCalendar == b.syncToCalendar,
+            a.recurrenceId == b.recurrenceId, a.linkedActivityId == b.linkedActivityId, a.anchor == b.anchor,
+            a.travelSeconds == b.travelSeconds,
+        ]
+        return checks.allSatisfy { $0 }
+    }
+
+    /// The whole list of the SPEC's conventions, the alarm id aside.
+    private func sameEvent(_ a: ScheduledEvent, _ b: ScheduledEvent) -> Bool {
+        sameExceptDates(a, b) && a.arrivalDate == b.arrivalDate && a.departureDate == b.departureDate
+    }
+
+    /// The store of AC-003: `plannedStandup()` filled on the fixture clock in Seoul, six legs for Nov 2, 9 and 16.
+    private func filledStore() async -> (store: Store, series: RepeatSeries) {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let s = plannedStandup()
+        XCTAssertTrue(store.addSeries(s))
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6)
+        return (store, s)
+    }
+
+    /// Both legs of the day, looked up by occurrence id in `events`.
+    private func legPair(_ store: Store, _ s: RepeatSeries, _ dayKey: Int) throws -> (out: ScheduledEvent, back: ScheduledEvent) {
+        let id = s.occurrenceID(dayKey: dayKey)
+        let out = try XCTUnwrap(store.events.first { $0.linkedActivityId == id && ($0.anchor ?? .arrival) == .arrival })
+        let back = try XCTUnwrap(store.events.first { $0.linkedActivityId == id && $0.anchor == .departure })
+        return (out, back)
+    }
+
+    /// Checks AC-003 rows 1 and 2 for one day: the legs sit on the occurrence in the zone the test is in now, and the
+    /// distance between their two dates is what `before` recorded.
+    private func assertOnOccurrence(_ store: Store, _ s: RepeatSeries, day: Int, before: [ScheduledEvent],
+                                    file: StaticString = #filePath, line: UInt = #line) throws {
+        let (out, back) = try legPair(store, s, 20261100 + day)
+        let (outBefore, backBefore) = (try XCTUnwrap(before.first { $0.id == out.id }),
+                                       try XCTUnwrap(before.first { $0.id == back.id }))
+        XCTAssertEqual(out.arrivalDate, at(2026, 11, day, 9), "outbound of Nov \(day)", file: file, line: line)
+        XCTAssertEqual(out.departureDate.map { $0.timeIntervalSince(out.arrivalDate) } ?? 0,
+                       outBefore.departureDate.map { $0.timeIntervalSince(outBefore.arrivalDate) } ?? 1,
+                       accuracy: 0.001, "outbound travel time plus buffer of Nov \(day)", file: file, line: line)
+        XCTAssertEqual(back.departureDate, at(2026, 11, day, 9, 30), "return of Nov \(day)", file: file, line: line)
+        XCTAssertEqual(back.arrivalDate.timeIntervalSince(back.departureDate ?? back.arrivalDate),
+                       backBefore.arrivalDate.timeIntervalSince(backBefore.departureDate ?? backBefore.arrivalDate),
+                       accuracy: 0.001, "return travel time of Nov \(day)", file: file, line: line)
+        XCTAssertTrue(sameExceptDates(out, outBefore), "outbound of Nov \(day): nothing but the dates changed", file: file, line: line)
+        XCTAssertTrue(sameExceptDates(back, backBefore), "return of Nov \(day): nothing but the dates changed", file: file, line: line)
+    }
+
+    func testREPEATFIX_ZoneChangeMovesLegsToTheirOccurrences() async throws {
+        let (store, s) = await filledStore()
+        // An old or synced record: departure-anchored, no `departureDate`, still on Seoul time.
+        var odd = ScheduledEvent(title: "Odd return", origin: office, destination: home, arrivalDate: at(2026, 11, 23, 9, 30),
+                                 mode: .car, bufferMinutes: 0, notifyLeadMinutes: 10, recurrenceId: s.id,
+                                 linkedActivityId: s.occurrenceID(dayKey: 20261123))
+        odd.anchor = .departure
+        store.events.append(odd)
+        let before = store.events
+        let lookups = store.drvTravelLookupCount
+
+        NSTimeZone.default = losAngeles
+        await store.fillSeriesLegs()
+
+        XCTAssertEqual(store.events.count, 7, "nothing made, nothing pruned")
+        for day in [2, 9, 16] { try assertOnOccurrence(store, s, day: day, before: before) }
+        // Row 3: the unchanged fields of `odd`, and no network.
+        let oddAfter = try XCTUnwrap(store.events.first { $0.id == odd.id })
+        XCTAssertTrue(sameExceptDates(oddAfter, odd))
+        XCTAssertEqual(store.drvTravelLookupCount, lookups)
+        // Row 4: not vacuous - the legs really were on Seoul time before the switch.
+        let nov9Out = try XCTUnwrap(before.first { $0.linkedActivityId == s.occurrenceID(dayKey: 20261109) && $0.anchor == .arrival })
+        XCTAssertNotEqual(nov9Out.arrivalDate, at(2026, 11, 9, 9))
+        // Row 5: `odd` moved on its arrival date and did not grow a departure date.
+        XCTAssertNil(oddAfter.departureDate)
+        XCTAssertEqual(oddAfter.arrivalDate, at(2026, 11, 23, 9, 30))
+    }
+
+    func testREPEATFIX_ZoneChangeLeavesOtherEventsAlone() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        var s = plannedStandup()
+        s.skippedDayKeys = [20261123]
+        XCTAssertTrue(store.addSeries(s))
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6)
+        let nov9 = s.occurrenceID(dayKey: 20261109)
+        XCTAssertTrue(store.modifyActivity(id: nov9, newTitle: "Standup (moved)"))
+        // The copy's legs are put 600 seconds off the copy's own anchor: only the stored-activity check keeps them still.
+        store.events = store.events.map { e in
+            var e = e
+            if e.linkedActivityId == nov9 {
+                e.arrivalDate = e.arrivalDate.addingTimeInterval(600)
+                e.departureDate = e.departureDate?.addingTimeInterval(600)
+            }
+            return e
+        }
+        let plain = ScheduledEvent(title: "Plain", destination: office, arrivalDate: at(2026, 11, 10, 9),
+                                   mode: .car, bufferMinutes: 5, notifyLeadMinutes: 10)
+        let stray = ScheduledEvent(title: "Stray", destination: office, arrivalDate: at(2026, 11, 10, 11),
+                                   mode: .car, bufferMinutes: 5, notifyLeadMinutes: 10, linkedActivityId: UUID())
+        let skippedLeg = seriesLeg(s, 20261123, .arrival)
+        store.events.append(contentsOf: [plain, stray, skippedLeg])
+        let before = store.events
+        let copy = try XCTUnwrap(store.activities.first { $0.id == nov9 })
+        let (seriesCount, skippedDays, mark) = (store.series.count, store.series[0].skippedDayKeys,
+                                                store.series[0].legsFilledThroughDayKey)
+        XCTAssertEqual(skippedDays, [20261123, 20261109])
+        XCTAssertEqual(mark, 20261116)
+        let (seriesBytes, activitiesBytes, mealCount) = (bytes("series.json"), bytes("activities.json"), store.meals.count)
+        let lookups = store.drvTravelLookupCount
+
+        NSTimeZone.default = losAngeles
+        await store.fillSeriesLegs()
+
+        for kept in before where kept.linkedActivityId == nov9 || [plain.id, stray.id, skippedLeg.id].contains(kept.id) {
+            let now = try XCTUnwrap(store.events.first { $0.id == kept.id })
+            XCTAssertTrue(sameEvent(now, kept), "\(kept.title) is unchanged")
+        }
+        for day in [2, 16] { try assertOnOccurrence(store, s, day: day, before: before) }
+        let copyAfter = try XCTUnwrap(store.activities.first { $0.id == nov9 })
+        XCTAssertEqual(copyAfter.id, copy.id)
+        XCTAssertEqual(copyAfter.startDate, copy.startDate)
+        XCTAssertEqual(copyAfter.endDate, copy.endDate)
+        XCTAssertEqual(copyAfter.title, copy.title)
+        XCTAssertEqual(store.series.count, seriesCount)
+        XCTAssertEqual(store.series[0].skippedDayKeys, skippedDays)
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, mark)
+        XCTAssertEqual(bytes("series.json"), seriesBytes, "series.json is not rewritten")
+        XCTAssertEqual(bytes("activities.json"), activitiesBytes, "activities.json is not rewritten")
+        XCTAssertEqual(store.meals.count, mealCount)
+        XCTAssertEqual(store.drvTravelLookupCount, lookups)
+    }
+
+    func testREPEATFIX_RealignmentIsOneWriteOneRescheduleAndIdempotent() async throws {
+        let (store, s) = await filledStore()
+        let before = store.events
+        let (saves, reschedules) = (store.drvSaveCount, store.drvRescheduleCount)
+
+        NSTimeZone.default = losAngeles
+        await store.fillSeriesLegs()
+
+        // Row 1
+        XCTAssertEqual(store.drvSaveCount, saves + 1, "events.json is written once")
+        XCTAssertEqual(store.drvRescheduleCount, reschedules + 1, "the alarms are scheduled once")
+        XCTAssertEqual(store.events.count, 6)
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+        for day in [2, 9, 16] { try assertOnOccurrence(store, s, day: day, before: before) }
+
+        // Row 2: a second pass with nothing changed does nothing.
+        let afterFirst = store.events
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.drvSaveCount, saves + 1)
+        XCTAssertEqual(store.drvRescheduleCount, reschedules + 1)
+        XCTAssertEqual(store.events.count, afterFirst.count)
+        for e in afterFirst {
+            let again = try XCTUnwrap(store.events.first { $0.id == e.id })
+            XCTAssertTrue(sameEvent(again, e))
+        }
+
+        // Row 3: the write reached the disk.
+        let reloaded = relaunched()
+        for e in afterFirst {
+            let onDisk = try XCTUnwrap(reloaded.events.first { $0.id == e.id })
+            XCTAssertEqual(onDisk.arrivalDate, e.arrivalDate)
+            XCTAssertEqual(onDisk.departureDate, e.departureDate)
+        }
+    }
+
+    func testREPEATFIX_RealignedLegsKeepTheirAlarms() async throws {
+        // Class B: the alarm scheduling reads the real clock.
+        let d0 = classBMonday()
+        let store = EmptyStore.make()
+        let clock = d0.addingTimeInterval(8 * 3600)
+        store.replanNow = { clock }
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        var s = plannedStandup()
+        s.firstDayKey = key(d0)
+        XCTAssertTrue(store.addSeries(s))
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6)
+        let before = store.events
+        let requests = store.notifications.requestCount
+
+        NSTimeZone.default = losAngeles
+        await store.fillSeriesLegs()
+
+        // The proof is the count: the reschedule cancelled every request and handed the six alarms over again.
+        XCTAssertEqual(store.notifications.requestCount, requests + 6)
+        XCTAssertEqual(store.events.count, 6)
+        for leg in store.events {
+            XCTAssertNotNil(leg.notificationId, "\(leg.title) has an alarm")
+            let moved = try XCTUnwrap(before.first { $0.id == leg.id })
+            XCTAssertNotEqual(leg.departureDate, moved.departureDate, "the leg moved")
+            let alarm = NotificationManager.alarmTime(departure: try XCTUnwrap(leg.departureDate), leadMinutes: leg.notifyLeadMinutes)
+            XCTAssertGreaterThan(alarm, Date())
+        }
+    }
+
+    func testREPEATFIX_RealignmentRunsWhenTheFillHasNothingToMake() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let s = standup()   // no leg plan: the fill chooses no series
+        XCTAssertTrue(store.addSeries(s))
+        for day in [20261102, 20261109, 20261116] {
+            store.events.append(seriesLeg(s, day, .arrival))
+            store.events.append(seriesLeg(s, day, .departure))
+        }
+        let before = store.events
+        XCTAssertEqual(before.count, 6)
+
+        NSTimeZone.default = losAngeles
+        await store.fillSeriesLegs()
+
+        XCTAssertEqual(store.drvFillGateReached, 1, "the pass ran")
+        XCTAssertEqual(store.events.count, 6)
+        for day in [2, 9, 16] { try assertOnOccurrence(store, s, day: day, before: before) }
+    }
+
+    func testREPEATFIX_RealignmentRunsInTheBackgroundPath() async throws {
+        // Class B: `backgroundRefresh()` reaches the real clock.
+        let d0 = classBMonday()
+        let ymd = cal.dateComponents([.year, .month, .day], from: d0)
+        let store = EmptyStore.make()
+        let clock = d0.addingTimeInterval(8 * 3600)
+        store.replanNow = { clock }
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        var s = plannedStandup()
+        s.firstDayKey = key(d0)
+        XCTAssertTrue(store.addSeries(s))
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6)
+        let (lookups, reschedules) = (store.drvTravelLookupCount, store.drvRescheduleCount)
+
+        NSTimeZone.default = losAngeles
+        await store.backgroundRefresh()
+
+        func wall(_ days: Int, _ hour: Int, _ minute: Int = 0) -> Date {
+            cal.date(from: DateComponents(year: ymd.year, month: ymd.month, day: ymd.day! + days, hour: hour, minute: minute))!
+        }
+        for n in [0, 7, 14] {
+            let id = s.occurrenceID(dayKey: Store.dayKey(wall(n, 9), calendar: cal))
+            let out = try XCTUnwrap(store.legs(of: id).outbound), back = try XCTUnwrap(store.legs(of: id).return)
+            XCTAssertEqual(out.arrivalDate, wall(n, 9), "outbound of day +\(n)")
+            XCTAssertEqual(back.departureDate, wall(n, 9, 30), "return of day +\(n)")
+        }
+        XCTAssertEqual(store.drvTravelLookupCount, lookups)
+        XCTAssertEqual(store.drvRescheduleCount, reschedules + 2, "the fill's and the refresh's")
+    }
+
+    func testREPEATFIX_RealignmentJoinsTheFillsOwnWrite() async throws {
+        let (store, s) = await filledStore()
+        let before = store.events
+        NSTimeZone.default = losAngeles
+        store.replanNow = { self.at(2026, 11, 10, 8) }   // Los Angeles: the window now reaches Nov 23
+        let (saves, reschedules, lookups) = (store.drvSaveCount, store.drvRescheduleCount, store.drvTravelLookupCount)
+
+        await store.fillSeriesLegs()
+
+        XCTAssertEqual(store.events.count, 8, "the legs of Nov 23 are made")
+        for day in [2, 9, 16] { try assertOnOccurrence(store, s, day: day, before: before) }
+        let (out, back) = try legPair(store, s, 20261123)
+        XCTAssertEqual(out.arrivalDate, at(2026, 11, 23, 9))
+        XCTAssertEqual(back.departureDate, at(2026, 11, 23, 9, 30))
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261124)
+        XCTAssertEqual(store.drvSaveCount, saves + 1, "one write for the realignment and the new legs")
+        XCTAssertEqual(store.drvRescheduleCount, reschedules + 1)
+        XCTAssertEqual(store.drvTravelLookupCount, lookups, "the travel time is copied from the stored legs")
+    }
 }
