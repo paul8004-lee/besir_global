@@ -158,8 +158,8 @@ struct ActivityDetailView: View {
                 }
             }
             .confirmationDialog("How do you want to delete this repeating event?", isPresented: $showingDeleteMenu, titleVisibility: .visible) {
-                Button("Delete Entire Series", role: .destructive) { deleteWholeSeries() }
                 Button(singleOccurrenceDeleteTitle, role: .destructive) { delete() }
+                Button("Delete Entire Series", role: .destructive) { deleteWholeSeries() }
                 Button("Cancel", role: .cancel) {}
             }
             .confirmationDialog(deleteConfirmTitle, isPresented: $showingDeleteConfirm, titleVisibility: .visible) {
