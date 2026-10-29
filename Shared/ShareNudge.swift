@@ -3,6 +3,7 @@ import UserNotifications
 
 /// The share extension cannot open besir (Apple: "App extensions are not allowed to open URLs directly"), so after a share it
 /// rings one fixed doorbell: a local notification whose tap brings besir to the front, where the queue is imported as always.
+// @MX:NOTE A notification and not an open: Apple allows an extension to open its app only from Today and iMessage, and names a local notification as the way to get the user's attention.
 enum ShareNudge {
     static let identifier = "besir.share.nudge"
     static let title = "besir"
