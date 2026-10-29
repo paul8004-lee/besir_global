@@ -451,7 +451,7 @@ final class Store: ObservableObject {
     /// await(updateEvent의 추정) 사이 활동이 다른 경로로 바뀌었는지 — 바뀌었으면 현재값,
     /// 아니면 nil. 유도값(앵커·끝점·제목)을 await 전 스냅샷으로 쓰는 updateLeg·realignLegs가
     /// await 뒤 이것을 불러 옛 스냅샷이 들어갔으면 현재값으로 다시 쓴다(MA code-safety 경고 2).
-    private func activityIfChanged(_ before: ActivityBlock?) -> ActivityBlock? {
+    func activityIfChanged(_ before: ActivityBlock?) -> ActivityBlock? {
         guard let before, let now = activities.first(where: { $0.id == before.id }) else { return nil }
         if now.title == before.title, now.startDate == before.startDate,
            now.endDate == before.endDate, now.location == before.location { return nil }
@@ -905,6 +905,9 @@ final class Store: ObservableObject {
         let storedIDs = Set(activities.map { $0.id })
         return series.flatMap { $0.occurrences(in: interval, calendar: calendar) }.filter { !storedIDs.contains($0.id) }
     }
+
+    /// The activities Plan my day reads: stored ones and series occurrences from today 00:00 to the end of tomorrow.
+    func activitiesForPlanning() -> [ActivityBlock] { [] }
 
     private static func sortedByStart(_ list: [ActivityBlock]) -> [ActivityBlock] {
         list.sorted { ($0.startDate, $0.id.uuidString) < ($1.startDate, $1.id.uuidString) }

@@ -750,4 +750,433 @@ final class RepeatSeriesStoreTests: XCTestCase {
         XCTAssertEqual(drawn.first?.startDate, at(2029, 3, 14, 9))
         XCTAssertEqual(store.activities(on: at(2029, 3, 14)).filter { $0.title == "Standup" }.count, 1)
     }
+
+    // MARK: AC-010 - drawing (M4a: the screens call the Store members these tests read)
+
+    private func stored(_ title: String, _ start: Date, _ end: Date, place: Place? = nil) -> ActivityBlock {
+        ActivityBlock(title: title, location: place, startDate: start, endDate: end)
+    }
+
+    /// Weekly on one weekday (Calendar numbering, Sunday = 1) from a first day, optionally to a last day.
+    private func weekly(_ title: String, weekday: Int, startMinute: Int, endMinute: Int, endDayDistance: Int = 0,
+                        first: Int, last: Int? = nil, place: Place? = nil) -> RepeatSeries {
+        RepeatSeries(id: RepeatSeries.newID(), title: title, location: place,
+                     rule: RecurrenceRule(weekdays: [weekday], unit: .weekly), lunarCalendar: nil,
+                     firstDayKey: first, lastDayKey: last, startMinute: startMinute, endMinute: endMinute,
+                     endDayDistance: endDayDistance, syncToCalendar: nil, skippedDayKeys: [],
+                     legPlan: nil, legsFilledThroughDayKey: nil)
+    }
+
+    private func leg(for activityId: UUID, at date: Date) -> ScheduledEvent {
+        var leg = ScheduledEvent(title: "Leg", destination: office, arrivalDate: date, mode: .car, bufferMinutes: 5,
+                                 notifyLeadMinutes: 10)
+        leg.linkedActivityId = activityId
+        return leg
+    }
+
+    func testRECURRULE_DayListShowsSeriesYearsAhead() {
+        let store = fixtureStore()
+        let series = standup()
+        XCTAssertTrue(store.addSeries(series))
+        store.activities.append(stored("Lunch", at(2029, 3, 12, 12), at(2029, 3, 12, 13)))
+        store.activities.append(stored("Early", at(2029, 3, 12, 8), at(2029, 3, 12, 8, 30)))
+
+        // Row 1: 2029-03-12 is a Monday 2.4 years after the first day; stored blocks are mixed in, sorted by start.
+        let monday = store.activities(on: at(2029, 3, 12))
+        XCTAssertEqual(monday.map(\.title), ["Early", "Standup", "Lunch"])
+        XCTAssertEqual(monday.dropFirst().first?.startDate, at(2029, 3, 12, 9))
+        XCTAssertEqual(monday.dropFirst().first?.recurrenceId, series.id)
+        // A Tuesday has no Standup and nothing else.
+        XCTAssertEqual(store.activities(on: at(2029, 3, 13)).count, 0)
+        // The interval read agrees: four Mondays in March 2029, and the stored blocks are in it too.
+        let inMonth = store.activities(in: month(2029, 3))
+        XCTAssertEqual(inMonth.filter { $0.title == "Standup" }.count, 4)
+        XCTAssertEqual(inMonth.count, 6)
+    }
+
+    func testRECURRULE_MonthDotsAndTitlesFromSeries() {
+        let store = fixtureStore()
+        let series = standup()
+        XCTAssertTrue(store.addSeries(series))
+        let mondays: Set<Int> = [5, 12, 19, 26]
+        for d in 1...31 {
+            let day = at(2029, 3, d)
+            // Row 2: a dot and one title on every Monday, neither on the other days.
+            XCTAssertEqual(store.hasSchedule(on: day), mondays.contains(d), "dot on March \(d)")
+            let titles = store.scheduleTitles(on: day)
+            if mondays.contains(d) {
+                XCTAssertEqual(titles.count, 1, "titles on March \(d)")
+                XCTAssertEqual(titles.first?.title, "Standup")
+                XCTAssertEqual(titles.first?.id, series.occurrenceID(dayKey: 20290300 + d))
+            } else {
+                XCTAssertTrue(titles.isEmpty, "titles on March \(d)")
+            }
+            // Row 3: the list, the dot and the titles say the same thing about the day.
+            XCTAssertEqual(!store.activities(on: day).isEmpty, store.hasSchedule(on: day), "agree on March \(d)")
+            XCTAssertEqual(!store.activities(on: day).isEmpty, !titles.isEmpty, "agree with titles on March \(d)")
+        }
+
+        // Row 3, second half: a 23:00-01:00 series also marks the day after each occurrence, even across a month end.
+        let nightStore = fixtureStore()
+        XCTAssertTrue(nightStore.addSeries(weekly("Night", weekday: 2, startMinute: 23 * 60, endMinute: 60, endDayDistance: 1,
+                                                   first: 20261102)))
+        var expected = Set<Int>()
+        for monday in mondays { expected.insert(monday); expected.insert(monday + 1) }
+        for d in 1...31 {
+            let day = at(2029, 3, d)
+            XCTAssertEqual(nightStore.hasSchedule(on: day), expected.contains(d), "night dot on March \(d)")
+            XCTAssertEqual(!nightStore.activities(on: day).isEmpty, nightStore.hasSchedule(on: day), "night agree on March \(d)")
+        }
+        // 2029-04-30 is a Monday: its night spills into May 1, which belongs to the next month's cache entry.
+        XCTAssertTrue(nightStore.hasSchedule(on: at(2029, 4, 30)))
+        XCTAssertTrue(nightStore.hasSchedule(on: at(2029, 5, 1)))
+        XCTAssertFalse(nightStore.hasSchedule(on: at(2029, 5, 2)))
+        XCTAssertEqual(nightStore.scheduleTitles(on: at(2029, 5, 1)).map(\.title), ["Night"])
+    }
+
+    func testRECURRULE_CacheClearsWhenSeriesChanges() {
+        let store = fixtureStore()
+        XCTAssertTrue(store.addSeries(standup()))
+        let before = RecurrenceRule.drvExpansionCount
+        XCTAssertTrue(store.hasSchedule(on: at(2029, 3, 5)))
+        let built = RecurrenceRule.drvExpansionCount
+        // Positive control: the first read of the month expands the rule, so the counter is seen to move.
+        XCTAssertGreaterThan(built, before)
+
+        // Any other read of that month, of either cached function, is served from the cache.
+        for d in 1...31 {
+            _ = store.hasSchedule(on: at(2029, 3, d))
+            _ = store.scheduleTitles(on: at(2029, 3, d))
+        }
+        XCTAssertEqual(RecurrenceRule.drvExpansionCount, built, "a cached month is not expanded again")
+
+        // A change of the series list clears the cache: the next read expands again and shows the new series.
+        XCTAssertFalse(store.hasSchedule(on: at(2029, 3, 7)))
+        XCTAssertTrue(store.addSeries(weekly("Gym", weekday: 4, startMinute: 18 * 60, endMinute: 19 * 60, first: 20261104)))
+        let afterChange = RecurrenceRule.drvExpansionCount
+        XCTAssertTrue(store.hasSchedule(on: at(2029, 3, 7)))
+        XCTAssertGreaterThan(RecurrenceRule.drvExpansionCount, afterChange, "the cleared cache is rebuilt")
+        XCTAssertEqual(store.scheduleTitles(on: at(2029, 3, 7)).map(\.title), ["Gym"])
+        // The skipped-day variant of this change belongs to M4b, where the store gets the writer that skips a day
+        // (AC-013); this milestone has no store call that changes `skippedDayKeys`.
+    }
+
+    func testRECURRULE_ActivitiesDidSetDoesNotExpandSeries() {
+        let store = fixtureStore()
+        XCTAssertTrue(store.addSeries(standup()))
+        let c0 = RecurrenceRule.drvExpansionCount
+        XCTAssertTrue(store.hasSchedule(on: at(2029, 3, 5)))
+        let c1 = RecurrenceRule.drvExpansionCount
+        XCTAssertGreaterThan(c1, c0, "positive control: the counter moves when the month is read")
+
+        // Each append and each removal runs the `didSet` of `activities`; none of them may expand the rule.
+        for i in 0..<100 {
+            let start = at(2027, 1, 1, 9).addingTimeInterval(Double(i) * 86400)
+            store.activities.append(stored("Stored \(i)", start, start.addingTimeInterval(1800)))
+        }
+        XCTAssertEqual(RecurrenceRule.drvExpansionCount, c1, "100 stored appends did not expand the series")
+        store.events.append(leg(for: UUID(), at: at(2027, 1, 1, 9)))
+        XCTAssertEqual(RecurrenceRule.drvExpansionCount, c1, "an events change did not expand the series")
+        store.activities.removeAll()
+        XCTAssertEqual(RecurrenceRule.drvExpansionCount, c1, "a removal did not expand the series")
+        // The month entry survived all of it.
+        XCTAssertTrue(store.hasSchedule(on: at(2029, 3, 12)))
+        XCTAssertEqual(RecurrenceRule.drvExpansionCount, c1)
+    }
+
+    func testRECURRULE_StoredWinsOverComputedWithSameId() {
+        let store = fixtureStore()
+        let series = standup()
+        XCTAssertTrue(store.addSeries(series))
+        // The state after a crash between the two saves of a materialize: the copy is stored and Nov 9 is not skipped yet.
+        var copy = stored("Standup moved", at(2026, 11, 9, 10), at(2026, 11, 9, 10, 30), place: office)
+        copy.id = series.occurrenceID(dayKey: 20261109)
+        copy.recurrenceId = series.id
+        store.activities.append(copy)
+
+        let day = store.activities(on: at(2026, 11, 9))
+        XCTAssertEqual(day.count, 1)
+        XCTAssertEqual(day.first?.title, "Standup moved")
+        XCTAssertEqual(day.first?.startDate, at(2026, 11, 9, 10))
+        let interval = store.activities(in: month(2026, 11)).filter { $0.id == copy.id }
+        XCTAssertEqual(interval.count, 1)
+        XCTAssertEqual(interval.first?.title, "Standup moved")
+        let titles = store.scheduleTitles(on: at(2026, 11, 9))
+        XCTAssertEqual(titles.count, 1, "the title appears once")
+        XCTAssertEqual(titles.first?.title, "Standup moved")
+        XCTAssertTrue(store.hasSchedule(on: at(2026, 11, 9)))
+        // The neighbouring Mondays are still computed.
+        XCTAssertEqual(store.activities(on: at(2026, 11, 16)).map(\.title), ["Standup"])
+    }
+
+    func testRECURRULE_TimeZoneChangeRebuildsTheMonthCache() {
+        let store = fixtureStore()
+        XCTAssertTrue(store.addSeries(standup()))
+        var seoul = Calendar(identifier: .gregorian)
+        seoul.timeZone = TimeZone(identifier: "Asia/Seoul")!
+        var la = Calendar(identifier: .gregorian)
+        la.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        let noon = DateComponents(year: 2029, month: 3, day: 5, hour: 12)
+
+        let c0 = RecurrenceRule.drvExpansionCount
+        XCTAssertTrue(store.hasSchedule(on: seoul.date(from: noon)!, calendar: seoul))
+        let c1 = RecurrenceRule.drvExpansionCount
+        XCTAssertGreaterThan(c1, c0, "positive control")
+        XCTAssertTrue(store.hasSchedule(on: seoul.date(from: noon)!, calendar: seoul))
+        XCTAssertEqual(RecurrenceRule.drvExpansionCount, c1, "same zone: served from the cache")
+
+        // The zone changes between two reads of the same month: the entry is rebuilt, with the day keys of the new zone.
+        XCTAssertTrue(store.hasSchedule(on: la.date(from: noon)!, calendar: la))
+        let c2 = RecurrenceRule.drvExpansionCount
+        XCTAssertGreaterThan(c2, c1, "a new zone rebuilds the month")
+        XCTAssertFalse(store.hasSchedule(on: la.date(from: DateComponents(year: 2029, month: 3, day: 6, hour: 12))!, calendar: la))
+        XCTAssertEqual(store.scheduleTitles(on: la.date(from: noon)!, calendar: la).count, 1)
+        XCTAssertEqual(RecurrenceRule.drvExpansionCount, c2, "the second read in the new zone is cached")
+    }
+
+    // MARK: AC-011 - the other readers
+
+    /// The tool tests spell their dates in the zone of `TestClock`; the Store reads follow the zone of the device, so a
+    /// test that mixes them puts both in one zone (restored by `tearDown`).
+    private func useToolZone() { NSTimeZone.default = TestClock.zone }
+
+    func testRECURRULE_AgentListResolveUpdateDeleteByOccurrenceId() throws {
+        useToolZone()
+        let h = ToolHarness.make()
+        let series = standup()
+        XCTAssertTrue(h.store.addSeries(series))
+
+        // Row 1: a 28-day window two years ahead lists the four Monday occurrences.
+        let list = h.call("list_activities", ["from": "2028-11-06T00:00", "to": "2028-12-04T00:00"])
+        let items = (list.json?["items"] as? [[String: Any]]) ?? []
+        XCTAssertEqual(items.count, 4)
+        XCTAssertEqual(items.map { $0["start"] as? String },
+                       ["2028-11-06T09:00", "2028-11-13T09:00", "2028-11-20T09:00", "2028-11-27T09:00"])
+        XCTAssertEqual(items.map { $0["title"] as? String }, Array(repeating: "Standup", count: 4))
+        XCTAssertEqual(items.map { $0["recurring"] as? Bool }, Array(repeating: true, count: 4))
+        XCTAssertEqual(list.json?["truncated"] as? Bool, false)
+
+        // The id string round-trips: it parses, it is the occurrence id, and it resolves again to the same block.
+        let text = try XCTUnwrap(items.first?["id"] as? String)
+        let id = try XCTUnwrap(UUID(uuidString: text))
+        XCTAssertEqual(id, series.occurrenceID(dayKey: 20281106))
+        let resolved = try XCTUnwrap(h.store.activity(id: id))
+        XCTAssertEqual(resolved.title, "Standup")
+        XCTAssertEqual(resolved.startDate, TestClock.date("2028-11-06T09:00"))
+        XCTAssertEqual(resolved.endDate, TestClock.date("2028-11-06T09:30"))
+        // The same call twice gives equal ids.
+        let again = h.call("list_activities", ["from": "2028-11-06T00:00", "to": "2028-12-04T00:00"])
+        XCTAssertEqual((again.json?["items"] as? [[String: Any]])?.map { $0["id"] as? String }, items.map { $0["id"] as? String })
+
+        // The limits keep their text: a window over 31 days is refused with the unchanged message.
+        let tooLong = h.call("list_activities", ["from": "2028-11-06T00:00", "to": "2028-12-08T00:00"])
+        XCTAssertEqual(tooLong.message, ToolText.listInvalid)
+        // The 50-item cut counts occurrences: a daily series (30 days), the Mondays and 30 stored blocks make more than 50, and 50 are returned.
+        let daily = RepeatSeries(id: RepeatSeries.newID(), title: "Daily", location: nil,
+                                 rule: RecurrenceRule(weekdays: [], unit: .daily), lunarCalendar: nil,
+                                 firstDayKey: 20281101, lastDayKey: nil, startMinute: 600, endMinute: 630,
+                                 endDayDistance: 0, syncToCalendar: nil, skippedDayKeys: [], legPlan: nil,
+                                 legsFilledThroughDayKey: nil)
+        XCTAssertTrue(h.store.addSeries(daily))
+        for i in 0..<30 {
+            let start = TestClock.date("2028-11-10T12:00").addingTimeInterval(Double(i) * 600)
+            h.store.activities.append(stored("Stored \(i)", start, start.addingTimeInterval(300)))
+        }
+        let cut = h.call("list_activities", ["from": "2028-11-01T00:00", "to": "2028-12-01T00:00"])
+        XCTAssertEqual(cut.json?["count"] as? Int, 50)
+        XCTAssertEqual(cut.json?["truncated"] as? Bool, true)
+
+        // Row 2, the read half: the id resolves through the tool to the occurrence, and the cards show it.
+        let update = h.call("update_activity", ["id": text, "title": "Renamed"])
+        let updateCard = try XCTUnwrap(update.card)
+        XCTAssertEqual(updateCard.lines.first, "Change event")
+        XCTAssertTrue(updateCard.lines.contains("Was: Standup"))
+        XCTAssertTrue(updateCard.lines.contains("Only this occurrence of a repeating event."))
+        let delete = h.call("delete_activity", ["id": text])
+        let deleteCard = try XCTUnwrap(delete.card)
+        XCTAssertEqual(deleteCard.lines.first, "Delete event")
+        XCTAssertTrue(deleteCard.lines.contains("Standup"))
+        // A random UUID, and a day of the series that is not an occurrence (a Tuesday), are not found.
+        XCTAssertEqual(h.call("update_activity", ["id": UUID().uuidString, "title": "x"]).message, ToolText.findID("update_activity"))
+        let tuesday = series.occurrenceID(dayKey: 20281107)
+        XCTAssertEqual(h.call("delete_activity", ["id": tuesday.uuidString]).message, ToolText.findID("delete_activity"))
+        // Nothing was written by the read calls.
+        XCTAssertEqual(h.store.series.first { $0.id == series.id }?.skippedDayKeys, [])
+        // The confirmed update and delete (one stored copy and `Only this occurrence...` after confirm; the skipped day
+        // and `applied` after confirm) need `materialize` and the skip writer: they are asserted in M4b (AC-013, AC-014).
+    }
+
+    func testRECURRULE_DayPlanSignatureStable() async throws {
+        useToolZone()
+        func stops() -> String {
+            let stop: [String: Any] = ["title": "Dinner", "start": "2026-10-27T18:00", "end": "2026-10-27T19:00"]
+            let data = (try? JSONSerialization.data(withJSONObject: [stop], options: [.sortedKeys])) ?? Data()
+            return String(decoding: data, as: UTF8.self)
+        }
+        /// A rig in a plan turn on Tuesday 2026-10-27 09:00 with a Tuesday 10:00 series, and the card of one checked stop.
+        func card(_ rig: PlaceRig) async throws -> AgentCard {
+            let dayEnd = TestClock.date("2026-10-28T00:00")
+            rig.tools.beginDayPlan(DayPlanContext(mode: .car, events: [], checkWindowEnd: dayEnd))
+            let checked = await rig.run("check_day_plan", ["stops": stops()])
+            XCTAssertEqual(checked.status, "ok")
+            let shown = await rig.run("show_day_plan", ["plan_id": "d1"])
+            return try XCTUnwrap(shown.card, shown.text ?? "no card")
+        }
+        let tuesday = weekly("Tuesday call", weekday: 3, startMinute: 600, endMinute: 660, first: 20261027)
+
+        // The series is unchanged between the check and Confirm: the signatures are equal, the plan is applied.
+        let steady = PlaceRig()
+        XCTAssertTrue(steady.store.addSeries(tuesday))
+        let steadyCard = try await card(steady)
+        let steadyResult = await steadyCard.resolve(.confirm)
+        XCTAssertEqual(steadyResult?.status, "applied")
+
+        // The series gains another occurrence in the window after the check: the signature differs, the plan is stale.
+        // (A skipped day is the other change; the skip writer is M4b, so its stale assertion is written there.)
+        let changed = PlaceRig()
+        XCTAssertTrue(changed.store.addSeries(tuesday))
+        let changedCard = try await card(changed)
+        XCTAssertTrue(changed.store.addSeries(weekly("Second", weekday: 3, startMinute: 720, endMinute: 780, first: 20261027)))
+        let changedResult = await changedCard.resolve(.confirm)
+        XCTAssertEqual(changedResult?.status, "stale")
+        XCTAssertEqual(changedResult?.message, AgentDayPlan.Say.scheduleChanged)
+
+        // Outside the window nothing counts: a series whose first day is after the window leaves the plan applied.
+        let outside = PlaceRig()
+        XCTAssertTrue(outside.store.addSeries(tuesday))
+        let outsideCard = try await card(outside)
+        XCTAssertTrue(outside.store.addSeries(weekly("Later", weekday: 3, startMinute: 720, endMinute: 780, first: 20261103)))
+        let outsideResult = await outsideCard.resolve(.confirm)
+        XCTAssertEqual(outsideResult?.status, "applied")
+    }
+
+    func testRECURRULE_PlanMyDayCountsTodaysOccurrence() {
+        let store = fixtureStore()
+        // Today is Monday 2026-11-02 08:00 on the fixture clock. Standup is today 09:00; a Tuesday series is tomorrow; a
+        // Wednesday series is the day after tomorrow and is not planned.
+        XCTAssertTrue(store.addSeries(standup()))
+        XCTAssertTrue(store.addSeries(weekly("Tomorrow", weekday: 3, startMinute: 600, endMinute: 660, first: 20261103)))
+        XCTAssertTrue(store.addSeries(weekly("Later", weekday: 4, startMinute: 600, endMinute: 660, first: 20261104)))
+        store.activities.append(stored("Stored today", at(2026, 11, 2, 15), at(2026, 11, 2, 16)))
+
+        let planning = store.activitiesForPlanning()
+        XCTAssertEqual(planning.map(\.title), ["Standup", "Stored today", "Tomorrow"])
+
+        let today = PlanMyDay.events(activities: planning, entries: [], now: store.replanNow(), calendar: cal)
+        XCTAssertEqual(today.events.map(\.title), ["Standup", "Stored today"], "today's occurrence counts once")
+        XCTAssertEqual(today.events.map(\.handle), ["e1", "e2"])
+        XCTAssertFalse(today.cut)
+
+        // The window starts at 00:00 today: an occurrence that began earlier today is listed (it is filtered by `now` later).
+        let late = fixtureStore()
+        let night = at(2026, 11, 2, 22)
+        late.replanNow = { night }
+        XCTAssertTrue(late.addSeries(standup()))
+        XCTAssertEqual(late.activitiesForPlanning().map(\.title), ["Standup"])
+        XCTAssertEqual(PlanMyDay.events(activities: late.activitiesForPlanning(), entries: [], now: late.replanNow(), calendar: cal)
+            .events.count, 0)
+    }
+
+    func testRECURRULE_SurroundingPlacesUsesFourteenDays() {
+        let store = fixtureStore()
+        XCTAssertTrue(store.addSeries(standup()))
+        // Saturday 2026-11-07 10:00-11:00: the Monday occurrence 5 days earlier is the place before, the next one (Nov 9,
+        // 2 days later) the place after.
+        let around = store.surroundingPlaces(start: at(2026, 11, 7, 10), end: at(2026, 11, 7, 11))
+        XCTAssertEqual(around.before?.place, office)
+        XCTAssertEqual(around.before?.label, "Standup")
+        XCTAssertEqual(around.after?.place, office)
+        XCTAssertEqual(around.after?.label, "Standup")
+
+        // One occurrence 13 days before the start counts; one 15 days before does not (the window is 14 days).
+        let near = fixtureStore()
+        XCTAssertTrue(near.addSeries(weekly("Near", weekday: 6, startMinute: 540, endMinute: 570, first: 20261016, last: 20261016,
+                                            place: home)))
+        XCTAssertEqual(near.surroundingPlaces(start: at(2026, 10, 29, 10), end: at(2026, 10, 29, 11)).before?.place, home)
+        let far = fixtureStore()
+        XCTAssertTrue(far.addSeries(weekly("Far", weekday: 6, startMinute: 540, endMinute: 570, first: 20261016, last: 20261016,
+                                           place: home)))
+        XCTAssertNil(far.surroundingPlaces(start: at(2026, 10, 31, 10), end: at(2026, 10, 31, 11)).before)
+
+        // The same on the after side: 13 days after the end counts, 15 days after does not.
+        let ahead = fixtureStore()
+        XCTAssertTrue(ahead.addSeries(weekly("Ahead", weekday: 6, startMinute: 540, endMinute: 570, first: 20261113, last: 20261113,
+                                             place: home)))
+        XCTAssertEqual(ahead.surroundingPlaces(start: at(2026, 10, 31, 10), end: at(2026, 10, 31, 11)).after?.place, home)
+        let beyond = fixtureStore()
+        XCTAssertTrue(beyond.addSeries(weekly("Beyond", weekday: 6, startMinute: 540, endMinute: 570, first: 20261113, last: 20261113,
+                                              place: home)))
+        XCTAssertNil(beyond.surroundingPlaces(start: at(2026, 10, 29, 10), end: at(2026, 10, 29, 11)).after)
+    }
+
+    // MARK: AC-012 - the resolver
+
+    func testRECURRULE_ActivityByIdResolvesOccurrenceAndLegOwner() {
+        let store = fixtureStore()
+        let series = standup(skipped: [20261116])
+        XCTAssertTrue(store.addSeries(series))
+        let monday = series.occurrenceID(dayKey: 20261109)
+
+        // Row 1: a computed occurrence resolves; a skipped day, a day before the first day and a Tuesday do not.
+        let block = store.activity(id: monday)
+        XCTAssertEqual(block?.title, "Standup")
+        XCTAssertEqual(block?.startDate, at(2026, 11, 9, 9))
+        XCTAssertEqual(block?.recurrenceId, series.id)
+        XCTAssertNil(store.activity(id: series.occurrenceID(dayKey: 20261116)), "skipped")
+        XCTAssertNil(store.activity(id: series.occurrenceID(dayKey: 20261026)), "before the first day")
+        XCTAssertNil(store.activity(id: series.occurrenceID(dayKey: 20261110)), "a Tuesday")
+        // A stored activity resolves to the stored one.
+        let plain = stored("Dentist", at(2026, 11, 4, 14), at(2026, 11, 4, 15))
+        store.activities.append(plain)
+        XCTAssertEqual(store.activity(id: plain.id)?.title, "Dentist")
+        // The "after materializing" clause (same id, the stored copy) is asserted in M4b with `materialize`.
+
+        // Row 2: a leg linked to an occurrence id finds its owner, and the owner's legs are found by id.
+        let travel = leg(for: monday, at: at(2026, 11, 9, 8, 30))
+        store.events.append(travel)
+        XCTAssertEqual(store.activity(forLeg: travel)?.id, monday)
+        XCTAssertEqual(store.activity(forLeg: travel)?.title, "Standup")
+        XCTAssertEqual(store.legs(of: monday).outbound?.id, travel.id)
+        XCTAssertNil(store.activity(forLeg: leg(for: series.occurrenceID(dayKey: 20261116), at: at(2026, 11, 16, 8, 30))),
+                     "a leg of a skipped day has no owner")
+
+        // `activityIfChanged`: a snapshot of the computed occurrence against a stored copy with the same id and a new title.
+        let snapshot = block
+        XCTAssertNil(store.activityIfChanged(snapshot), "nothing changed yet")
+        var copy = stored("Standup (edited)", at(2026, 11, 9, 9), at(2026, 11, 9, 9, 30), place: office)
+        copy.id = monday
+        copy.recurrenceId = series.id
+        store.activities.append(copy)
+        XCTAssertEqual(store.activityIfChanged(snapshot)?.title, "Standup (edited)")
+        XCTAssertNil(store.activityIfChanged(copy), "the stored copy against itself")
+        XCTAssertNil(store.activityIfChanged(nil))
+    }
+
+    // MARK: AC-015.6 - the Settings reset
+
+    func testRECURRULE_ResetRemovesSeries() throws {
+        let store = fixtureStore()
+        let first = standup()
+        let second = weekly("Gym", weekday: 4, startMinute: 1080, endMinute: 1140, first: 20261104)
+        XCTAssertTrue(store.addSeries(first))
+        XCTAssertTrue(store.addSeries(second))
+        store.activities.append(stored("Dentist", at(2026, 11, 4, 14), at(2026, 11, 4, 15)))
+        var travel = leg(for: first.occurrenceID(dayKey: 20261109), at: at(2026, 11, 9, 8, 30))
+        travel.recurrenceId = first.id
+        store.events.append(travel)
+        XCTAssertEqual(store.series.count, 2)
+
+        store.deleteEverythingForTesting()
+        XCTAssertEqual(store.series.count, 0)
+        XCTAssertEqual(store.activities.count, 0)
+        XCTAssertEqual(store.events.count, 0, "the legs of the series went with it")
+        XCTAssertEqual(store.activities(on: at(2026, 11, 9)).count, 0)
+        XCTAssertFalse(store.hasSchedule(on: at(2026, 11, 9)))
+
+        // series.json holds an empty list, and a relaunch starts with no series.
+        let data = try XCTUnwrap(bytes("series.json"))
+        let list = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [Any])
+        XCTAssertEqual(list.count, 0)
+        XCTAssertEqual(relaunched().series.count, 0)
+    }
 }
