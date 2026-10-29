@@ -142,7 +142,7 @@ struct RootView: View {
         ensureSession()
         guard let session = chatHolder.session else { return }
         let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
-        await shareImport.planPass(mode: mode, vision: client, activities: { store.activities }, mirror: store.calendarMirror,
+        await shareImport.planPass(mode: mode, vision: client, activities: { store.activitiesForPlanning() }, mirror: store.calendarMirror,
                                    prepare: { session.prepareDayPlan(events: $0) }, canHand: { session.canSend },
                                    hand: { message, shown, context in
             openChat()

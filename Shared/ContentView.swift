@@ -295,19 +295,13 @@ struct ContentView: View {
     /// 활동의 끝날 반쪽이 통째로 안 그려지던 것(결함 G)이 이것으로 닫힌다. 시작·끝이 같거나
     /// 어긋난 깨진 레코드는 구간이 없으므로 시작일에만 두는 기존 동작을 유지한다.
     private func activities(on date: Date) -> [ActivityBlock] {
-        store.activities.filter { a in
-            guard a.endDate > a.startDate else {
-                return calendar.isDate(a.startDate, inSameDayAs: date)
-            }
-            return Store.overlapsDay(start: a.startDate, end: a.endDate, day: date, calendar: calendar)
-        }
-        .sorted { $0.startDate < $1.startDate }
+        store.activities(on: date, calendar: calendar)
     }
 
     /// 월간 그리드가 좌우 스와이프 중에도 매 프레임 부르는 함수라 O(1) 캐시(Store.daysWithSchedule)만
     /// 본다 — 예전엔 events/activities 전체를 매번 훑어서(day * event 조합) 스와이프 중 버벅였다.
     private func hasEvents(on date: Date) -> Bool {
-        store.daysWithSchedule.contains(Store.dayKey(date, calendar: calendar))
+        store.hasSchedule(on: date, calendar: calendar)
     }
 
     var body: some View {
@@ -607,7 +601,7 @@ struct ContentView: View {
         let isToday = calendar.isDateInToday(day)
         // 칸 제목은 Store 캐시(daysWithActivityTitles)만 본다(REQ-014) — 뷰가 activities를
         // 다시 훑으면 점과 같은 날별 판정이 두 곳에 생긴다(계약 5).
-        let titles = store.daysWithActivityTitles[Store.dayKey(day, calendar: calendar)] ?? []
+        let titles = store.scheduleTitles(on: day, calendar: calendar)
         // 칸 높이는 숨은 본보기(monthCellTemplate)의 렌더 높이가 정한다(수리 4b) — 모든 칸이
         // 같은 높이·위쪽 정렬이라 마지막 줄이 잘리지 않고 날짜 숫자도 같은 높이에 선다(수리 2의
         // 증상). 큰 글씨에서 내용이 칸을 넘으면 이웃 칸을 덮지 않게 자른다(블록 뷰의 clipped와

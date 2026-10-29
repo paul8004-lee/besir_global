@@ -452,7 +452,7 @@ final class Store: ObservableObject {
     /// 아니면 nil. 유도값(앵커·끝점·제목)을 await 전 스냅샷으로 쓰는 updateLeg·realignLegs가
     /// await 뒤 이것을 불러 옛 스냅샷이 들어갔으면 현재값으로 다시 쓴다(MA code-safety 경고 2).
     func activityIfChanged(_ before: ActivityBlock?) -> ActivityBlock? {
-        guard let before, let now = activities.first(where: { $0.id == before.id }) else { return nil }
+        guard let before, let now = activity(id: before.id) else { return nil }
         if now.title == before.title, now.startDate == before.startDate,
            now.endDate == before.endDate, now.location == before.location { return nil }
         return now
@@ -477,7 +477,7 @@ final class Store: ObservableObject {
     /// 편집 라우팅·제목 표시의 단일 조회(REQ-001·006).
     func activity(forLeg event: ScheduledEvent) -> ActivityBlock? {
         guard let id = event.linkedActivityId else { return nil }
-        return activities.first { $0.id == id }
+        return activity(id: id)
     }
 
     /// 구간의 소유 활동 조회(REQ-004) — 시간표 미리보기와 드롭이 같은 판정을 읽게 한 곳에 둔다
@@ -906,8 +906,13 @@ final class Store: ObservableObject {
         return series.flatMap { $0.occurrences(in: interval, calendar: calendar) }.filter { !storedIDs.contains($0.id) }
     }
 
-    /// The activities Plan my day reads: stored ones and series occurrences from today 00:00 to the end of tomorrow.
-    func activitiesForPlanning() -> [ActivityBlock] { [] }
+    /// The activities Plan my day reads: stored ones and series occurrences from today 00:00 to the end of tomorrow, with
+    /// "today" taken from `replanNow()`.
+    func activitiesForPlanning(calendar: Calendar = .current) -> [ActivityBlock] {
+        let today = calendar.startOfDay(for: replanNow())
+        guard let end = calendar.date(byAdding: .day, value: 2, to: today) else { return [] }
+        return activities(in: DateInterval(start: today, end: end), calendar: calendar)
+    }
 
     private static func sortedByStart(_ list: [ActivityBlock]) -> [ActivityBlock] {
         list.sorted { ($0.startDate, $0.id.uuidString) < ($1.startDate, $1.id.uuidString) }
@@ -1060,9 +1065,12 @@ final class Store: ObservableObject {
     /// 식사 일정을 만들 때 출발지·복귀지를 미리 채워주는 데 쓴다.
     func surroundingPlaces(start: Date, end: Date) -> (before: (place: Place, label: String)?,
                                                        after: (place: Place, label: String)?) {
-        ScheduleLogic.surroundingPlaces(start: start, end: end,
-                                        activities: activities, events: events,
-                                        home: favorites.first { $0.label == "Home" }?.place)
+        // Series occurrences within 14 days either side count as neighbours (a stored activity has no such limit).
+        let window = DateInterval(start: start.addingTimeInterval(-14 * 86400), end: end.addingTimeInterval(14 * 86400))
+        return ScheduleLogic.surroundingPlaces(start: start, end: end,
+                                               activities: activities + computedOccurrences(in: window, calendar: .current),
+                                               events: events,
+                                               home: favorites.first { $0.label == "Home" }?.place)
     }
 
     /// 모든 수단(`TransportMode.allCases`)의 이동시간을 한 번에 구한다(조회 전용).
@@ -1386,7 +1394,7 @@ final class Store: ObservableObject {
     func previewSeriesLegAdd(activityId: UUID, role: ScheduleAnchor) -> SeriesLegAddPreview? {
         guard let edited = activities.first(where: { $0.id == activityId }),
               let rid = edited.recurrenceId else { return nil }
-        let now = Date()
+        let now = replanNow()
         var eligible: [UUID] = []
         var wouldAdd: [UUID] = []
         var hasRole = 0, noPlace = 0

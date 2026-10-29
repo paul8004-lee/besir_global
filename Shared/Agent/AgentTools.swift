@@ -546,9 +546,15 @@ final class AgentToolbox {
     /// The record an id names, or the find-the-event refusal.
     private func record(_ values: [String: String], _ tool: Tool) throws -> ActivityBlock {
         guard let text = values["id"], let id = UUID(uuidString: text),
-              let found = store.activities.first(where: { $0.id == id })
+              let found = store.activity(id: id)
         else { throw Rejection(Say.findID(tool)) }
         return found
+    }
+
+    /// The day-plan signature of the window `from` to `to`: stored activities and series occurrences, so a repeat that
+    /// changes between the check and Confirm makes the plan stale.
+    private func scheduleSignature(from: Date, to: Date) -> [AgentDayPlan.Signature] {
+        AgentDayPlan.signature(of: store.activities(in: DateInterval(start: from, end: max(from, to))), from: from, to: to)
     }
 
     // MARK: - Tools
@@ -561,11 +567,8 @@ final class AgentToolbox {
         if to <= from || to.timeIntervalSince(from) > Self.maxListSpan { throw Rejection(Say.listInvalid) }
 
         let local = formats.local
-        var hits: [(start: Date, item: [String: Any])] = store.activities.enumerated()
-            .filter { $0.element.startDate < to && $0.element.endDate > from }
-            .sorted { ($0.element.startDate, $0.offset) < ($1.element.startDate, $1.offset) }
-            .map { hit in
-                let a = hit.element
+        var hits: [(start: Date, item: [String: Any])] = store.activities(in: DateInterval(start: from, end: to))
+            .map { a in
                 var item: [String: Any] = ["id": a.id.uuidString, "title": Self.sanitized(a.title), "start": local.string(from: a.startDate),
                                            "end": local.string(from: a.endDate), "recurring": a.recurrenceId != nil]
                 if let place = a.location { item["location"] = Self.sanitized(place.name) }
@@ -752,7 +755,7 @@ final class AgentToolbox {
             let created = now()
             let check = AgentDayPlan.Check(
                 handle: "d\(nextPlanNumber)", stops: stops, legs: evaluated.legs, problems: evaluated.problems, createdAt: created,
-                signature: AgentDayPlan.signature(of: store.activities, from: created, to: context.checkWindowEnd))
+                signature: scheduleSignature(from: created, to: context.checkWindowEnd))
             nextPlanNumber += 1
             checks.append(check)
             return AgentLookupOutput(result: AgentDayPlan.resultJSON(check, checksMade: checks.count), showsGoogleData: !routes.isEmpty)
@@ -804,7 +807,7 @@ final class AgentToolbox {
             extraCheckGranted = true
             return nothingAdded("rejected", AgentDayPlan.Say.planStale)
         }
-        if AgentDayPlan.signature(of: store.activities, from: check.createdAt, to: context.checkWindowEnd) != check.signature {
+        if scheduleSignature(from: check.createdAt, to: context.checkWindowEnd) != check.signature {
             return nothingAdded("stale", AgentDayPlan.Say.scheduleChanged)
         }
         var ids: [UUID] = []
@@ -826,7 +829,7 @@ final class AgentToolbox {
     /// from it. Fewer events than the card listed gives the notice and rolls nothing back. Not private so a test can reach
     /// the shortfall, which the Store write cannot be made to produce.
     func dayPlanApplied(_ ids: [UUID], listed: Int) -> (AgentResolution, AgentCardMark) {
-        let kept = ids.filter { id in store.activities.contains { $0.id == id } }
+        let kept = ids.filter { id in store.activity(id: id) != nil }
         guard !kept.isEmpty else { return nothingAdded("rejected", AgentDayPlan.Say.nothingAdded) }
         let legs = kept.filter { id in store.events.contains { $0.linkedActivityId == id } }.count
         let result = Self.encode(["status": "applied", "events": kept.count, "legs": legs])
@@ -897,7 +900,7 @@ final class AgentToolbox {
     /// `applied`, with the entry's values read back from the Store. Not private so a test can reach the read-back refusal,
     /// which the Store write cannot be made to produce (it never suspends between the write and the read).
     func bookingApplied(_ id: UUID, code: String) -> (AgentResolution, AgentCardMark) {
-        guard let stored = store.activities.first(where: { $0.id == id }) else { return (notFound(), .notApplied) }
+        guard let stored = store.activity(id: id) else { return (notFound(), .notApplied) }
         let local = formats.local
         var object: [String: Any] = ["status": "applied", "partner": BookingClient.partnerName, "simulated": true,
                                      "reservation_code": code, "id": stored.id.uuidString, "title": Self.sanitized(stored.title),
@@ -954,7 +957,7 @@ final class AgentToolbox {
         let lines = ["Delete event", Self.sanitized(current.title), range(current.startDate, current.endDate)] + extraLines(current)
         return .card(AgentCard(lines: lines) { [self] in
             if let gone = vanishedOrChanged(id, seen) { return gone }
-            guard let target = store.activities.first(where: { $0.id == id }) else { return (notFound(), .notApplied) }
+            guard let target = store.activity(id: id) else { return (notFound(), .notApplied) }
             store.deleteActivity(target)
             return (AgentResolution(result: Self.encode(["status": "applied", "id": id.uuidString]), notice: nil), .confirmed)
         })
@@ -982,7 +985,7 @@ final class AgentToolbox {
 
     /// The apply-time check: the record is still there and still equals what the card showed.
     private func vanishedOrChanged(_ id: UUID, _ seen: Snapshot) -> (AgentResolution, AgentCardMark)? {
-        guard let present = store.activities.first(where: { $0.id == id }) else { return (notFound(), .notApplied) }
+        guard let present = store.activity(id: id) else { return (notFound(), .notApplied) }
         if Snapshot(present) != seen {
             return (AgentResolution(result: Self.encode(["status": "stale", "message": Say.stale]), notice: Say.notice), .notApplied)
         }
@@ -992,7 +995,7 @@ final class AgentToolbox {
     /// `applied`, with the values read back from the Store. A created record with a place adds its location and, when a
     /// leg was stored, the leg's leave time and minutes.
     private func applied(_ id: UUID, withPlace: Bool = false) -> (AgentResolution, AgentCardMark) {
-        guard let stored = store.activities.first(where: { $0.id == id }) else { return (notFound(), .notApplied) }
+        guard let stored = store.activity(id: id) else { return (notFound(), .notApplied) }
         let local = formats.local
         var object: [String: Any] = ["status": "applied", "id": stored.id.uuidString, "title": Self.sanitized(stored.title),
                                      "start": local.string(from: stored.startDate),
