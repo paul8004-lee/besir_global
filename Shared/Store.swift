@@ -1959,6 +1959,10 @@ final class Store: ObservableObject {
         guard minutes != 0 else { return }
         let targets: [ActivityBlock]
         if wholeSeries, let rid = activity.recurrenceId {
+            if let index = series.firstIndex(where: { $0.id == rid }) {
+                moveComputedSeries(at: index, byMinutes: minutes)
+                return
+            }
             targets = activities.filter { $0.recurrenceId == rid }
         } else {
             // A computed occurrence becomes a stored copy before it is shifted (REQ-014).
@@ -1981,6 +1985,40 @@ final class Store: ObservableObject {
         if !wholeSeries { _ = clearSeriesMembership(activityId: activity.id) }
         saveActivities()
         save()   // shiftEvent는 저장하지 않는다(아래 주석) — 옮긴 이동 구간을 여기서 한 번에 저장.
+    }
+
+    /// The whole-series move of a computed series changes the time of day of the rule (L9): the delta is clamped so the
+    /// start stays on its day, the end keeps its length, and the existing legs of the unstored occurrences shift by the
+    /// same delta. Nothing is refilled and the leg mark is not touched, so a leg the user deleted stays deleted. Every
+    /// occurrence of the rule, past ones included, is drawn at the new time (L15).
+    private func moveComputedSeries(at index: Int, byMinutes minutes: Int) {
+        var updated = series[index]
+        let newStart = min(max(updated.startMinute + minutes, 0), 1439)
+        let delta = newStart - updated.startMinute
+        guard delta != 0,
+              let end = Self.seriesEnd(startMinute: newStart,
+                                       absoluteEnd: updated.endMinute + updated.endDayDistance * 1440 + delta) else { return }
+        let legIDs = unstoredOccurrenceLegs(of: updated.id).map { $0.id }
+        updated.startMinute = newStart
+        updated.endMinute = end.endMinute
+        updated.endDayDistance = end.endDayDistance
+        series[index] = updated
+        saveSeries()
+        for id in legIDs { shiftEvent(id, byMinutes: delta) }
+        save()   // `shiftEvent` does not save
+    }
+
+    /// The end minute and the end-day distance of a series for a start minute and an end counted in minutes from the
+    /// midnight of the start day, by the 24-hour rule of `RecurrenceRule.occurrenceEndDayDistance`; nil when the length
+    /// breaks the rule.
+    private static func seriesEnd(startMinute: Int, absoluteEnd: Int) -> (endMinute: Int, endDayDistance: Int)? {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0) ?? utc.timeZone
+        let midnight = Date(timeIntervalSince1970: 0)
+        guard let distance = RecurrenceRule.occurrenceEndDayDistance(
+            start: midnight.addingTimeInterval(Double(startMinute) * 60),
+            end: midnight.addingTimeInterval(Double(absoluteEnd) * 60), calendar: utc) else { return nil }
+        return (absoluteEnd % 1440, distance)
     }
 
     /// 이동 구간(ScheduledEvent) 블록을 드래그해 놓았을 때의 확정. 소유 활동이 있으면 활동
@@ -2099,6 +2137,10 @@ final class Store: ObservableObject {
                                     requestedMinutes: Int, wholeSeries: Bool,
                                     pressedOn: Date? = nil) {
         let isReturnLeg = leg.anchor == .departure
+        if wholeSeries, let rid = owner.recurrenceId, let index = series.firstIndex(where: { $0.id == rid }) {
+            dragComputedSeries(at: index, leg: leg, owner: owner, requestedMinutes: requestedMinutes, pressedOn: pressedOn)
+            return
+        }
         if wholeSeries, owner.recurrenceId != nil {
             // @MX:WARN 모든 회차의 (활동, 구간, Δ)를 먼저 모은 뒤 한 번씩 옮긴다 — 조회(legs(of:))와
             // 이동(shiftEvent)을 회차마다 교차하는 버릇은 시각으로 짝을 짓던 때 방금 밀린 구간을 다음
@@ -2170,6 +2212,44 @@ final class Store: ObservableObject {
         _ = clearSeriesMembership(activityId: owner.id)
         saveActivities()
         save()   // shiftEvent는 저장하지 않는다 — 여기서 한 번(저장 규율은 moveActivity와 같다).
+    }
+
+    /// The whole-series leg drag of a computed series: one delta, taken from the dragged occurrence only, changes the rule's
+    /// `endMinute` (a return leg) or `startMinute` (an outbound leg), clamped so the start stays in 0..<1440 and the
+    /// length stays above zero and within 24 hours. The existing legs of the same role of the unstored occurrences shift
+    /// by it and the alarms are rescheduled once. The occurrences of one rule share their clock times, so the limits of the
+    /// dragged one are the limits of all.
+    private func dragComputedSeries(at index: Int, leg: ScheduledEvent, owner: ActivityBlock,
+                                    requestedMinutes: Int, pressedOn: Date?) {
+        let isReturnLeg = leg.anchor == .departure
+        let requested: Int
+        if let pressedOn {
+            requested = dragEdgeOutcome(leg: leg, owner: owner, requestedMinutes: requestedMinutes,
+                                        pressedOn: pressedOn).deltaMinutes
+        } else {
+            requested = effectiveDragMinutes(leg: leg, owner: owner, requestedMinutes: requestedMinutes)
+        }
+        guard requested != 0 else { return }
+        var updated = series[index]
+        let absoluteEnd = updated.endMinute + updated.endDayDistance * 1440
+        var newStart = updated.startMinute
+        var newEnd = absoluteEnd
+        if isReturnLeg {
+            newEnd = min(max(absoluteEnd + requested, newStart + 1), newStart + 1440)
+        } else {
+            newStart = min(max(newStart + requested, max(0, absoluteEnd - 1440)), min(1439, absoluteEnd - 1))
+        }
+        let delta = isReturnLeg ? newEnd - absoluteEnd : newStart - updated.startMinute
+        guard delta != 0, let end = Self.seriesEnd(startMinute: newStart, absoluteEnd: newEnd) else { return }
+        updated.startMinute = newStart
+        updated.endMinute = end.endMinute
+        updated.endDayDistance = end.endDayDistance
+        let role: ScheduleAnchor = isReturnLeg ? .departure : .arrival
+        let legIDs = unstoredOccurrenceLegs(of: updated.id).filter { ($0.anchor ?? .arrival) == role }.map { $0.id }
+        series[index] = updated
+        saveSeries()
+        for id in legIDs { shiftEvent(id, byMinutes: delta) }
+        rescheduleNearestNotifications()   // saves the legs, once for the whole series
     }
 
     /// 드래그로 만들 수 있는 가장 짧은 활동(REQ-006·010, t82 F-1 — 눈금 위에서 10분). 반대쪽

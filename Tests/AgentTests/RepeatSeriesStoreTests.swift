@@ -1812,7 +1812,8 @@ final class RepeatSeriesStoreTests: XCTestCase {
         // The legs of the unstored occurrences were shifted by the same hour; the copy's legs were not.
         for (occurrence, d) in [(nov2, 2), (nov9, 9)] {
             XCTAssertEqual(store.legs(of: occurrence).outbound?.arrivalDate, at(2026, 11, d, 10))
-            XCTAssertEqual(store.legs(of: occurrence).outbound?.departureDate, at(2026, 11, d, 9, 45))
+            // The estimate is 900 seconds and the buffer 5 minutes, so the departure is 20 minutes before the arrival.
+            XCTAssertEqual(store.legs(of: occurrence).outbound?.departureDate, at(2026, 11, d, 9, 40))
             XCTAssertEqual(store.legs(of: occurrence).return?.departureDate, at(2026, 11, d, 10, 30))
         }
         XCTAssertEqual(store.legs(of: nov16).outbound?.arrivalDate, at(2026, 11, 16, 9))
