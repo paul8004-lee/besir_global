@@ -1422,9 +1422,74 @@ final class AgentToolbox {
         return rows
     }
 
-    /// The order request and what follows it. Milestone M4 replaces this body; until then an order is never made.
+    /// The order request and what follows it (spec.md REQ-DELIVERY-011 to 013): one request under a new flow, the cancellation
+    /// check, then on `confirmed` the meal entry, the order record and the budget hand-off, in that order. It uses only the
+    /// snapshot in `order`: the editors, the registry, the held options and the schedule are not read again.
     private func placeOrder(_ order: DeliveryOrder) async -> (AgentResolution, AgentCardMark) {
-        deliveryUnavailable()
+        let flow = ConnectionLog.beginFlow()
+        let answer = await deliveryClient().order(order.request, options: order.options, flow: flow)
+        // Cancellation is checked after the answer is known and before anything is written.
+        guard !Task.isCancelled else { return deliveryUnavailable() }
+        switch answer {
+        case .failure:
+            return deliveryUnavailable()
+        case .success(.declined):
+            let result = Self.encode(["status": "declined", "partner": DeliveryClient.partnerName, "simulated": true,
+                                      "message": AgentDelivery.declinedMessage])
+            return (AgentResolution(result: result, notice: nil), .notApplied)
+        case .success(.confirmed(let orderID, let totalCents)):
+            // The client already refuses a different total; the card's total is checked again here.
+            guard totalCents == order.totalCents else { return deliveryUnavailable() }
+            let f = formats
+            // The suggested meal entry, with the write `book(_:)` uses; the written activity is looked up in the Store.
+            var meal: AgentDelivery.AppliedMeal?
+            if let wanted = order.meal {
+                let made = await store.addActivityWithTravel(
+                    title: AgentDelivery.mealTitle(typed: wanted.title), location: nil, startDate: wanted.start,
+                    endDate: wanted.start.addingTimeInterval(TimeInterval(AgentDelivery.mealMinutes * 60)), travelFrom: nil,
+                    returnTo: nil, outboundMode: .walk, returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0,
+                    syncToCalendar: store.calendarSyncDefault, travelSecondsHint: nil)
+                if let stored = store.activities.first(where: { $0.id == made.activityId }) {
+                    meal = .added(id: stored.id.uuidString, title: Self.sanitized(stored.title),
+                                  start: f.local.string(from: stored.startDate), end: f.local.string(from: stored.endDate))
+                } else {
+                    meal = .notAdded
+                }
+            }
+            // The order record, before any budget request. A failed write changes nothing else.
+            var mealID: String?
+            if case .added(let id, _, _, _)? = meal { mealID = id }
+            let lines = order.request.items.map { line in
+                DeliveryOrderItem(itemID: line.itemID, name: order.options.menuItem(id: line.itemID)?.name ?? line.itemID,
+                                  quantity: line.quantity, unitPriceCents: order.options.menuItem(id: line.itemID)?.priceCents ?? 0)
+            }
+            (deliveryOrdersProvider?() ?? DeliveryOrderLog.shared).add(DeliveryOrderEntry(
+                orderID: orderID, requestID: order.request.requestID, placeName: order.placeName, arrival: order.request.arriveAt,
+                items: lines, address: order.request.address, cardLabel: order.cardLabel, estimatedTotalCents: totalCents,
+                createdAt: now(), mealActivityID: mealID))
+            let budget = await sendOrderTotal(order, totalCents: totalCents, flow: flow)
+            let fields = AgentDelivery.appliedFields(
+                orderID: orderID, restaurant: order.placeName, arrival: order.request.arriveAt, items: order.items,
+                address: order.request.address, cardLabel: order.cardLabel, totalCents: totalCents, meal: meal, budget: budget)
+            return (AgentResolution(result: Self.encode(fields), notice: budget.notice(totalCents: totalCents)), .confirmed)
+        }
+    }
+
+    /// One `spend` of the answered total, counted in the week of the arrival, under the order's own flow and request id. A
+    /// failure, or a task cancelled meanwhile, never changes the order, the entry or the record.
+    private func sendOrderTotal(_ order: DeliveryOrder, totalCents: Int, flow: UUID) async -> AgentDelivery.BudgetHandOff {
+        let client = budgetClient()
+        guard client.isConfigured else { return .unavailable(notify: !Task.isCancelled) }
+        let orderWeek = BudgetWeek.start(of: order.arrival, in: zone())
+        let result = await client.spend(amountCents: totalCents, isEstimate: true, weekStart: orderWeek,
+                                        requestID: order.request.requestID, flow: flow)
+        switch result {
+        case .success(let standing):
+            let week = AgentBudget.weekPhrase(weekStart: orderWeek, currentWeekStart: BudgetWeek.start(of: now(), in: zone()))
+            return .recorded(standing: standing, week: week)
+        case .failure:
+            return .unavailable(notify: !Task.isCancelled)
+        }
     }
 
     /// `unavailable`: nothing was ordered. Not private so a test can reach it, as `bookingApplied` is.
