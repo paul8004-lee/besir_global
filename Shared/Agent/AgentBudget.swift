@@ -20,6 +20,7 @@ enum AgentBudget {
     static let bookingRecordedSentence = "Tell the user the estimated spend sent to the simulated budget app and the amount left or over, as facts and as estimates. Do not call record_spend for this table."
     static let bookingUnavailableSentence = "The estimated spend could not be sent to the simulated budget app. Tell the user so, and do not call record_spend for this table."
     static let bookingFailureNotice = "The estimated spend could not be sent to \(partnerLabel)."
+    static let spendFailureNotice = "The spend could not be recorded in \(partnerLabel)."
 
     /// The partner as the user reads it. Built from the one literal of the app.
     static var partnerLabel: String { "\(BudgetClient.partnerName) (Simulated)" }
@@ -82,6 +83,17 @@ enum AgentBudget {
         standing.isWithin ? ("left", dollars(cents: standing.leftCents)) : ("over_by", dollars(cents: -standing.leftCents))
     }
 
+    /// `$140.00 left this week` or `$50.00 over the budget for the week of Nov 2`: the standing as a notice says it.
+    private static func standingText(_ standing: BudgetStanding, week: String) -> String {
+        let field = leftField(standing)
+        return standing.isWithin ? "\(field.value) left \(inWeek(week))" : "\(field.value) over the budget \(inWeek(week))"
+    }
+
+    /// The one notice line after a recorded `record_spend`, in the same form as the booking's.
+    static func spendNotice(amountCents: Int, standing: BudgetStanding, week: String) -> String {
+        "\(dollars(cents: amountCents)) recorded in \(partnerLabel): \(standingText(standing, week: week))."
+    }
+
     /// The fields both lookups share: the week, the budget, what is spent, the standing and `left` or `over_by`.
     static func standingFields(_ standing: BudgetStanding) -> [String: Any] {
         let field = leftField(standing)
@@ -123,9 +135,7 @@ enum AgentBudget {
         var notice: String? {
             switch self {
             case .recorded(let amount, let standing, let week):
-                let field = AgentBudget.leftField(standing)
-                let when = AgentBudget.inWeek(week)
-                let standingText = standing.isWithin ? "\(field.value) left \(when)" : "\(field.value) over the budget \(when)"
+                let standingText = AgentBudget.standingText(standing, week: week)
                 return "Estimated spend \(AgentBudget.dollars(cents: amount)) sent to \(AgentBudget.partnerLabel): \(standingText)."
             case .unavailable(let notify):
                 return notify ? AgentBudget.bookingFailureNotice : nil

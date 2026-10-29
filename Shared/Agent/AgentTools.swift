@@ -1015,7 +1015,9 @@ final class AgentToolbox {
                                                     requestID: requestID, flow: flow)
             switch answer {
             case .failure:
-                return AgentLookupOutput(result: budgetUnavailable(AgentBudget.spendUnavailableMessage), showsGoogleData: false)
+                // A task cancelled meanwhile says nothing to the user, as in the booking hook.
+                return AgentLookupOutput(result: budgetUnavailable(AgentBudget.spendUnavailableMessage), showsGoogleData: false,
+                                         notice: Task.isCancelled ? nil : AgentBudget.spendFailureNotice)
             case .success(let standing):
                 var object = AgentBudget.standingFields(standing)
                 object["status"] = "applied"
@@ -1023,7 +1025,10 @@ final class AgentToolbox {
                 object["simulated"] = true
                 object["recorded"] = AgentBudget.dollars(cents: cents)
                 object["message"] = AgentBudget.spendMessage
-                return AgentLookupOutput(result: Self.encode(object), showsGoogleData: false)
+                // The partner's name is in the app's own line, not left to the model's wording.
+                let current = AgentBudget.weekPhrase(weekStart: week, currentWeekStart: BudgetWeek.start(of: now(), in: zone()))
+                return AgentLookupOutput(result: Self.encode(object), showsGoogleData: false,
+                                         notice: AgentBudget.spendNotice(amountCents: cents, standing: standing, week: current))
             }
         })
     }

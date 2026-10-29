@@ -1000,4 +1000,78 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertEqual(AgentBudget.dollars(cents: 123_450), "$1,234.50")
         XCTAssertEqual(AgentBudget.dollars(cents: 5), "$0.05")
     }
+
+    // MARK: G33-G35 the record_spend notice (operator decision 2026-10-29)
+
+    /// The notice lines a session logged, what the chat draws, and whether it showed any card.
+    private func spendSession(_ rig: BudgetToolRig, amount: String) async
+        -> (notices: [String], chat: [String], cards: Int, pending: Bool) {
+        let fake = FakeTransport([.turn(Turns.turn(Turns.call("record_spend", PlaceTurns.arguments(["amount": amount]), id: "c1"))),
+                                  .turn(Turns.text("Done."))])
+        let session = AgentSession(toolbox: rig.tools, transport: fake, connections: rig.log)
+        session.send("I spent \(amount) on lunch.")
+        await session.settle()
+        let cards = session.entries.filter { if case .card = $0.kind { return true } else { return false } }.count
+        return (session.noticeLines, session.chatLines, cards, session.pendingCard != nil)
+    }
+
+    func testBUDGET_G33_ARecordedSpendShowsTheFixedLeftNoticeAndNoCard() async throws {
+        let rig = makeRig()
+        let outcome = rig.spend("18.50")
+        XCTAssertNil(outcome.card)
+        let output = try await XCTUnwrap(outcome.lookup).run()
+        XCTAssertEqual(output.notice, "$18.50 recorded in Example Budget (Simulated): $181.50 left this week.")
+
+        let live = makeRig()
+        let shown = await spendSession(live, amount: "18.50")
+        XCTAssertEqual(shown.notices, ["$18.50 recorded in Example Budget (Simulated): $181.50 left this week."])
+        XCTAssertEqual(shown.chat, ["USER I spent 18.50 on lunch.",
+                                    "NOTICE $18.50 recorded in Example Budget (Simulated): $181.50 left this week.", "ASSISTANT Done."])
+        XCTAssertEqual(shown.cards, 0)
+        XCTAssertFalse(shown.pending, "record_spend asks for no confirmation")
+    }
+
+    func testBUDGET_G34_ASpendThatPassesTheBudgetShowsTheOverNotice() async throws {
+        let rig = makeRig()
+        rig.hold(19000)
+        let output = try await XCTUnwrap(rig.spend("18.50").lookup).run()
+        XCTAssertEqual(output.notice, "$18.50 recorded in Example Budget (Simulated): $8.50 over the budget this week.")
+
+        let live = makeRig()
+        live.hold(20000)
+        let shown = await spendSession(live, amount: "5")
+        XCTAssertEqual(shown.notices, ["$5.00 recorded in Example Budget (Simulated): $5.00 over the budget this week."])
+        XCTAssertEqual(shown.cards, 0)
+
+        let advice = try NSRegularExpression(pattern: #"\b(should|recommend|advise|afford|save|invest|cut back|stop spending|overspend)\b"#,
+                                             options: [.caseInsensitive])
+        for text in [output.notice ?? "", AgentBudget.spendFailureNotice] {
+            XCTAssertEqual(advice.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text)), 0, text)
+            XCTAssertTrue(text.unicodeScalars.allSatisfy(\.isASCII), text)
+        }
+    }
+
+    func testBUDGET_G35_AFailedSpendShowsTheFixedFailureNoticeAndACancelledOneSaysNothing() async throws {
+        let rig = makeRig()
+        rig.partner.mode = .status(500, "oops")
+        let output = try await XCTUnwrap(rig.spend("18.50").lookup).run()
+        XCTAssertEqual(output.notice, "The spend could not be recorded in Example Budget (Simulated).")
+
+        let live = makeRig()
+        live.partner.mode = .error(URLError(.notConnectedToInternet))
+        let shown = await spendSession(live, amount: "18.50")
+        XCTAssertEqual(shown.notices, ["The spend could not be recorded in Example Budget (Simulated)."])
+        XCTAssertEqual(shown.cards, 0)
+
+        let cancelled = makeRig()
+        cancelled.partner.duringSend = { withUnsafeCurrentTask { $0?.cancel() } }
+        let lookup = try XCTUnwrap(cancelled.spend("18.50").lookup)
+        let quiet = await Task { await lookup.run() }.value
+        XCTAssertNil(quiet.notice, "a cancelled task says nothing about the budget")
+
+        // The left lookup shows no notice.
+        let left = makeRig()
+        let leftOutput = try await XCTUnwrap(left.call("get_budget_left").lookup).run()
+        XCTAssertNil(leftOutput.notice)
+    }
 }

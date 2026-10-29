@@ -202,10 +202,12 @@ struct AgentPlaceRegistry {
     }
 }
 
-/// What a lookup tool hands back: the result text for the model and whether Google data was shown (only for `ok`).
+/// What a lookup tool hands back: the result text for the model, whether Google data was shown (only for `ok`), and the
+/// one notice line the chat shows after the result, or nil.
 struct AgentLookupOutput {
     let result: String
     let showsGoogleData: Bool
+    var notice: String? = nil
 }
 
 /// A network lookup the session runs as the request in flight (design.md section 3).
