@@ -4,7 +4,6 @@ import Foundation
 /// is testable without the toolbox. Money is whole cents (`Int`) everywhere; dollars appear only in text, through `AgentBudget`.
 enum AgentDelivery {
     static let maxDeliveryText = 120
-    static let maxMealTitle = 40
     /// A meal entry lasts 60 minutes.
     static let mealMinutes = 60
     static let maxItemLines = 6
@@ -18,17 +17,28 @@ enum AgentDelivery {
     static let mealStartLabel = "Start"
     static let controlLabels = [deliveryPlaceLabel, mealSwitchLabel, mealTitleLabel, mealStartLabel]
 
+    // MARK: The field card (SPEC-CHOICECARD-001)
+
+    /// The header of the order card and the keys of the three rows that are the app's own (the partner's fields have its keys).
+    static let cardHeader = "Order delivery"
+    static let mealSwitchKey = "meal"
+    static let mealTitleKey = "meal_title"
+    static let mealStartKey = "meal_start"
+    /// The two chips of the meal switch. The card model holds no chip word, so the words come from here, in the seed.
+    static let mealOnWord = "Add"
+    static let mealOffWord = "Don't Add"
+
     // MARK: Fixed texts
 
-    static let optionsMessage = "State the items with their estimated prices, the estimated delivery fee and the cards as facts, and say the delivery app is simulated and every price an estimate. Ask the user what to order, when it is to arrive and which card to pay with. Give no advice."
+    static let optionsMessage = "State the items with their estimated prices, the estimated delivery fee and the cards as facts, and say the delivery app is simulated and every price an estimate. Ask the user what to order and when it is to arrive. Do not ask which card or where to deliver: the user chooses them on the order card. Give no advice."
     static let optionsUnavailableMessage = "The simulated delivery app could not be reached. Tell the user the delivery options are not available right now."
-    static let appliedMessage = "Tell the user the delivery is ordered with a simulated delivery app. Give the order id, the arrival time, the items, the delivery place (the address field) and the estimated total as facts, and say the total is an estimate. Give no advice."
+    static let appliedMessage = "Tell the user the delivery is ordered with a simulated delivery app. Give the order id, the items, the delivery place (the address field) and each result item as a fact, and say any amount is an estimate. Give no advice."
     static let mealAddedSentence = "Say the meal entry was added to the schedule."
     static let mealMissedSentence = "Say the meal entry could not be added to the schedule."
     static let declinedMessage = "The simulated delivery app could not take the order. Tell the user that the simulated delivery app could not take the order and that nothing was ordered, and ask what they want to do next."
     static let unavailableMessage = "The simulated delivery order could not be made. Tell the user nothing was ordered."
     static let unavailableNotice = "The delivery could not be ordered. Nothing was ordered."
-    static let editRejectedMessage = "The delivery place or the meal title was empty. Tell the user nothing was ordered."
+    static let editRejectedMessage = "A required value of the order card was empty. Tell the user nothing was ordered."
     static let budgetRecordedSentence = "Tell the user the estimated total was sent to the simulated budget app and the amount left or over, as facts and as estimates. Do not call record_spend for this order."
     static let budgetUnavailableSentence = "The estimated total could not be sent to the simulated budget app. Tell the user so, and do not call record_spend for this order."
     static let budgetFailureNotice = "The estimated total could not be sent to \(AgentBudget.partnerLabel)."

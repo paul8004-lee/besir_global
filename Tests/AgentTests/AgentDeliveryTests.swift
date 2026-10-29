@@ -122,7 +122,6 @@ final class AgentDeliveryTests: XCTestCase {
         XCTAssertTrue(AgentDelivery.mealTitle(typed: "x").hasSuffix(" (Simulated)"))
         XCTAssertEqual(AgentDelivery.mealMinutes, 60)
         XCTAssertEqual(AgentDelivery.maxDeliveryText, 120)
-        XCTAssertEqual(AgentDelivery.maxMealTitle, 40)
 
         // Per keystroke: hidden characters go, the cut is at the limit, and nothing is trimmed.
         XCTAssertEqual(AgentDelivery.cleanedTyped("12", limit: 120), "12")
