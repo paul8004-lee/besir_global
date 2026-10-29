@@ -125,6 +125,11 @@ final class NotificationManager: NSObject, ObservableObject, UNUserNotificationC
         return id
     }
 
+    /// Removes the delivered "Tap to review what you shared." banner once besir is in front (SPEC-SHAREOPEN-001 REQ-005).
+    func clearShareNudge(center: NudgeCenter = SystemNudgeCenter()) {
+        ShareNudge.clear(center: center)
+    }
+
     /// 예약 대기 중인 알림을 전부 취소한다(Store가 "가까운 것부터 N건"만 다시 채울 때 사용).
     func cancelAll() {
         center?.removeAllPendingNotificationRequests()
