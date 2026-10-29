@@ -441,6 +441,7 @@ final class SnapSessionTests: XCTestCase {
         await rig.session.settle()
 
         XCTAssertEqual(rig.fake.request(1), [.user(try golden("snap-poster-message"))], "request 1 holds exactly the poster message")
+        XCTAssertNil(rig.tools.dayPlan, "a poster is an ordinary message: no plan turn")
         XCTAssertEqual(rig.session.userTexts, ["I snapped a poster."], "the chat draws the short line")
         let card = try XCTUnwrap(rig.session.pendingCard)
         XCTAssertEqual(card.lines, ["Add event", "Harbor Lights Concert", "Fri, Oct 30, 7:30 PM - 8:30 PM", "At Marina Green"])
@@ -482,6 +483,7 @@ final class SnapSessionTests: XCTestCase {
         await rig.session.settle()
 
         XCTAssertEqual(rig.session.assistantTexts, ["When do you want to go, and how will you travel?"])
+        XCTAssertNil(rig.tools.dayPlan, "the other-place message is an ordinary message: no plan turn")
         XCTAssertNil(rig.session.pendingCard)
         XCTAssertEqual(rig.fake.requests.count, 1)
         rig.session.send("Tomorrow at 3 PM by car")
@@ -516,6 +518,7 @@ final class SnapSessionTests: XCTestCase {
         await rig.session.settle()
 
         XCTAssertEqual(rig.fake.request(1), [.user(try golden("snap-meal-message"))], "request 1 holds exactly the meal message")
+        XCTAssertNotNil(rig.tools.dayPlan, "the meal message starts the plan turn")
         try await assertRow(row, rig)
     }
 
