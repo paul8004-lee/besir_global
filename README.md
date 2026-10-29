@@ -93,6 +93,7 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **be full sir and nearby-suggestion fixes** — no caption under the Home button, a nearby search when the base changes, suggestion titles by type, and the chosen place's own name in the Place field — [`0412e99`](https://github.com/paul8004-lee/besir_global/commit/0412e995152b4789552180543619dfa9d9be63c5)
 - **Plan my day** — one tap sends the shared items and today's calendar to the agent, which proposes the stops on one card; the app checks overlaps and travel times with Google Routes — [`b474859`](https://github.com/paul8004-lee/besir_global/commit/b4748590292728fe4ad8befdbf063096eb6bdf28)
 - **Repeat text read by rules** — common English repeat phrases such as `every Monday until Nov 30` become a repeat rule inside the app, with no AI call — [`7cf990d`](https://github.com/paul8004-lee/besir_global/commit/7cf990d5690776d851949353ee1f4da10459e376)
+- **Brief README lines** — each line here is now a short index entry; card details move to issues and pull requests — [#5](https://github.com/paul8004-lee/besir_global/pull/5)
 
 Some baseline files are edited in place, only for two reasons: the English localization of the app UI, and the split of the app and App Group identifiers from the earlier app. Both are listed as lines above when they land. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
