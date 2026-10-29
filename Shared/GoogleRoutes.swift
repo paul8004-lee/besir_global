@@ -1,6 +1,12 @@
 import Foundation
 import CoreLocation
 
+/// One point of a decoded route line. Not Codable: a line is never stored.
+struct RoutePoint: Equatable {
+    var latitude: Double
+    var longitude: Double
+}
+
 /// Google Routes (`computeRoutes`) through the Worker route `/routes`.
 /// Pure request builders and response parsers plus one transport seam, so tests need no network.
 /// The Google key stays on the Worker; the app sends only its own token (through the one proxy request builder).
@@ -19,6 +25,10 @@ enum GoogleRoutes {
     /// The mask of a live car lookup (a replan trigger): `staticDuration` is the route time without traffic conditions,
     /// so the answer carries both the time with traffic (`duration`) and the time without it.
     static let liveCarMask = "routes.duration,routes.staticDuration,routes.distanceMeters"
+    /// The mask of a route-line lookup: the time and the overview polyline, nothing else.
+    static let routeLineMask = "routes.duration,routes.polyline.encodedPolyline"
+    /// The most points a decoded route line may hold; a longer text is refused.
+    static let maxLinePoints = 5_000
 
     // @MX:NOTE Adding a field to this mask can move every transit lookup to a higher billing tier.
     static let transitPlanMask = [
@@ -74,6 +84,8 @@ enum GoogleRoutes {
         var steps: [Step] = []
         /// The route time without traffic conditions; only a live car request asks for it.
         var staticDuration: TimeInterval? = nil
+        /// The overview polyline text; only a route-line request asks for it.
+        var encodedPolyline: String? = nil
     }
 
     // MARK: - Requests
@@ -89,9 +101,11 @@ enum GoogleRoutes {
     /// One `computeRoutes` request for `mode`. The routing preference is valid for DRIVE only, so no other mode sends it.
     /// `live` is true only for the lookups of a replan trigger: a car request then asks for traffic (`TRAFFIC_AWARE`) and
     /// for `staticDuration`; every other request, and every request with `live == false`, is byte-identical to the base.
+    /// `polyline` is true only for a route-line lookup: the body then also asks for the overview quality in the encoded
+    /// polyline format, the field mask is `routeLineMask` whatever `mask` is passed, and the request is never live.
     /// Nil when the proxy is not configured.
     static func request(mode: TransportMode, from origin: CLLocationCoordinate2D, to dest: CLLocationCoordinate2D,
-                        mask: String, config: AppConfig, live: Bool = false) -> URLRequest? {
+                        mask: String, config: AppConfig, live: Bool = false, polyline: Bool = false) -> URLRequest? {
         var body: [String: Any] = [
             "origin": waypoint(origin),
             "destination": waypoint(dest),
@@ -99,11 +113,15 @@ enum GoogleRoutes {
             "languageCode": languageCode,
             "regionCode": regionCode
         ]
-        let liveCar = live && mode == .car
+        if polyline {
+            body["polylineEncoding"] = "ENCODED_POLYLINE"
+            body["polylineQuality"] = "OVERVIEW"
+        }
+        let liveCar = live && !polyline && mode == .car
         if mode == .car { body["routingPreference"] = liveCar ? "TRAFFIC_AWARE" : "TRAFFIC_UNAWARE" }
         guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]),
               var request = config.proxyPOSTRequest(path, body: data, timeout: timeout) else { return nil }
-        request.setValue(liveCar ? liveCarMask : mask, forHTTPHeaderField: fieldMaskHeader)
+        request.setValue(polyline ? routeLineMask : (liveCar ? liveCarMask : mask), forHTTPHeaderField: fieldMaskHeader)
         return request
     }
 
@@ -118,6 +136,54 @@ enum GoogleRoutes {
 
     private static func waypoint(_ point: CLLocationCoordinate2D) -> [String: Any] {
         ["location": ["latLng": ["latitude": point.latitude, "longitude": point.longitude]]]
+    }
+
+    // MARK: - Route line
+
+    // @MX:NOTE The single decoder of Google's encoded polylines. Every check is deliberate: byte alphabet, at most 13
+    // groups per number, a 13th payload of 15 or less (a bigger one loses its top bit in 64 bits), a checked add,
+    // coordinate limits in integer units, at most `maxLinePoints` points and at least 2.
+    /// The points of an encoded polyline (units of 1e-5 degree), or nil for any text that is not a valid line:
+    /// a byte outside 63...126, a text that ends inside a number or after a latitude, a number of more than 13 groups
+    /// or whose 13th group has a payload above 15, an overflowing sum, a coordinate out of range, more than
+    /// `maxLinePoints` points, or fewer than 2.
+    static func decodePolyline(_ text: String) -> [RoutePoint]? {
+        let bytes = Array(text.utf8)
+        var index = 0
+        var latitude: Int64 = 0
+        var longitude: Int64 = 0
+        var points: [RoutePoint] = []
+        while index < bytes.count {
+            for component in 0..<2 {
+                guard index < bytes.count else { return nil }
+                var n: UInt64 = 0
+                var groups = 0
+                var more = true
+                while more {
+                    guard index < bytes.count else { return nil }
+                    let byte = bytes[index]
+                    guard byte >= 63 else { return nil }
+                    guard byte <= 126 else { return nil }
+                    index += 1
+                    let value = Int(byte) - 63
+                    groups += 1
+                    if groups > 13 { return nil }
+                    if groups == 13 && (value & 31) > 15 { return nil }
+                    n |= UInt64(value & 31) << UInt64(5 * (groups - 1))
+                    more = value >= 32
+                }
+                let step = (n & 1) != 0 ? ~Int64(bitPattern: n >> 1) : Int64(bitPattern: n >> 1)
+                let (sum, overflow) = (component == 0 ? latitude : longitude).addingReportingOverflow(step)
+                guard !overflow else { return nil }
+                if component == 0 { latitude = sum } else { longitude = sum }
+            }
+            guard latitude >= -9_000_000 && latitude <= 9_000_000 else { return nil }
+            guard longitude >= -18_000_000 && longitude <= 18_000_000 else { return nil }
+            points.append(RoutePoint(latitude: Double(latitude) / 100_000, longitude: Double(longitude) / 100_000))
+            if points.count > maxLinePoints { return nil }
+        }
+        guard points.count >= 2 else { return nil }
+        return points
     }
 
     // MARK: - Transport
@@ -165,8 +231,11 @@ enum GoogleRoutes {
         }
         // A missing, null or invalid `staticDuration` is nil; it never makes the route malformed.
         let staticDuration = (route["staticDuration"] as? String).flatMap(parseDuration)
+        // A missing, null, empty or non-text polyline is nil; it never makes the route malformed.
+        let polylineText = (route["polyline"] as? [String: Any])?["encodedPolyline"] as? String
+        let encodedPolyline = (polylineText?.isEmpty ?? true) ? nil : polylineText
         return Route(duration: duration, distance: number(route["distanceMeters"]), warnings: warnings, steps: steps,
-                     staticDuration: staticDuration)
+                     staticDuration: staticDuration, encodedPolyline: encodedPolyline)
     }
 
     private static func step(from raw: [String: Any]) -> Step {
