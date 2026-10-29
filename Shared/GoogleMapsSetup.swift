@@ -99,8 +99,8 @@ struct RouteLineSpec: Equatable {
     /// Nil when fewer than 2 points or when any point is not a valid coordinate: one bad point drops the whole line.
     static func make(_ points: [RoutePoint]) -> RouteLineSpec? {
         guard points.count >= 2 else { return nil }
-        guard points.allSatisfy({ MapFraming.isValid(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)) })
-        else { return nil }
+        let everyPointValid = points.allSatisfy { MapFraming.isValid(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)) }
+        guard everyPointValid else { return nil }
         return RouteLineSpec(points: points)
     }
 
