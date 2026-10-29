@@ -907,6 +907,8 @@ extension EndWheelSpec {
         /// 풀리는데 저장은 지난 회차를 건너뛰어 0건이 된다(019 안전성 렌즈 m-2). 그 쌍이면 기존 0회 안내로 잠그고, 글이나 시작이
         /// 바뀌면 쌍이 달라져 저절로 다시 판정한다(운영자 §30 — 새 문구 없음).
         var noFutureFor: (text: String, start: Date)? = nil
+        /// The end came from a `for N units` clause, which is counted from the start, so it moves when the start moves.
+        var endFollowsStart = false
     }
 
     /// 칩을 탭했을 때의 전이 — 생성 카드의 choose(field:value:place:)에서 구간 네 분기와 공통
@@ -1083,10 +1085,21 @@ extension EndWheelSpec {
                 card.fields[ei].note = EndWheelSpec.notAfterBaseMessage
             }
         }
-        // 시작이 바뀌면 이미 해석된 규칙으로 회차를 그 자리에서 다시 센다(SPEC-UIKIT-019 L-22) — 해석은 다시 부르지 않는다.
-        // 반복 글 안의 종료 날짜는 글에 박혀 있어 그대로다.
-        if card.fields[i].key == "start_iso" { refreshRecurrenceNote() }
+        // A new start recounts the occurrences with the rule already read (SPEC-UIKIT-019 L-22); the text is not read again.
+        // An end date written in the text stays, but a `for N units` end is counted from the start, so it is moved first.
+        if card.fields[i].key == "start_iso" {
+            reanchorRelativeEnd()
+            refreshRecurrenceNote()
+        }
         return true
+    }
+
+    /// @MX:NOTE: Only a relative end (`for N units`) moves with the start; an absolute end (`until Nov 30`) is a date the
+    /// user typed and stays as it is. The rule, arguments and text are unchanged: only `endDate` is recomputed.
+    private mutating func reanchorRelativeEnd(calendar: Calendar = .current) {
+        guard recurrence.endFollowsStart, let text = recurrence.interpretedText, let start = startDate,
+              let again = RecurrenceTextParser.parse(text, start: start, calendar: calendar) else { return }
+        recurrence.endDate = again.endDate
     }
 
     /// 다이얼을 닫을 때의 동작(REQ-006 F1·REQ-010) — 줄에 값이 있으면 값은 그대로 두고 그 줄의
@@ -1282,7 +1295,8 @@ extension EndWheelSpec {
     /// 해석 결과를 그 글에 붙인다. `arguments`가 nil이면 해석 실패다. 결과가 돌아오는 사이 글이 또 바뀌었으면 버린다 —
     /// 옛 글의 결과가 새 글에 붙으면 사용자가 본 글과 다른 규칙이 만들어진다(await 너머 재조회, H1). 반복으로 읽히면
     /// 종료 줄을 시각만 고르는 반복 끝 바퀴로 다시 세운다(L-28 — 이미 고른 시각은 지킨다).
-    mutating func applyRecurrenceInterpretation(arguments: [String: Any]?, endDate: Date?, for text: String) {
+    mutating func applyRecurrenceInterpretation(arguments: [String: Any]?, endDate: Date?, for text: String,
+                                                endFollowsStart: Bool = false) {
         guard recurrenceText == text else { return }
         guard let arguments else {
             // 실패는 해석된 글로 남기지 않는다(failedText 주석) — 같은 글로 칸을 다시 마치면 다시 해석한다.
@@ -1291,9 +1305,20 @@ extension EndWheelSpec {
             return
         }
         recurrence = RecurrenceState(interpretedText: text, arguments: arguments,
-                                     rule: RecurrenceRule.from(arguments: arguments), endDate: endDate)
+                                     rule: RecurrenceRule.from(arguments: arguments), endDate: endDate,
+                                     endFollowsStart: endFollowsStart)
         if recurrence.rule != nil { setEndRowRecurring(true) }
         refreshRecurrenceNote()
+    }
+
+    /// Reads the Repeat text by rule (no network): begin, parse, apply. True when a text was read.
+    @discardableResult
+    mutating func commitRecurrenceByRules(calendar: Calendar = .current) -> Bool {
+        guard let request = beginRecurrenceCommit() else { return false }
+        let parsed = RecurrenceTextParser.parse(request.text, start: request.start, calendar: calendar)
+        applyRecurrenceInterpretation(arguments: parsed?.arguments, endDate: parsed?.endDate, for: request.text,
+                                      endFollowsStart: parsed?.endFollowsStart ?? false)
+        return true
     }
 
     /// AI 카드의 처음 글(O-S4-9 (나)) — 호출의 구조 인자를 되살린 글을 해석된 글로 심는다. 해석한 적은 없지만 그 인자가

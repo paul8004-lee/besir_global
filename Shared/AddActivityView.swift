@@ -12,8 +12,8 @@ struct AddActivityView: View {
     /// 가는 이동 출발지의 '현재 위치' 행(O-B6)이 읽는 측위 상태 — 카드 뷰는 순수 값 뷰라 화면이
     /// 이 환경 객체를 받아 줄 동작에 넘겨 준다(권한 판정·대기는 PlaceLineResolve가 안다).
     @EnvironmentObject var location: LocationManager
-    /// '반복' 칸을 마칠 때의 해석(interpretRecurrence)만 빌린다 — 해석은 격리 메서드라 채팅 상태를 읽지도
-    /// 바꾸지도 않는다. 새 AI 객체를 만들지 않는 이유는 계약 4다. 시트는 띄우는 화면의 환경을 물려받는다.
+    /// The Repeat row is read by rule when it is committed (`RecurrenceTextParser`), so this sheet holds no AI object
+    /// and makes no network call for it. The sheet inherits the environment of the screen that presents it.
     @Environment(\.dismiss) private var dismiss
     /// 시작 바퀴가 처음 서는 날 — 생성을 누를 때 보고 있던 날(t50 P3, 운영자 원문 "11/14일 활동일정
     /// 생성을 누르면 시작 바퀴가 11/14일로"). 값이 아니라 위치다: 시작 줄은 확인을 눌러야 정해진다.
@@ -431,20 +431,16 @@ struct AddActivityView: View {
 
     // MARK: - '반복' 칸을 마칠 때(SPEC-UIKIT-019 REQ-004)
 
-    /// 반복 칸을 마치면(바깥 탭·Return) 글을 해석한다. 해석이 필요한지는 폼이 정하고(빈 글·이미 해석한 글은 nil),
-    /// 결과를 붙일지도 폼이 그 글과 대조해 정한다 — 뷰는 해석 결과를 들지 않는다. form은 값 타입이라 await 앞에서
-    /// 한 번 써 두고, 돌아온 뒤 다시 읽어 붙인다: 기다리는 사이 사용자가 다른 줄을 고쳤을 수 있다(H1).
+    /// When the Repeat row is committed (outside tap, Return) the text is read by rule in the same step: the form decides
+    /// whether a reading is needed (an empty or already-read text needs none) and applies the result, so the view holds
+    /// no result. The form is written back even when nothing is read, because an empty text makes the card a one-time
+    /// activity inside that call (the end row's shape included).
     private func commitRecurrence() async {
         guard var f = form else { return }
-        // 빈 글이면 이 호출 안에서 한 번짜리로 서므로(종료 줄 모양까지) nil이어도 쓴 폼을 돌려놓아야 한다.
-        let request = f.beginRecurrenceCommit()
+        let interpreted = f.commitRecurrenceByRules()
         form = f
-        guard let request else { return }
-        guard var g = form else { return }
-        g.applyRecurrenceInterpretation(arguments: nil, endDate: nil, for: request.text)
-        form = g
-        // 반복으로 읽히면 종료 줄이 반복 끝 시각으로 옮겨질 수 있다 — 과거 알림 판정의 재료가 바뀐다.
-        recomputePastAlarmNotes()
+        // A text that reads as a repeat can move the end row to a repeat end time - the past-alarm check uses it.
+        if interpreted { recomputePastAlarmNotes() }
     }
 }
 
