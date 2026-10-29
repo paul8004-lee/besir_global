@@ -1,0 +1,55 @@
+Test media of the t24 camera-snap walk (SPEC-CAMSNAP-001). The media files are NOT in this repository.
+The walk loads them into the iPhone 17e simulator with xcrun simctl addmedia; they live in the scratch folder /private/tmp/besir-t24-photos/.
+Commons rows read on 2026-10-29 through the Wikimedia Commons API (extmetadata, imageinfo); the downloaded original of each photo matches the sha1 the API returned.
+The SHA-256 of each file is the original as downloaded (photos) or as generated for the walk date 2026-10-29 (own media).
+The demo video shows a real camera on a device, not these files.
+
+P1 walk case C1 (a library, other place). Coordinate for simctl location: 37.779082,-122.415796 (the Commons category San Francisco Public Library - Main Branch, primary coordinate; the file page itself has none).
+File: SFPL_Main_Library_Full_Exterior.jpg (3499 x 2333 jpeg)
+Source: https://commons.wikimedia.org/wiki/File%3ASFPL_Main_Library_Full_Exterior.jpg
+Author: J. Ash Bowie (own work, 2008)
+License: CC BY-SA 3.0 https://creativecommons.org/licenses/by-sa/3.0
+Attribution: "SFPL Main Library Full Exterior" by J. Ash Bowie, CC BY-SA 3.0, via Wikimedia Commons
+SHA-256: 61d8f264454ffcc2bf1b9be055fc20ff9b6f134241df13aff98a697d614cd7a4
+
+P2 walk cases C2a, C2b and N1 (a food place with a sign). Coordinate for simctl location: 37.80869,-122.418658 (the file page).
+File: Chowder_Hut,_Fishermans_Wharf,_San_Francisco_(5573289102).jpg (1760 x 1172 jpeg)
+Source: https://commons.wikimedia.org/wiki/File%3AChowder_Hut%2C_Fishermans_Wharf%2C_San_Francisco_%285573289102%29.jpg
+Author: Pedro Szekely from Los Angeles, USA (Flickr 43355249@N00)
+License: CC BY-SA 2.0 https://creativecommons.org/licenses/by-sa/2.0
+Attribution: "Chowder Hut, Fisherman's Wharf, San Francisco" by Pedro Szekely, CC BY-SA 2.0, via Wikimedia Commons
+SHA-256: 1ddefbed2f7159613a390fd16d60213a80f9f108625a5bcd6cfcf05fcbed95f0
+
+P3 walk case C3 (a shop that sells food, not a restaurant; also the spare place photo for a model miss). Coordinate for simctl location: 37.785527,-122.431136 (the file page; the photo's own EXIF agrees).
+File: 2017_Nijiya_Market_storefront_in_San_Francisco.jpg (4032 x 3024 jpeg)
+Source: https://commons.wikimedia.org/wiki/File%3A2017_Nijiya_Market_storefront_in_San_Francisco.jpg
+Author: Mark Yasuda (User:Myasuda, own work, 2017)
+License: CC BY-SA 4.0 https://creativecommons.org/licenses/by-sa/4.0
+Attribution: "2017 Nijiya Market storefront in San Francisco" by Mark Yasuda, CC BY-SA 4.0, via Wikimedia Commons
+SHA-256: 15ba2306a0ff695de84167a510db13db61fd950b8d60b321e6faec3bbd82c78f
+
+P4 walk case C4, optional (a comedy club, other place). Neither the file page nor the photo's EXIF holds a coordinate (the EXIF GPS block is empty).
+Coordinate for simctl location: 37.7955,-122.4 from Wikidata Q7259939 (Punch Line San Francisco), property P625; free (Wikidata data is CC0) but coarse (the item states a precision of about 0.011 degrees, roughly 1 km), no paid call was made to find it.
+File: Punch_Line_San_Francisco.jpg (3264 x 2448 jpeg)
+Source: https://commons.wikimedia.org/wiki/File%3APunch_Line_San_Francisco.jpg
+Author: Blackguard SF (own work, 2015)
+License: CC BY-SA 4.0 https://creativecommons.org/licenses/by-sa/4.0
+Attribution: "Punch Line San Francisco" by Blackguard SF, CC BY-SA 4.0, via Wikimedia Commons
+SHA-256: 37285ff56fe151e6b570c1ede79e3aab002f868aca7ad83021a1e33b2c1c0dea
+
+P6 walk case C5 (an event poster, no lookup). Any location. The poster reads HARBOR LIGHTS CONCERT, Sat Oct 31, 7:30 PM, Marina Green, San Francisco (walk day Thu 2026-10-29).
+File: t24-poster.jpg (1200 x 1600 jpeg, generated)
+Source: made by E/walk/make_snap_media.py 2026-10-29
+Author: the card lane
+License: no third-party material
+Attribution: none required
+SHA-256: 4a1358c38b751cb602aa618a4c405362f61a572880956f65138b5027b42de007
+Spare for a model miss in C5, same three facts in another layout: t24-poster-b.jpg, 1600 x 1000, sha256 419c9f89f885a707706fda7e1de461b21becddabbf542041e4768bb9f2c5109a, made by the same script, no third-party material.
+
+N2 walk case N2 (a plain grey image, nothing to read). Any location.
+File: t24-grey.jpg (1200 x 900 jpeg, generated)
+Source: made by E/walk/make_snap_media.py 2026-10-29
+Author: the card lane
+License: no third-party material
+Attribution: none required
+SHA-256: 85839517905de05cee073ac239ac7887a59e0bf4ecaee21e77b89fffa93e9641
