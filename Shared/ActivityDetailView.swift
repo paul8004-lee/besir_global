@@ -85,7 +85,7 @@ struct ActivityDetailView: View {
     @State private var originLocationTask: Task<Void, Never>?
 
     private var activity: ActivityBlock? {
-        store.activities.first { $0.id == activityId }
+        store.activity(id: activityId)
     }
 
     private var placeCoord: CLLocationCoordinate2D? {

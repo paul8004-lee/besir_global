@@ -26,7 +26,8 @@ As an MVP, besir starts with one everyday scenario — an event you came across,
 | Muse Spark agent → besir schedule, through tool calls the user confirms | in | built |
 | besir → Apple Calendar | out | built for the events you confirm, written to the default calendar; reading today's events is built but only a Debug button uses it until Plan my day |
 | besir → a reservation app, filled in from the plan, and the booking back into besir | round trip | built with a simulated partner app clearly labeled *Simulated*; no real reservation app yet |
-| besir → budget and health apps (what was spent, where and when) | out | roadmap |
+| besir ↔ a budget app (this week's dining budget left, a spend, a booking's estimated spend) | round trip | built with a simulated partner app clearly labeled *Simulated*; no real budget app yet |
+| besir → health apps | out | roadmap |
 
 ## Pre-existing code (before the hackathon kickoff — Oct 26, 2026, 12:00 PM ET)
 
@@ -97,6 +98,12 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **Issue and pull request templates** — one card template for issues and one for pull requests, so every card reads the same — [#8](https://github.com/paul8004-lee/besir_global/pull/8)
 - **Calendar not read, said so** — when Plan my day cannot read the calendar, the agent is told so and says its plan was not compared with the calendar, instead of calling the day clear — [#10](https://github.com/paul8004-lee/besir_global/pull/10)
 - **Route line on the Google map** — a travel leg's map now draws the real route from Google Routes between the two pins, for car, walk, bicycle and transit, in light and dark — [#27](https://github.com/paul8004-lee/besir_global/pull/27)
+- **Camera snap** — one photo and the phone's location find the exact place; a food place becomes a meal in the free time, a poster or any other place becomes a plan, and the photo is not kept — [#30](https://github.com/paul8004-lee/besir_global/pull/30)
+- **Absurdly long legs are not late arrivals** — in Plan my day, a leg over six hours counts as unchecked instead of showing a huge late-arrival time — [#31](https://github.com/paul8004-lee/besir_global/pull/31)
+- **Example Budget (Simulated)** — a simulated budget app: ask what is left this week, say what you spent, and a booking sends its estimated spend; facts only, no advice — [#36](https://github.com/paul8004-lee/besir_global/pull/36)
+- **Share, then one tap** — after a share, one fixed notification brings besir to the front with a tap, and the banner is cleared when besir opens — [#37](https://github.com/paul8004-lee/besir_global/pull/37)
+- **Repeat saved as its rule** — a repeating activity is stored as one rule and its days are worked out when shown, so `every Monday` needs no end date and has no 182-day cap — [#38](https://github.com/paul8004-lee/besir_global/pull/38)
+- **Example Delivery (Simulated)** — a simulated delivery app: ask for food to arrive at a set time, confirm one card, and the order, an optional meal entry and the estimated total sent to Example Budget follow; facts only, no advice — [#45](https://github.com/paul8004-lee/besir_global/pull/45)
 
 Some baseline files are edited in place, only for two reasons: the English localization of the app UI, and the split of the app and App Group identifiers from the earlier app. Both are listed as lines above when they land. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 

@@ -76,31 +76,55 @@ final class CalendarStoreHookTests: XCTestCase {
         XCTAssertEqual(recorder.calls.last?.map { $0.id }, store.activities.map { $0.id })
     }
 
+    /// The New Activity card as the app builds it, with title `Class`, no place, the given start and end, and the
+    /// Repeat row empty.
+    private func makeSeriesForm(start: Date, end: Date) -> LegCardForm {
+        let rows = LegCardForm.manualNewActivityRows(favorites: [], defaultDay: start, now: start,
+                                                     presetStart: nil, calendarDefaultOn: nil)
+        var form = LegCardForm(card: EditCard(fields: rows), favoriteOptions: [])
+        func rowId(_ f: LegCardForm, _ key: String) -> UUID { f.card.fields.first { $0.key == key }!.id }
+        form.setTitleText(field: rowId(form, "title"), text: "Class")
+        form.choose(field: rowId(form, "location_query"), value: PlaceTokens.noPlace)
+        form.choosePlainTime(field: rowId(form, "start_iso"), date: start)
+        form.choosePlainTime(field: rowId(form, "end_iso"), date: end)
+        return form
+    }
+
     func testAC_APPLECAL_008_SeriesAndBulkDeletesReachTheMirror() async throws {
+        // A repeat is one stored rule (SPEC-RECURRULE-001): the mirror is given the window of its occurrences, not every
+        // one, and deleting the series reaches the mirror. Asia/Seoul has no daylight saving, so a day count is exact.
+        let savedZone = NSTimeZone.default
+        NSTimeZone.default = TimeZone(identifier: "Asia/Seoul")!
+        defer { NSTimeZone.default = savedZone }
         let store = EmptyStore.make()
+        let cal = Calendar.current
+        let clock = try XCTUnwrap(cal.date(from: DateComponents(year: 2026, month: 10, day: 29, hour: 8)))
+        store.replanNow = { clock }
         let recorder = RecordingMirror()
         store.calendarMirror = recorder
 
-        // A three-day series starting tomorrow (the series code skips occurrences that already started).
-        let cal = Calendar.current
-        let first = cal.startOfDay(for: Date().addingTimeInterval(86_400))
-        let last = try XCTUnwrap(cal.date(byAdding: .day, value: 2, to: first))
-        var rule = RecurrenceRule()
-        rule.unit = .daily
+        let start = try XCTUnwrap(cal.date(from: DateComponents(year: 2026, month: 10, day: 29, hour: 10)))
+        var form = makeSeriesForm(start: start, end: start.addingTimeInterval(3600))
+        let repeatRow = try XCTUnwrap(form.card.fields.first { $0.key == RecurrenceLine.key }).id
+        form.setTitleText(field: repeatRow, text: "daily")
+        form.commitRecurrenceByRules()
         var seen = recorder.calls.count
-        let series = await store.addRecurringLinkedSeries(
-            title: "Class", location: nil, rule: rule, startDate: first, endDate: last,
-            startHour: 10, startMinute: 0, end: (hour: 11, minute: 0, dayDistance: 0),
-            outboundFrom: nil, returnTo: nil, outboundMode: .transit, returnMode: .transit,
-            bufferMinutes: 0, notifyLeadMinutes: 0, notifyEnabled: false, syncToCalendar: true)
-        XCTAssertEqual(series.activities, 3)
+        let saved = await store.saveManualActivity(form, calendarDefault: true)
+        XCTAssertTrue(saved)
+        let series = try XCTUnwrap(store.series.first)
+        XCTAssertEqual(store.activities.count, 0, "the repeat is one record, not a stored copy per day")
         XCTAssertGreaterThan(recorder.calls.count, seen)
-        XCTAssertEqual(recorder.calls.last?.filter { $0.recurrenceId == series.recurrenceId }.count, 3)
+        let mirrored = (recorder.calls.last ?? []).filter { $0.recurrenceId == series.id }
+        XCTAssertEqual(mirrored.count, Store.mirrorWindowDays, "the window, not every occurrence of a repeat with no end")
+        XCTAssertEqual(mirrored.map(\.startDate).min(), start)
+        XCTAssertEqual(mirrored.map(\.startDate).max(),
+                       cal.date(byAdding: .day, value: Store.mirrorWindowDays - 1, to: start))
 
         seen = recorder.calls.count
-        store.deleteRecurringSeries(series.recurrenceId)
+        store.deleteRecurringSeries(series.id)
         XCTAssertGreaterThan(recorder.calls.count, seen)
         XCTAssertEqual(recorder.calls.last?.count, 0)
+        XCTAssertTrue(store.series.isEmpty)
 
         let a = await add(store, "A", "2026-10-29T09:00", "2026-10-29T10:00")
         let b = await add(store, "B", "2026-10-29T11:00", "2026-10-29T12:00")

@@ -21,8 +21,7 @@ enum BackgroundSync {
             // 예약은 한 번 실행되면 소모된다 — 다음 회차를 먼저 잡아둬야 계속 이어진다.
             schedule()
             let work = Task { @MainActor in
-                await store.refreshUpcomingEstimates(trigger: .background)
-                store.rescheduleNearestNotifications()
+                await store.backgroundRefresh()
             }
             // 주어진 시간을 다 쓰면 iOS가 여기를 부른다. 정리하지 않으면 앱이 강제 종료된다.
             task.expirationHandler = { work.cancel() }
@@ -91,9 +90,12 @@ struct BesirApp: App {
                         // 권한은 설정 앱에서 언제 바뀔지 모르니 활성화마다 다시 읽는다 — 느린
                         // 캘린더 동기화를 기다리면 그동안 캡션이 낡은 권한으로 남는다.
                         notifications.refreshPermissionStatus()
+                        notifications.clearShareNudge()
                         // A calendar permission changed in Settings takes effect: hand the list over again.
                         store.reconcileCalendar()
                         Task {
+                            // The legs of the repeats for the next days are made before the alarms are rescheduled.
+                            await store.fillSeriesLegs()
                             // 출발이 임박한 일정은 실시간 교통상황으로 이동시간을 다시 계산.
                             await store.refreshUpcomingEstimates()
                             // iOS의 64건 제한 때문에 알림은 "가까운 것부터"만 실제로 예약해두고,

@@ -241,13 +241,13 @@ extension EditCard {
     }
 }
 
-/// 실제로 만들어질 첫 회차의 시작 시각(REQ-020 (b) 카드 날짜 표시의 단일 출처, A.5·F9) —
-/// rule.dates에 "회차 자기 시작 > now" 필터를 건 첫 날이다. 카드가 이 계산을 따로 하면 "오늘
-/// 시작 시각이 지났는데 카드는 오늘 날짜를 보이는" 어긋남이 생긴다(계약 5). 시작 시각을 인자로
-/// 받는 이유: 반복마다 회차 시작이 다르다 — 호출자가 그 반복의 시작을 넣게 한다. Store의 생성 루프
-/// (addRecurringLinkedSeries)가 이 관문의 행동 기준이고, 드라이버가 둘의 일치를 잰다. 이 파일에
-/// 사는 이유: 실행부(카드 줄을 세우는 쪽)와 바퀴 날짜 표시가 같은 파일에서 읽어야 하는데, 이 파일이
-/// 이미 카드 시각 해석의 단일 출처(BesirTime)를 가지고 있어서다.
+/// The start of the first occurrence that will really be made (REQ-020 (b), the single source of the date the card
+/// shows): the first day of rule.dates whose own start is after now. If the card counted this itself it could show today
+/// although today's start time has passed (contract 5). The start time is an argument because each repeat has its own
+/// start; the caller passes that repeat's start. The save in Store (saveManualActivity) uses the same gate
+/// (occurrenceSpan), and the driver measures that the two agree. It lives in this file because the code that builds the
+/// card rows and the wheel's date display must read it from one file, and this file already holds the single source of
+/// card time reading (BesirTime).
 extension RecurrenceRule {
     /// 종료 날짜(그날 포함)까지에서 첫 회차.
     /// 찾는 순간 멈추는 firstDate를 쓴다: 종료 날짜를 아직 모르는 카드가 먼 범위를 넘겨도 목록 전체를 짓지 않는다.
@@ -1228,12 +1228,11 @@ extension EndWheelSpec {
 
     /// 반복이 확정 가능한 상태로 서 있는지 — 글이 있고, 그 글이 해석됐고, 안내할 문제가 없을 때. 확정(AI 어댑터)·저장
     /// (수동)이 이것을 보고 반복으로 만들지 한 번짜리로 만들지 가른다. 빈 글이면 nil(한 번짜리).
-    var activeRecurrence: (rule: RecurrenceRule, arguments: [String: Any], endDate: Date)? {
+    var activeRecurrence: (rule: RecurrenceRule, arguments: [String: Any], endDate: Date?)? {
         guard let row = card.fields.first(where: { $0.key == RecurrenceLine.key }), let text = row.chosen,
               text == recurrence.interpretedText, !row.pendingCommit, row.note == nil,
-              let rule = recurrence.rule,
-              let end = RecurrenceLine.effectiveEnd(rule: rule, endDate: recurrence.endDate) else { return nil }
-        return (rule, recurrence.arguments, end)
+              let rule = recurrence.rule else { return nil }
+        return (rule, recurrence.arguments, RecurrenceLine.effectiveEnd(rule: rule, endDate: recurrence.endDate))
     }
 
     /// 줄 아래 안내를 지금 상태로 다시 세운다 — 해석 뒤·시작 변경 뒤·글 변경 뒤에 부른다. 해석 결과(규칙 문장·회차 수)는
@@ -1267,10 +1266,12 @@ extension EndWheelSpec {
               let distance = RecurrenceRule.occurrenceEndDayDistance(start: start, end: end) else { return false }
         let startTod = calendar.dateComponents([.hour, .minute], from: start)
         let endTod = calendar.dateComponents([.hour, .minute], from: end)
-        return !active.rule.dates(from: calendar.startOfDay(for: start), through: active.endDate, calendar: calendar).contains {
+        let startDay = calendar.startOfDay(for: start)
+        let last = active.endDate ?? RecurrenceLine.endOfHorizon(from: startDay, calendar: calendar)
+        return active.rule.firstDate(from: startDay, through: last, calendar: calendar) {
             Store.occurrenceSpan(on: $0, startHour: startTod.hour ?? 0, startMinute: startTod.minute ?? 0,
                                  end: (endTod.hour ?? 0, endTod.minute ?? 0, distance), after: now, calendar: calendar) != nil
-        }
+        } == nil
     }
 
     /// 반복 칸을 마칠 때(바깥 탭·Return — REQ-004). 해석이 필요하면 (글, 첫 회차 날짜)를 돌려주고, 필요 없으면 그 자리에서
@@ -1464,7 +1465,6 @@ extension EndWheelSpec {
     static let missingMonthDays = "Enter days of the month"
     static let missingLunarDate = "Enter lunar date"
     static let missingDate = "Enter date"
-    static let missingEndDate = "Enter end date"
     static let interpretFailed = "Couldn't interpret the repeat"
     static let tooFar = "End date is too far away"
     static let noOccurrence = "No matching dates"
@@ -1476,10 +1476,10 @@ extension EndWheelSpec {
         .init(key: key, kind: .title, label: label, options: [], allowsCustom: true, chosen: text)
     }
 
-    /// 빠진 항목의 **단 하나의 함수**(REQ-003·004, 계약 5) — 세부 항목은 한 번에 하나(가장 앞 것)이고, 그 뒤에
-    /// "종료 날짜 입력"이 붙을 수 있다. 여러 날짜는 마지막 날이 종료라 붙지 않는다(O-D8). 매핑은 plan §4 「행 2 매핑」:
-    /// 매월에 날짜도 몇째 주도 없으면 "매월 며칠 입력", 몇째 주만 있고 요일이 없으면 "요일 입력", 요일만 있고 몇째 주가
-    /// 없으면 "매월 며칠 입력"(L-21).
+    /// The one function for the missing items (REQ-003, 004, contract 5): one detail item at a time, the first one. The
+    /// end date is not asked for, so a repeat with no end date passes (SPEC-RECURRULE-001). The mapping is plan section 4,
+    /// "row 2 mapping": a monthly rule with neither a day nor an nth week asks for the days of the month, one with an nth
+    /// week and no weekday asks for the weekdays, and one with weekdays and no nth week asks for the days of the month (L-21).
     static func missingItems(rule: RecurrenceRule, endDate: Date?) -> [String] {
         var items: [String] = []
         switch rule.unit {
@@ -1499,7 +1499,6 @@ extension EndWheelSpec {
         case .daily:
             break
         }
-        if rule.unit != .dateList, endDate == nil { items.append(missingEndDate) }
         return items
     }
 
@@ -1508,19 +1507,26 @@ extension EndWheelSpec {
         rule.unit == .dateList ? rule.explicitDates.max() : endDate
     }
 
-    /// 줄 아래 한 줄 — 해석 실패 → 빠진 항목 → 회차 0 → 상한 초과 순. 문제가 없으면 nil. 회차는 전개 **전에** 같은
-    /// 셈 함수(RecurrenceRule.occurrenceCount)로 센다(REQ-007 — 9999년 종료가 메인 액터를 막지 않게). 시작이 아직
-    /// 없으면 세지 않는다 — 그 줄 자신이 남은 것에 들어 확인이 잠겨 있다.
+    /// The last day the expansion core walks for a repeat with no end date: the horizon, counted from the start day.
+    static func endOfHorizon(from startDay: Date, calendar: Calendar = .current) -> Date {
+        calendar.date(byAdding: .year, value: RecurrenceRule.horizonYears, to: startDay) ?? startDay
+    }
+
+    /// The one line under the row: reading failed, then missing items, then an end beyond the horizon, then no matching
+    /// date. Nil when there is no problem. There is no cap on the number of occurrences and no end date is required. An
+    /// end beyond the horizon is refused before anything is walked (a far end such as year 9999 must not block the main
+    /// actor); the first-date search stops at the first match. Nothing is checked until the start is known: the start
+    /// row itself is among the missing items and keeps the card locked.
     static func problem(rule: RecurrenceRule?, endDate: Date?, start: Date?, calendar: Calendar = .current) -> String? {
         guard let rule else { return interpretFailed }
         let missing = missingItems(rule: rule, endDate: endDate)
         if !missing.isEmpty { return missing.joined(separator: joiner) }
-        guard let end = effectiveEnd(rule: rule, endDate: endDate), let start else { return nil }
-        let cap = Store.maxRecurrenceOccurrences
-        let n = rule.occurrenceCount(from: calendar.startOfDay(for: start), through: end, limit: cap, calendar: calendar)
-        if n == 0 { return noOccurrence }
-        if n > cap { return tooFar }
-        return nil
+        guard let start else { return nil }
+        let startDay = calendar.startOfDay(for: start)
+        let end = effectiveEnd(rule: rule, endDate: endDate)
+        if let end, !RecurrenceRule.withinHorizon(end, from: startDay, calendar: calendar) { return tooFar }
+        let last = end ?? endOfHorizon(from: startDay, calendar: calendar)
+        return rule.firstDate(from: startDay, through: last, calendar: calendar) { _ in true } == nil ? noOccurrence : nil
     }
 
     /// "1st", "2nd", "3rd", "4th", "11th", "21st" ...

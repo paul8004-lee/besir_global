@@ -82,13 +82,14 @@ final class ShareViewController: UIViewController {
 #if DEBUG
         var queueResult = ShareObservation.Outcome.QueueResult.nothingToStore
 #endif
+        var stored = false
         if let queued = SharedInbox.prepare(text: text, imageData: imageData, mime: mimeType) {
+            stored = SharedInbox.standard.enqueue(queued)
 #if DEBUG
-            queueResult = SharedInbox.standard.enqueue(queued) ? .stored : .writeFailed
-#else
-            SharedInbox.standard.enqueue(queued)
+            queueResult = stored ? .stored : .writeFailed
 #endif
         }
+        _ = await ShareNudge.post(stored: stored, center: SystemNudgeCenter())
 #if DEBUG
         let written = writeObservation(itemCount: items.count)
         let lines = ShareObservation.failureLines(for: ShareObservation.Outcome(

@@ -244,6 +244,12 @@ final class AgentSession: ObservableObject {
         PlanMyDay.registerStorePlaces(events, registry: &toolbox.registry)
     }
 
+    /// SPEC-CAMSNAP-001: registers one snapped place as a handle in this session and returns it, so the model can use it in
+    /// `create_activity`, `get_travel_time` and a day plan without searching for it. The same place keeps its handle.
+    func registerPlace(_ place: Place) -> String? {
+        toolbox.registry.register([place])?.first
+    }
+
     /// Called by `newChat`, so whoever holds state that must not outlive the chat (a held plan) can drop it.
     var onNewChat: (() -> Void)?
 
@@ -465,7 +471,7 @@ final class AgentSession: ObservableObject {
         isWaiting = false
         lookupCalls = nil
         if output.showsGoogleData { googleDataThisMessage = true }
-        record(calls, firstResult: output.result, notice: nil)
+        record(calls, firstResult: output.result, notice: output.notice)
         startRequest()
     }
 
