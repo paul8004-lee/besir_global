@@ -52,7 +52,8 @@ final class GoogleMapsSetup {
 }
 
 /// Where the camera should be for a pair of coordinates. A coordinate that is not a number or lies
-/// outside the latitude and longitude range counts as absent.
+/// outside the latitude and longitude range counts as absent. A route line (`path`) that `RouteLineSpec` accepts widens
+/// the frame to hold every one of its points; without a line the frame is the one of the two coordinates alone.
 enum MapFraming: Equatable {
     case bounds(south: Double, west: Double, north: Double, east: Double)
     case point(latitude: Double, longitude: Double, zoom: Float)
@@ -68,31 +69,49 @@ enum MapFraming: Equatable {
                      path: [RoutePoint] = []) -> MapFraming {
         let o = origin.flatMap { isValid($0) ? $0 : nil }
         let d = destination.flatMap { isValid($0) ? $0 : nil }
-        switch (o, d) {
-        case let (o?, d?):
-            if o.latitude == d.latitude && o.longitude == d.longitude {
-                return .point(latitude: o.latitude, longitude: o.longitude, zoom: streetZoom)
-            }
-            return .bounds(south: min(o.latitude, d.latitude), west: min(o.longitude, d.longitude),
-                           north: max(o.latitude, d.latitude), east: max(o.longitude, d.longitude))
-        case let (o?, nil):
-            return .point(latitude: o.latitude, longitude: o.longitude, zoom: streetZoom)
-        case let (nil, d?):
-            return .point(latitude: d.latitude, longitude: d.longitude, zoom: streetZoom)
-        case (nil, nil):
-            return defaultPoint
+        // The line counts only when `RouteLineSpec` accepts it whole; an invalid point drops the whole path.
+        let line = RouteLineSpec.make(path)?.points ?? []
+        var all = [o, d].compactMap { $0 }.map { RoutePoint(latitude: $0.latitude, longitude: $0.longitude) }
+        all += line
+        guard let first = all.first else { return defaultPoint }
+        var south = first.latitude
+        var north = first.latitude
+        var west = first.longitude
+        var east = first.longitude
+        for point in all {
+            south = min(south, point.latitude)
+            north = max(north, point.latitude)
+            west = min(west, point.longitude)
+            east = max(east, point.longitude)
         }
+        if south == north && west == east { return .point(latitude: south, longitude: west, zoom: streetZoom) }
+        return .bounds(south: south, west: west, north: north, east: east)
     }
 }
 
-/// The route line the map draws. Stub for the red run.
+/// The route line the map draws, as plain values so two lines can be compared before the map is touched. It is the one
+/// rule for "is this a line": the drawing and the camera frame both start from `make`.
 struct RouteLineSpec: Equatable {
     let points: [RoutePoint]
+    /// The one place the line width is set; all four travel modes share it.
     static let width: Double = 5
 
-    static func make(_ points: [RoutePoint]) -> RouteLineSpec? { nil }
+    /// Nil when fewer than 2 points or when any point is not a valid coordinate: one bad point drops the whole line.
+    static func make(_ points: [RoutePoint]) -> RouteLineSpec? {
+        guard points.count >= 2 else { return nil }
+        guard points.allSatisfy({ MapFraming.isValid(CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)) })
+        else { return nil }
+        return RouteLineSpec(points: points)
+    }
 
-    static func needsRedraw(last: RouteLineSpec?, next: RouteLineSpec?, colourSchemeChanged: Bool) -> Bool { false }
+    /// Whether the drawn line must be taken off and drawn again: a line appeared, went, or changed its points, or the
+    /// colour scheme changed while a line is on the map.
+    static func needsRedraw(last: RouteLineSpec?, next: RouteLineSpec?, colourSchemeChanged: Bool) -> Bool {
+        guard let next else { return last != nil }
+        guard let last else { return true }
+        if last.points != next.points { return true }
+        return colourSchemeChanged
+    }
 }
 
 /// How far the camera fit keeps the markers from each edge so the destination's name label
