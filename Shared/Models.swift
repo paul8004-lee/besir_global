@@ -578,11 +578,10 @@ struct RecurrenceRule: Codable {
     /// 정수 넘침으로 앱이 그 자리에서 죽는다(019 안전성 렌즈 m-1). 읽기 함수와 전개 코어가 같은 상수로 묶는다.
     static let maxInterval = 1000
 
-    /// 전개 코어가 걷는 시야(해) — 시작일 + 이만큼을 넘는 종료 날짜는 걷지 않는다. 9999년 같은 먼 종료 날짜에서 맞는 날이
-    /// 드문 규칙(음력 윤달·없는 2월 30일·큰 간격)은 회차 상한(182)에 닿기 전에 수천~수백만 번을 돌며 메인 액터를 수 초 막았다
-    /// (019 안전성 렌즈 M-2). 정상 규칙은 182회에서 훨씬 먼저 걸리므로 이 시야에 닿지 않는다 — 셈은 시야 밖 종료를 바로
-    /// "상한 초과"로 돌려주고(occurrenceCount), 전개·첫 날 찾기도 끝을 이 시야로 묶는다(generate). SPEC에 없는 방어다.
-    /// 이 안에서는 어떤 종류도 오래 걷지 않는다: 주 단위 일별 ≤ 73,050회, 월 ≤ 2,400달, 해·음력 ≤ 200해.
+    /// The horizon (in years) the expansion core walks: an end date past the start day plus this is not walked, and the
+    /// card treats such an end as too far (`withinHorizon`). A far end date such as year 9999 on a rule with rare
+    /// matches (lunar leap month, a Feb 30, a large interval) once blocked the main actor for seconds.
+    /// Inside the horizon no kind walks long: daily or weekly steps at most 73,050, monthly at most 2,400, yearly and lunar at most 200.
     static let horizonYears = 200
 
     /// 시작일에서 본 시야의 끝(그날 포함). 셈·전개가 같은 끝을 본다(계약 5).
@@ -629,22 +628,6 @@ struct RecurrenceRule: Codable {
     static func withinHorizon(_ end: Date, from start: Date, calendar: Calendar = .current) -> Bool {
         guard let horizon = horizonEnd(from: calendar.startOfDay(for: start), calendar: calendar) else { return false }
         return calendar.startOfDay(for: end) <= horizon
-    }
-
-    /// 종료 날짜까지의 회차 수. 센 개수가 `limit`을 넘는 순간 멈추므로 반환값은 많아야 `limit + 1`이다.
-    /// 전개 함수를 거치지 않고 같은 생성 코어(`generate`)를 쓴다 — 코어가 하나라 센 값과 만들어질 값이
-    /// 어긋나지 않고(계약 5), 9999년 같은 먼 종료 날짜도 `limit + 1`개를 모으면 끝나 메인 액터를 막지 않는다.
-    /// 지난 회차도 센다(상한은 규칙이 가리키는 길이이지 오늘 이후의 길이가 아니다).
-    func occurrenceCount(from startDate: Date, through endDate: Date, limit: Int, calendar: Calendar = .current,
-                         lunarCalendar: Calendar.Identifier = RecurrenceRule.defaultLunarIdentifier) -> Int {
-        // 시야 밖 종료는 걷지 않고 바로 "상한 초과"다(horizonYears 주석) — 세 호출처(카드 안내·실행부·Store 가드)가 이미
-        // 초과로 다룬다. 맞는 날이 아예 없는 규칙도 여기서는 초과로 읽히지만, 그런 종료 날짜는 어차피 쓸 수 없는 값이다.
-        if let horizon = Self.horizonEnd(from: calendar.startOfDay(for: startDate), calendar: calendar),
-           calendar.startOfDay(for: endDate) > horizon {
-            return max(0, limit) + 1
-        }
-        return generate(from: startDate, through: endDate, calendar: calendar, lunarCalendar: lunarCalendar,
-                 stopAfter: max(0, limit)).count
     }
 
     /// 규칙 날짜 가운데 `accept`를 처음 만족하는 날 — 찾는 순간 멈춘다. 카드의 첫 회차 가늠이 쓴다:

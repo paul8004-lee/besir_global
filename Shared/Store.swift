@@ -1208,14 +1208,6 @@ final class Store: ObservableObject {
     }
 
 
-    /// 반복 일정 한 구간(leg)의 시각 기준.
-    /// `.arrival`: "이 시각까지 도착"(기존 방식) — 출발 시각을 역산.
-    /// `.departure`: "이 시각에 출발"(복귀/귀가용) — 도착 시각을 순산(출발 + 이동시간).
-    enum RecurrenceAnchor {
-        case arrival(hour: Int, minute: Int)
-        case departure(hour: Int, minute: Int)
-    }
-
     /// 회차 하루의 (시작, 끝) — 그날 시작이 `now` 이후이고 끝이 시작보다 뒤일 때만 있다. 반복 저장의 회차별 관문이자
     /// AI 카드가 확정 전에 "지금 이후 회차가 있나"를 묻는 셈(LegCardForm.hasNoUpcomingOccurrence)의 단일 출처다 —
     /// 둘이 따로 세면 카드는 풀렸는데 저장은 0건이 되는 어긋남이 되살아난다(계약 5, 019 안전성 렌즈 m-2).
