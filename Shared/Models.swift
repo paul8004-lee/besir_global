@@ -534,9 +534,9 @@ enum ScheduleLogic {
 /// 이제 N일·N개월·N년·한국 음력·날짜 목록까지 한 타입이 표현한다(SPEC-UIKIT-019 REQ-002·008).
 /// 필드를 넓혔을 뿐 옛 init 호출(`RecurrenceRule(weekdays:everyNWeeks:…)`)은 그대로 컴파일된다 —
 /// 새 필드는 모두 기본값이 있고, 기본 `unit`이 옛 동작(요일 집합)이다.
-struct RecurrenceRule {
+struct RecurrenceRule: Codable {
     /// 규칙의 종류. `weekly`가 옛 동작이고 나머지는 019에서 더했다.
-    enum Unit: Equatable { case weekly, daily, monthly, yearly, lunar, dateList }
+    enum Unit: String, Codable, Equatable { case weekly, daily, monthly, yearly, lunar, dateList }
 
     /// 반복 요일(1=일 … 7=토, `Calendar.component(.weekday:)` 기준). 주 단위 반복과
     /// "매월 n번째 요일"(`unit == .monthly`)이 읽는다.
@@ -569,16 +569,19 @@ struct RecurrenceRule {
     /// 먼 종료 날짜가 전개 **전에** 회차 수 셈에서 걸러지는지(REQ-007) 드라이버가 이 값으로 잰다.
     static var drvExpansionCount = 0
 
+    /// Driver-visible counter: loop iterations the expansion core walked, one per iteration in every branch. Application
+    /// logic never reads it; a test reads it to show the walk does not grow with the distance to the window.
+    static var drvWalkSteps = 0
+
     /// 간격(N일·N주·N개월·N년마다의 N)의 상한. 뜻이 있는 간격(천 일·천 주·천 달·천 해)보다 넉넉히 크고, 전개 코어의
     /// `step * n`·`year += n`이 아래 시야(horizonYears) 안에서 넘치지 않는 값이다 — 모델이 Int.max 같은 값을 실어 오면
     /// 정수 넘침으로 앱이 그 자리에서 죽는다(019 안전성 렌즈 m-1). 읽기 함수와 전개 코어가 같은 상수로 묶는다.
     static let maxInterval = 1000
 
-    /// 전개 코어가 걷는 시야(해) — 시작일 + 이만큼을 넘는 종료 날짜는 걷지 않는다. 9999년 같은 먼 종료 날짜에서 맞는 날이
-    /// 드문 규칙(음력 윤달·없는 2월 30일·큰 간격)은 회차 상한(182)에 닿기 전에 수천~수백만 번을 돌며 메인 액터를 수 초 막았다
-    /// (019 안전성 렌즈 M-2). 정상 규칙은 182회에서 훨씬 먼저 걸리므로 이 시야에 닿지 않는다 — 셈은 시야 밖 종료를 바로
-    /// "상한 초과"로 돌려주고(occurrenceCount), 전개·첫 날 찾기도 끝을 이 시야로 묶는다(generate). SPEC에 없는 방어다.
-    /// 이 안에서는 어떤 종류도 오래 걷지 않는다: 주 단위 일별 ≤ 73,050회, 월 ≤ 2,400달, 해·음력 ≤ 200해.
+    /// The horizon (in years) the expansion core walks: an end date past the start day plus this is not walked, and the
+    /// card treats such an end as too far (`withinHorizon`). A far end date such as year 9999 on a rule with rare
+    /// matches (lunar leap month, a Feb 30, a large interval) once blocked the main actor for seconds.
+    /// Inside the horizon no kind walks long: daily or weekly steps at most 73,050, monthly at most 2,400, yearly and lunar at most 200.
     static let horizonYears = 200
 
     /// 시작일에서 본 시야의 끝(그날 포함). 셈·전개가 같은 끝을 본다(계약 5).
@@ -610,20 +613,21 @@ struct RecurrenceRule {
                         lunarCalendar: lunarCalendar, stopAfter: nil)
     }
 
-    /// 종료 날짜까지의 회차 수. 센 개수가 `limit`을 넘는 순간 멈추므로 반환값은 많아야 `limit + 1`이다.
-    /// 전개 함수를 거치지 않고 같은 생성 코어(`generate`)를 쓴다 — 코어가 하나라 센 값과 만들어질 값이
-    /// 어긋나지 않고(계약 5), 9999년 같은 먼 종료 날짜도 `limit + 1`개를 모으면 끝나 메인 액터를 막지 않는다.
-    /// 지난 회차도 센다(상한은 규칙이 가리키는 길이이지 오늘 이후의 길이가 아니다).
-    func occurrenceCount(from startDate: Date, through endDate: Date, limit: Int, calendar: Calendar = .current,
-                         lunarCalendar: Calendar.Identifier = RecurrenceRule.defaultLunarIdentifier) -> Int {
-        // 시야 밖 종료는 걷지 않고 바로 "상한 초과"다(horizonYears 주석) — 세 호출처(카드 안내·실행부·Store 가드)가 이미
-        // 초과로 다룬다. 맞는 날이 아예 없는 규칙도 여기서는 초과로 읽히지만, 그런 종료 날짜는 어차피 쓸 수 없는 값이다.
-        if let horizon = Self.horizonEnd(from: calendar.startOfDay(for: startDate), calendar: calendar),
-           calendar.startOfDay(for: endDate) > horizon {
-            return max(0, limit) + 1
-        }
-        return generate(from: startDate, through: endDate, calendar: calendar, lunarCalendar: lunarCalendar,
-                 stopAfter: max(0, limit)).count
+    /// The dates of the rule that fall on or after the day of `windowStart`, up to `endDate`. The phase (the biweekly
+    /// week base, the month and year steps) comes from `startDate`, so the answer equals `dates(from:through:)`
+    /// filtered to the window; `windowStart` only moves where each branch begins walking. Counted by
+    /// `drvExpansionCount` like the unwindowed call.
+    func dates(from startDate: Date, through endDate: Date, startingAt windowStart: Date, calendar: Calendar = .current,
+               lunarCalendar: Calendar.Identifier = RecurrenceRule.defaultLunarIdentifier) -> [Date] {
+        Self.drvExpansionCount += 1
+        return generate(from: startDate, through: endDate, calendar: calendar,
+                        lunarCalendar: lunarCalendar, stopAfter: nil, windowStart: windowStart)
+    }
+
+    /// Whether an end date is inside the horizon the expansion core walks, counted from the start day.
+    static func withinHorizon(_ end: Date, from start: Date, calendar: Calendar = .current) -> Bool {
+        guard let horizon = horizonEnd(from: calendar.startOfDay(for: start), calendar: calendar) else { return false }
+        return calendar.startOfDay(for: end) <= horizon
     }
 
     /// 규칙 날짜 가운데 `accept`를 처음 만족하는 날 — 찾는 순간 멈춘다. 카드의 첫 회차 가늠이 쓴다:
@@ -640,16 +644,19 @@ struct RecurrenceRule {
     /// `accept`가 있으면 거기 맞지 않는 날은 모으지 않는다(세지도 않는다).
     private func generate(from startDate: Date, through endDate: Date, calendar: Calendar,
                           lunarCalendar: Calendar.Identifier, stopAfter limit: Int?,
-                          accept: ((Date) -> Bool)? = nil) -> [Date] {
+                          accept: ((Date) -> Bool)? = nil, windowStart: Date? = nil) -> [Date] {
         let startDay = calendar.startOfDay(for: startDate)
         // 끝은 시야(horizonYears)로 묶는다 — 셈이 시야 밖을 먼저 거르지만 전개·첫 날 찾기도 같은 끝을 봐야 어떤 호출도 오래 걷지 않는다.
         let endDay = min(calendar.startOfDay(for: endDate), Self.horizonEnd(from: startDay, calendar: calendar) ?? startDay)
         guard startDay <= endDay else { return [] }
         let startTime = calendar.dateComponents([.hour, .minute, .second], from: startDate)
         var out: [Date] = []
+        // First day of the window, when there is one; a branch begins walking near it and `push` drops anything before it.
+        let windowDay = windowStart.map { calendar.startOfDay(for: $0) }
 
         /// 날짜 하나를 모은다. 거짓을 돌려주면 더 모을 필요가 없다는 뜻이다.
         func push(_ date: Date) -> Bool {
+            if let windowDay, calendar.startOfDay(for: date) < windowDay { return true }
             if skipHolidays, unit != .dateList, KoreanHolidays.isHoliday(date, calendar: calendar) { return true }
             if let accept, !accept(date) { return true }
             out.append(date)
@@ -670,8 +677,12 @@ struct RecurrenceRule {
             // 격주 간격은 "주의 시작(일요일)" 기준으로 센다 — 시작일이 주 중간이어도 간격이 어긋나지 않게.
             let baseWeek = calendar.dateInterval(of: .weekOfYear, for: startDate)?.start ?? startDate
             var offset = 0
+            if let windowDay {
+                offset = max(0, calendar.dateComponents([.day], from: startDay, to: windowDay).day ?? 0)
+            }
             while let day = calendar.date(byAdding: .day, value: offset, to: startDate),
                   calendar.startOfDay(for: day) <= endDay {
+                Self.drvWalkSteps += 1
                 offset += 1
                 guard weekdays.contains(calendar.component(.weekday, from: day)) else { continue }
                 if n > 1 {
@@ -687,8 +698,12 @@ struct RecurrenceRule {
             // 간격을 상한으로 묶어 아래 `step * n`·`year += n`이 시야 안에서 넘치지 않게 한다(maxInterval 주석).
             let n = min(max(1, interval), Self.maxInterval)
             var step = 0
+            if let windowDay {
+                step = max(0, (calendar.dateComponents([.day], from: startDay, to: windowDay).day ?? 0) / n)
+            }
             while let day = calendar.date(byAdding: .day, value: step * n, to: startDate),
                   calendar.startOfDay(for: day) <= endDay {
+                Self.drvWalkSteps += 1
                 step += 1
                 if !push(day) { return out }
             }
@@ -702,7 +717,12 @@ struct RecurrenceRule {
             // 시작이 든 달이 첫째 달이다 — "2개월마다"는 거기서부터 두 달 간격.
             guard let firstMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: startDay)) else { return [] }
             var step = 0
+            if let windowDay,
+               let windowMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: windowDay)) {
+                step = max(0, (calendar.dateComponents([.month], from: firstMonth, to: windowMonth).month ?? 0) / n)
+            }
             while let monthStart = calendar.date(byAdding: .month, value: step * n, to: firstMonth), monthStart <= endDay {
+                Self.drvWalkSteps += 1
                 step += 1
                 guard let dayRange = calendar.range(of: .day, in: .month, for: monthStart) else { continue }
                 var picked = Set<Int>()
@@ -730,8 +750,14 @@ struct RecurrenceRule {
             // 간격을 상한으로 묶어 아래 `step * n`·`year += n`이 시야 안에서 넘치지 않게 한다(maxInterval 주석).
             let n = min(max(1, interval), Self.maxInterval)
             let endYear = calendar.component(.year, from: endDay)
-            var year = calendar.component(.year, from: startDay)
+            let startYear = calendar.component(.year, from: startDay)
+            var year = startYear
+            if let windowDay {
+                let windowYear = calendar.component(.year, from: windowDay)
+                if windowYear > startYear { year = startYear + ((windowYear - startYear) / n) * n }
+            }
             while year <= endYear {
+                Self.drvWalkSteps += 1
                 defer { year += n }
                 // 평년의 2월 29일처럼 없는 날은 date(from:)이 다음 날로 굴려 버리므로 월·일이 그대로인지 되짚는다.
                 guard let date = calendar.date(from: DateComponents(year: year, month: month, day: day)) else { continue }
@@ -749,7 +775,9 @@ struct RecurrenceRule {
             let endYear = calendar.component(.year, from: endDay)
             // 음력 해의 12월은 이듬해 양력 1~2월에 걸리므로 시작 해보다 한 해 앞에서부터 훑는다.
             var year = calendar.component(.year, from: startDay) - 1
+            if let windowDay { year = max(year, calendar.component(.year, from: windowDay) - 1) }
             while year <= endYear {
+                Self.drvWalkSteps += 1
                 defer { year += 1 }
                 // 3월 1일은 어느 해에서든 음력 설(1월 21일~2월 20일) 뒤라 그 양력 해와 같은 음력 해를 가리킨다.
                 guard let ref = calendar.date(from: DateComponents(year: year, month: 3, day: 1)) else { continue }

@@ -65,11 +65,12 @@ enum CalendarPlanner {
     }
 
     /// Decides which calendar events to remove, update and create. It reads nothing but its arguments and
-    /// names only activity ids from `activities` and event ids from `file.links`.
+    /// names only activity ids from `activities` and event ids from `file.links`. `retains` is asked about the key of a
+    /// link whose activity is not in `activities`; a link it keeps is neither removed nor updated.
     // @MX:ANCHOR: called by the mirror and by every planner test; the invariant is that an event besir
     // did not create (no link) is never named.
     static func plan(activities: [ActivityBlock], file: CalendarLinkFile, now: Date,
-                     calendar: Calendar = .current) -> Plan {
+                     calendar: Calendar = .current, retains: (String) -> Bool = { _ in false }) -> Plan {
         let startOfToday = calendar.startOfDay(for: now)
         var plan = Plan()
         var seen = Set<String>()
@@ -93,7 +94,7 @@ enum CalendarPlanner {
             }
         }
 
-        for (key, link) in file.links where !seen.contains(key) {
+        for (key, link) in file.links where !seen.contains(key) && !retains(key) {
             plan.removes.append(Remove(activityId: key, eventId: link.eventId))
         }
 
