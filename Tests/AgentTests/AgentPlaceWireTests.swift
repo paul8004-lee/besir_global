@@ -67,9 +67,9 @@ final class AgentPlaceWireTests: XCTestCase {
 
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
-        XCTAssertEqual((recorded as? [Any])?.count, 9, "the recorded fixture holds nine declarations")
+        XCTAssertEqual((recorded as? [Any])?.count, 11, "the recorded fixture holds eleven declarations")
         let tools = try XCTUnwrap(body["tools"] as? [Any], "the request carries tools")
-        XCTAssertEqual(tools.count, 9)
+        XCTAssertEqual(tools.count, 11)
         XCTAssertTrue((tools as AnyObject).isEqual(recorded), "the declarations equal Fixtures/tools.json")
 
         let instructions = try XCTUnwrap(body["instructions"] as? String)

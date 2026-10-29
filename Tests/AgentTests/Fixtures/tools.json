@@ -173,6 +173,32 @@
   },
   {
     "type": "function",
+    "name": "get_budget_left",
+    "description": "Look up how much of this week's dining budget is left in a simulated budget app. The budget app is simulated, not a real one: always call the result simulated. Takes no arguments.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "record_spend",
+    "description": "Record money the user spent on food or dining in a simulated budget app. The budget app is simulated, not a real one: always call the result simulated. It records at once with no confirmation, so call it only with an amount the user has stated.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "amount": {
+          "type": "string",
+          "description": "The amount in US dollars, digits with an optional decimal point and up to two decimals, such as 18.50. No sign, comma or currency sign. Ask the user if they have not said."
+        }
+      },
+      "required": ["amount"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
     "name": "request_booking",
     "description": "Ask a simulated table-booking partner for a table at a place found with search_places. The booking is simulated, not a real reservation: always call the result simulated. The user confirms before anything is sent.",
     "parameters": {

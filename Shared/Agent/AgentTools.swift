@@ -6,7 +6,7 @@ import CoreLocation
 // validated values and Store records only. SPEC-PLANDAY-001 adds the two day plan tools and the plan turn.
 
 enum AgentTools {
-    /// JSON array of the nine function declarations sent with every request.
+    /// JSON array of the eleven function declarations sent with every request.
     static func declarationsJSON() -> Data { Data(declarations.utf8) }
 
     private static let declarations = #"""
@@ -128,6 +128,29 @@ enum AgentTools {
       },
       {
         "type": "function",
+        "name": "get_budget_left",
+        "description": "Look up how much of this week's dining budget is left in a simulated budget app. The budget app is simulated, not a real one: always call the result simulated. Takes no arguments.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "record_spend",
+        "description": "Record money the user spent on food or dining in a simulated budget app. The budget app is simulated, not a real one: always call the result simulated. It records at once with no confirmation, so call it only with an amount the user has stated.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "amount": {"type": "string", "description": "The amount in US dollars, digits with an optional decimal point and up to two decimals, such as 18.50. No sign, comma or currency sign. Ask the user if they have not said."}
+          },
+          "required": ["amount"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
         "name": "request_booking",
         "description": "Ask a simulated table-booking partner for a table at a place found with search_places. The booking is simulated, not a real reservation: always call the result simulated. The user confirms before anything is sent.",
         "parameters": {
@@ -200,6 +223,8 @@ private enum Tool: String {
     case booking = "request_booking"
     case checkDay = "check_day_plan"
     case showDay = "show_day_plan"
+    case budgetLeft = "get_budget_left"
+    case spend = "record_spend"
 
     /// The declared parameters, in declaration order. Nothing else is ever read.
     var params: [String] {
@@ -213,6 +238,8 @@ private enum Tool: String {
         case .booking: return ["place_id", "start", "party_size"]
         case .checkDay: return ["stops"]
         case .showDay: return ["plan_id"]
+        case .budgetLeft: return []
+        case .spend: return ["amount"]
         }
     }
 }
@@ -234,6 +261,8 @@ private enum Say {
         // The day plan tools have their own fixed lines.
         if tool == .checkDay { return AgentDayPlan.Say.stopsFormat }
         if tool == .showDay { return AgentDayPlan.Say.planUnknown }
+        // The one budget argument is required, so "omit it" would be the wrong advice here too.
+        if tool == .spend { return "Call record_spend again with \(param) as a string. If you do not have it, ask the user; do not guess it." }
         return "Call \(tool.rawValue) again with \(param) as a string, or omit it if the user did not give it."
     }
     static func timeForm(_ tool: Tool, _ param: String) -> String {
@@ -278,6 +307,10 @@ private enum Say {
     static let bookWindow = "Ask the user to confirm the date, then call request_booking again. The start must be a time that has not passed and be within the next 366 days."
     static let bookParty = "Ask the user how many people the table is for, then call request_booking again. Do not guess it."
     static let bookUnavailable = "Tell the user booking is not available right now. Do not call request_booking again."
+
+    // SPEC-BUDGET-001: each string names only get_budget_left or record_spend and the one declared parameter.
+    static let spendAmount = "Ask the user how much they spent, as digits with an optional decimal point such as 18.50, then call record_spend again. Do not guess it."
+    static let budgetUnavailable = "Tell the user the budget is not available right now. Do not call get_budget_left or record_spend again."
 
     static let declined = "The user cancelled. Do not retry the change unless the user asks again."
     static let notFound = "That event no longer exists. Tell the user and ask what to do next."
@@ -358,13 +391,16 @@ final class AgentToolbox {
     let directionsProvider: (() -> DirectionsService)?
     /// SPEC-BOOKING-001: the booking client, built on use from the live configuration; tests inject a stubbed one.
     let bookingProvider: (() -> BookingClient)?
+    /// SPEC-BUDGET-001: the budget client, built on use from the live configuration; tests inject a stubbed one.
+    let budgetProvider: (() -> BudgetClient)?
 
     /// `timeZone` is read on every use, so a zone change while the app runs reaches dates, cards and the gate.
     init(store: Store, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone,
          deviceOrigin: @escaping () -> Place? = { nil },
          places: (() -> PlaceSearch)? = nil,
          directions: (() -> DirectionsService)? = nil,
-         booking: (() -> BookingClient)? = nil) {
+         booking: (() -> BookingClient)? = nil,
+         budget: (() -> BudgetClient)? = nil) {
         self.store = store
         self.now = now
         zone = timeZone
@@ -372,15 +408,17 @@ final class AgentToolbox {
         placeSearchProvider = places
         directionsProvider = directions
         bookingProvider = booking
+        budgetProvider = budget
     }
 
     convenience init(store: Store, now: @escaping () -> Date, timeZone: TimeZone,
                      deviceOrigin: @escaping () -> Place? = { nil },
                      places: (() -> PlaceSearch)? = nil,
                      directions: (() -> DirectionsService)? = nil,
-                     booking: (() -> BookingClient)? = nil) {
+                     booking: (() -> BookingClient)? = nil,
+                     budget: (() -> BudgetClient)? = nil) {
         self.init(store: store, now: now, timeZone: { timeZone }, deviceOrigin: deviceOrigin,
-                  places: places, directions: directions, booking: booking)
+                  places: places, directions: directions, booking: booking, budget: budget)
     }
 
     /// New chat: forgets the handles; the counters keep counting up, so an old handle never names a new entry.
@@ -428,7 +466,7 @@ final class AgentToolbox {
     }
 
     /// Reads one function call (tool name and the raw arguments string the model sent).
-    /// - `flow`: the Connections flow of the user message that caused the call. Only the two Google lookups read it.
+    /// - `flow`: the Connections flow of the user message that caused the call. Only the two Google lookups and the two budget lookups read it.
     func handle(name: String, arguments: String, flow: UUID? = nil) -> AgentToolOutcome {
         guard let tool = Tool(rawValue: name) else { return reject(Say.unknownTool) }
         // SPEC-PLANDAY-001: the rules of a plan turn come before any argument is read.
@@ -439,10 +477,15 @@ final class AgentToolbox {
             if dayPlan != nil { return reject(AgentDayPlan.Say.travelRefused) }
         case .search:
             if dayPlan != nil, searchesThisPlan >= AgentDayPlan.searchesPerTurn { return reject(AgentDayPlan.Say.searchLimit) }
+        case .budgetLeft, .spend:
+            // SPEC-BUDGET-001: both budget tools need the proxy, and this check comes before any argument is read.
+            if !budgetClient().isConfigured { return reject(Say.budgetUnavailable) }
         default:
             break
         }
-        guard let data = arguments.data(using: .utf8),
+        // A blank arguments text is `{}` for the one tool that takes no argument; every other tool keeps `Say.notObject`.
+        let text = tool == .budgetLeft && arguments.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "{}" : arguments
+        guard let data = text.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return reject(Say.notObject(tool)) }
         do {
@@ -457,6 +500,8 @@ final class AgentToolbox {
             case .booking: return try book(values)
             case .checkDay: return try checkDayPlan(values, flow: flow)
             case .showDay: return try showDayPlan(values)
+            case .budgetLeft: return budgetLeft(flow: flow)
+            case .spend: return try recordSpend(values, flow: flow)
             }
         } catch {
             return reject((error as? Rejection)?.message ?? Say.notObject(tool))
@@ -905,6 +950,60 @@ final class AgentToolbox {
                                      "message": AgentBooking.appliedMessage]
         if let place = stored.location { object["location"] = AgentPlaces.displayName(place.name) }
         return (AgentResolution(result: Self.encode(object), notice: nil), .confirmed)
+    }
+
+    // MARK: - Budget (SPEC-BUDGET-001)
+
+    private func budgetClient() -> BudgetClient {
+        budgetProvider?() ?? BudgetClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
+    }
+
+    /// `get_budget_left`: one `left` request for the current week, run as the request in flight. It writes nothing.
+    private func budgetLeft(flow: UUID?) -> AgentToolOutcome {
+        let week = BudgetWeek.start(of: now(), in: zone())
+        let flow = flow ?? ConnectionLog.beginFlow()
+        return .lookup(AgentLookup { [self] in
+            switch await budgetClient().left(weekStart: week, flow: flow) {
+            case .failure:
+                return AgentLookupOutput(result: budgetUnavailable(AgentBudget.leftUnavailableMessage), showsGoogleData: false)
+            case .success(let standing):
+                var object = AgentBudget.standingFields(standing)
+                object["status"] = "ok"
+                object["partner"] = BudgetClient.partnerName
+                object["simulated"] = true
+                object["message"] = AgentBudget.leftMessage
+                return AgentLookupOutput(result: Self.encode(object), showsGoogleData: false)
+            }
+        })
+    }
+
+    /// `record_spend`: no card. The amount is decided here before anything is made; the week and the request id are made now,
+    /// so one call sends at most one request, and the lookup sends it when the session runs it.
+    private func recordSpend(_ values: [String: String], flow: UUID?) throws -> AgentToolOutcome {
+        guard let text = values["amount"], let cents = AgentBudget.parseAmountCents(text) else { throw Rejection(Say.spendAmount) }
+        let week = BudgetWeek.start(of: now(), in: zone())
+        let requestID = UUID().uuidString
+        let flow = flow ?? ConnectionLog.beginFlow()
+        return .lookup(AgentLookup { [self] in
+            let answer = await budgetClient().spend(amountCents: cents, isEstimate: false, weekStart: week,
+                                                    requestID: requestID, flow: flow)
+            switch answer {
+            case .failure:
+                return AgentLookupOutput(result: budgetUnavailable(AgentBudget.spendUnavailableMessage), showsGoogleData: false)
+            case .success(let standing):
+                var object = AgentBudget.standingFields(standing)
+                object["status"] = "applied"
+                object["partner"] = BudgetClient.partnerName
+                object["simulated"] = true
+                object["recorded"] = AgentBudget.dollars(cents: cents)
+                object["message"] = AgentBudget.spendMessage
+                return AgentLookupOutput(result: Self.encode(object), showsGoogleData: false)
+            }
+        })
+    }
+
+    private func budgetUnavailable(_ message: String) -> String {
+        Self.encode(["status": "unavailable", "partner": BudgetClient.partnerName, "simulated": true, "message": message])
     }
 
     private func update(_ values: [String: String]) throws -> AgentToolOutcome {
