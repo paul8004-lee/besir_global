@@ -3,9 +3,11 @@
 //   POST /places  -> Google Places API (New) Text Search
 //   POST /routes  -> Google Routes API computeRoutes
 //   POST /vision  -> Baseten Muse Spark Open: one image in, {title, time, place, confidence} out
+//   POST /snap    -> Baseten Muse Spark Open: one image in, {kind, name, place_type, text, title, time, confidence} out
 //   POST /booking -> simulated table-booking partner (no upstream, no storage)
 //   POST /budget  -> simulated budget partner (no upstream, no storage)
 import { handleVision } from "./vision.js";
+import { handleSnap } from "./snap.js";
 import { handleBooking } from "./booking.js";
 import { handleBudget } from "./budget.js";
 
@@ -106,6 +108,7 @@ export default {
       case "/routes":
         return handleGoogle(request, env, ROUTES_URL);
       case "/vision": return handleVision(request, env, { json });
+      case "/snap": return handleSnap(request, env, { json });
       case "/booking": return handleBooking(request, { json });
       case "/budget": return handleBudget(request, { json });
       default:

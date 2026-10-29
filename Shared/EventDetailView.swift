@@ -41,6 +41,9 @@ struct EventDetailView: View {
     /// 취소된 조회는 서비스의 catch가 값 없는 결과로 바꿔 정상 반환처럼 돌아오기 때문에 늦은 옛
     /// 결과가 새 결과를 덮는다.
     @State private var transitTask: Task<Void, Never>?
+    /// The route line of this trip: its lookup, and the slot that keeps an answer only while its key is the current one.
+    @State private var lineSlot = RouteLineSlot()
+    @State private var routeLineTask: Task<Void, Never>?
 
     /// 38pt 고정은 큰 글씨를 무시한다(D-4 9번) — 출발 숫자가 본문과 함께 자라게 한다.
     @ScaledMetric(relativeTo: .largeTitle) private var departureTimeSize: CGFloat = 38
@@ -96,9 +99,21 @@ struct EventDetailView: View {
             transitTask?.cancel()
             transitTask = Task { await loadTransitPath() }
         }
+        // The line has its own key: a location fix inside one 0.0001-degree cell is the same lookup. A new key empties
+        // the slot at once, so the line of another trip is never shown, and the old lookup is cancelled.
+        .onChange(of: routeLineKey, initial: true) {
+            routeLineTask?.cancel()
+            lineSlot.begin(routeLineKey)
+            guard let key = routeLineKey, let origin = originCoord else { return }
+            let dest = destCoord
+            routeLineTask = Task { await loadRouteLine(key: key, origin: origin, destination: dest) }
+        }
         // 사라진 화면의 결과를 위해 네트워크를 태우지 않는다(AddEventView의 정리 계약과 같은
         // 판단) — 상세를 닫아도 진행 중인 조회는 계속 도는 게 지금까지의 모습이었다.
-        .onDisappear { transitTask?.cancel() }
+        .onDisappear {
+            transitTask?.cancel()
+            routeLineTask?.cancel()
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showingEdit = true } label: { Label("Edit", systemImage: "pencil") }
@@ -122,10 +137,16 @@ struct EventDetailView: View {
         return "\(event.id)-\(event.mode.rawValue)-\(o?.latitude ?? 0),\(o?.longitude ?? 0)-\(destCoord.latitude),\(destCoord.longitude)"
     }
 
+    /// What the line lookup is for: the mode and both ends at 4 decimals. Nil without a usable origin or destination.
+    private var routeLineKey: RouteLineKey? {
+        RouteLineKey(mode: event.mode, origin: originCoord, destination: destCoord)
+    }
+
     private var mapView: some View {
         RouteMapView(origin: originCoord,
                      destination: destCoord,
-                     destinationName: event.destination.name)
+                     destinationName: event.destination.name,
+                     routeLine: lineSlot.points)
     }
 
     /// Warnings are shown for walking and bicycling events only, and only the strings Google returned.
@@ -158,6 +179,16 @@ struct EventDetailView: View {
         case .none:
             break
         }
+    }
+
+    /// The key is a parameter, captured when the lookup started: an answer that comes back after the key changed is
+    /// offered to the slot with the old key and the slot turns it away.
+    private func loadRouteLine(key: RouteLineKey,
+                               origin: CLLocationCoordinate2D,
+                               destination: CLLocationCoordinate2D) async {
+        let result = await store.directions.routeLine(mode: key.mode, from: origin, to: destination)
+        guard !Task.isCancelled else { return }
+        lineSlot.accept(result.points, for: key)
     }
 
     private var header: some View {

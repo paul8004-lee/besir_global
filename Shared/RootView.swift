@@ -44,6 +44,8 @@ struct RootView: View {
     @State private var chatHolder = AgentChatHolder()
     @State private var showingChat = false
     @State private var choosingMode = false
+    @State private var showingSnap = false
+    @StateObject private var snap = SnapFlow()
     @StateObject private var shareImport = SharedImport()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -85,6 +87,8 @@ struct RootView: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    SnapEntryButton(isShown: SnapEntry.isShown(hasAI: store.config.hasAI, choosingMode: choosingMode,
+                                                               isReading: shareImport.isReading)) { openSnap() }
                     Button {
                         openChat()
                     } label: {
@@ -105,6 +109,7 @@ struct RootView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .snapCamera(flow: snap, isPresented: $showingSnap, onDismiss: snapClosed)
         .overlay { if shareImport.isReading { ProgressView().controlSize(.large) } }
         .alert(shareImport.alertLine ?? "", isPresented: Binding(get: { shareImport.alertLine != nil },
                                                                  set: { if !$0 { shareImport.alertLine = nil } })) {
@@ -123,7 +128,8 @@ struct RootView: View {
     /// (SPEC-SHARE-001, SPEC-SHAREBUBBLE-001).
     private func runShareImport() async {
         let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
-        await shareImport.pass(vision: client, canHand: { chatHolder.session?.canSend ?? true }, holdForPlan: true, hand: { text, shown in
+        await shareImport.pass(vision: client, canHand: { SnapEntry.shareMayHand(canSend: chatHolder.session?.canSend ?? true, coverOpen: showingSnap) },
+                              holdForPlan: true, hand: { text, shown in
             openChat()
             return SharedImport.give(message: text, shown: shown, to: chatHolder.session)
         })
@@ -148,6 +154,35 @@ struct RootView: View {
             openChat()
             return session.sendPlan(message: message, shown: shown, context: context)
         })
+    }
+
+    /// The camera circle (SPEC-CAMSNAP-001): with a session that cannot take a message the tap only opens the chat.
+    private func openSnap() {
+        ensureSession()
+        guard let session = chatHolder.session else { return }
+        switch SnapEntry.tapAction(canSend: session.canSend) {
+        case .openChatOnly:
+            openChat()
+        case .openCamera:
+            let device = SnapDevice.make()
+            snap.start(SnapFlow.Deps(reader: SnapClient.live(config: store.config), placeSearch: store.placeSearch,
+                                     realFix: { location.realFixLocation }, activities: { store.activities },
+                                     mirror: store.calendarMirror, prepare: { session.prepareDayPlan(events: $0) },
+                                     register: { session.registerPlace($0) }, access: device.access, shutter: device.shutter))
+            showingSnap = true
+        }
+    }
+
+    /// The camera cover is gone: hand over what the tap made, after the cover so the chat sheet never competes with it.
+    private func snapClosed() {
+        guard let outcome = snap.takeOutcome() else {
+            Task { await runShareImport() }
+            return
+        }
+        openChat()
+        if let session = chatHolder.session, !SnapHandOff.perform(outcome, to: session) {
+            shareImport.alertLine = SnapLine.assistantBusy
+        }
     }
 
     private func ensureSession() {
