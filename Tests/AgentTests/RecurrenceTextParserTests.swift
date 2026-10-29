@@ -180,9 +180,11 @@ final class RecurrenceTextParserTests: XCTestCase {
         XCTAssertEqual(thousand?.endDate, C.date(byAdding: .day, value: 999, to: startDay))
         XCTAssertEqual(thousand?.endFollowsStart, true)
 
-        let monday = RecurrenceTextParser.parse("every Monday for 4 weeks", start: S, calendar: C)!
-        let rule = RecurrenceRule.from(arguments: monday.arguments)!
-        let dates = rule.dates(from: startDay, through: monday.endDate!, calendar: C)
+        guard let monday = RecurrenceTextParser.parse("every Monday for 4 weeks", start: S, calendar: C),
+              let rule = RecurrenceRule.from(arguments: monday.arguments), let end = monday.endDate else {
+            return XCTFail("`every Monday for 4 weeks` was not read")
+        }
+        let dates = rule.dates(from: startDay, through: end, calendar: C)
         XCTAssertEqual(dates.map { C.component(.day, from: $0) }, [2, 9, 16, 23])
     }
 

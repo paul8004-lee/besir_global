@@ -95,8 +95,8 @@ final class RecurrenceTextFormTests: XCTestCase {
         XCTAssertEqual(f.recurrence.endDate, cal.startOfDay(for: at(2026, 11, 29)))
         f.choosePlainTime(field: rowId(f, "start_iso"), date: at(2026, 11, 9))
         XCTAssertEqual(f.recurrence.endDate, cal.startOfDay(for: at(2026, 12, 6)))
-        let rule = f.recurrence.rule!
-        let days = rule.dates(from: cal.startOfDay(for: at(2026, 11, 9)), through: f.recurrence.endDate!, calendar: cal)
+        guard let rule = f.recurrence.rule, let end = f.recurrence.endDate else { return XCTFail("no rule or end date") }
+        let days = rule.dates(from: cal.startOfDay(for: at(2026, 11, 9)), through: end, calendar: cal)
         XCTAssertEqual(days.map { cal.dateComponents([.month, .day], from: $0) },
                        [DateComponents(month: 11, day: 9), DateComponents(month: 11, day: 16),
                         DateComponents(month: 11, day: 23), DateComponents(month: 11, day: 30)])
