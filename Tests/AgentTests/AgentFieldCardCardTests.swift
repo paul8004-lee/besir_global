@@ -178,4 +178,48 @@ final class AgentFieldCardCardTests: XCTestCase {
         XCTAssertTrue(session.transcript().components(separatedBy: "\n").contains("CARD Order delivery Confirmed"))
         #endif
     }
+
+    // MARK: K03
+
+    /// The queries a test's search closure was called with.
+    private final class Queries {
+        var list: [String] = []
+    }
+
+    private func isSearching(_ model: AgentFieldCard) -> Bool {
+        if case .searching? = model.field("address")?.lookup { return true }
+        return false
+    }
+
+    func testK03_CancelAndDismissFreezeTheModelSoAnArmedSearchNeverFires() async throws {
+        let wait: UInt64 = 700_000_000
+
+        // Control: an armed search that nobody cancels does fire after the debounce, so a silent search below proves the cancel.
+        let controlQueries = Queries()
+        let control = AgentFieldCard(header: "Order delivery", rows: [.field(addressSpec, value: nil, source: .blank)], favorites: [],
+                                     search: { controlQueries.list.append($0); return [] }, now: { [now] in now })
+        control.search("address", "tart")
+        XCTAssertTrue(isSearching(control), "premise: the search is armed")
+        XCTAssertEqual(controlQueries.list, [], "premise: nothing is searched before the debounce")
+        try? await Task.sleep(nanoseconds: wait)
+        XCTAssertEqual(controlQueries.list, ["tart"], "control: an armed search that is not cancelled fires")
+
+        for how in [AgentCardResolution.cancel, .dismiss] {
+            let queries = Queries()
+            let fields = AgentFieldCard(header: "Order delivery", rows: [.field(addressSpec, value: nil, source: .blank)], favorites: [],
+                                        search: { queries.list.append($0); return [] }, now: { [now] in now })
+            let pending = card(fields, Run())
+            fields.search("address", "tart")
+            XCTAssertTrue(isSearching(fields), "premise: the search is armed before the card is resolved")
+            XCTAssertFalse(fields.isFrozen)
+            let result = await pending.resolve(how)
+            XCTAssertEqual(result?.status, "declined")
+            XCTAssertTrue(fields.isFrozen, "\(how) freezes the model")
+            try? await Task.sleep(nanoseconds: wait)
+            XCTAssertEqual(queries.list, [], "\(how): the armed search never fires")
+            fields.search("address", "later")
+            try? await Task.sleep(nanoseconds: wait)
+            XCTAssertEqual(queries.list, [], "\(how): no search starts after the freeze")
+        }
+    }
 }
