@@ -1,6 +1,12 @@
 import Foundation
 import CoreLocation
 
+/// One point of a decoded route line. Not Codable: a line is never stored.
+struct RoutePoint: Equatable {
+    var latitude: Double
+    var longitude: Double
+}
+
 /// Google Routes (`computeRoutes`) through the Worker route `/routes`.
 /// Pure request builders and response parsers plus one transport seam, so tests need no network.
 /// The Google key stays on the Worker; the app sends only its own token (through the one proxy request builder).
@@ -19,6 +25,10 @@ enum GoogleRoutes {
     /// The mask of a live car lookup (a replan trigger): `staticDuration` is the route time without traffic conditions,
     /// so the answer carries both the time with traffic (`duration`) and the time without it.
     static let liveCarMask = "routes.duration,routes.staticDuration,routes.distanceMeters"
+    /// The mask of a route-line lookup: the time and the overview polyline, nothing else.
+    static let routeLineMask = "routes.duration,routes.polyline.encodedPolyline"
+    /// The most points a decoded route line may hold; a longer text is refused.
+    static let maxLinePoints = 5_000
 
     // @MX:NOTE Adding a field to this mask can move every transit lookup to a higher billing tier.
     static let transitPlanMask = [
@@ -74,6 +84,8 @@ enum GoogleRoutes {
         var steps: [Step] = []
         /// The route time without traffic conditions; only a live car request asks for it.
         var staticDuration: TimeInterval? = nil
+        /// The overview polyline text; only a route-line request asks for it.
+        var encodedPolyline: String? = nil
     }
 
     // MARK: - Requests
@@ -91,7 +103,7 @@ enum GoogleRoutes {
     /// for `staticDuration`; every other request, and every request with `live == false`, is byte-identical to the base.
     /// Nil when the proxy is not configured.
     static func request(mode: TransportMode, from origin: CLLocationCoordinate2D, to dest: CLLocationCoordinate2D,
-                        mask: String, config: AppConfig, live: Bool = false) -> URLRequest? {
+                        mask: String, config: AppConfig, live: Bool = false, polyline: Bool = false) -> URLRequest? {
         var body: [String: Any] = [
             "origin": waypoint(origin),
             "destination": waypoint(dest),
@@ -118,6 +130,12 @@ enum GoogleRoutes {
 
     private static func waypoint(_ point: CLLocationCoordinate2D) -> [String: Any] {
         ["location": ["latLng": ["latitude": point.latitude, "longitude": point.longitude]]]
+    }
+
+    // MARK: - Route line
+
+    static func decodePolyline(_ text: String) -> [RoutePoint]? {
+        nil
     }
 
     // MARK: - Transport
