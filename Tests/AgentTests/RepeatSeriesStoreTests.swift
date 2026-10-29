@@ -1865,8 +1865,11 @@ final class RepeatSeriesStoreTests: XCTestCase {
         XCTAssertEqual(store.events.count, 2)
         XCTAssertEqual(store.legs(of: nov2).outbound?.arrivalDate, at(2026, 11, 2, 10), "the others moved with the series")
         XCTAssertEqual(store.legs(of: nov16).outbound?.arrivalDate, at(2026, 11, 16, 10))
-        // The mark is not reset by the move. (That the next fill does not bring the leg back is checked with the fill, M5.)
+        // The mark is not reset by the move, so the next fill does not bring the deleted leg back (M5a).
         XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+        await store.fillSeriesLegs()
+        XCTAssertNil(store.legs(of: nov9).outbound, "the next fill did not recreate the deleted leg")
+        XCTAssertEqual(store.events.count, 2)
     }
 
     func testRECURRULE_WholeSeriesLegDragMovesTheRuleMinutes() async throws {
@@ -1966,5 +1969,485 @@ final class RepeatSeriesStoreTests: XCTestCase {
         XCTAssertTrue(store.events.isEmpty)
         XCTAssertEqual(store.series.count, 1)
         XCTAssertEqual(store.activities(on: at(2026, 11, 9)).map(\.title), ["Standup"])
+    }
+
+    // MARK: M5a - the leg window fill (AC-001 row 3, AC-015 5(b), AC-016)
+
+    /// Weekly on Monday 09:00-09:30 from Nov 2 with a place and a leg plan: outbound from Home, return to Home, by car.
+    private func plannedStandup(outbound: Bool = true, back: Bool = true) -> RepeatSeries {
+        var s = standup()
+        s.legPlan = LegPlan(outboundFrom: outbound ? home : nil, returnTo: back ? home : nil, outboundMode: .car,
+                            returnMode: .car, bufferMinutes: 5, notifyLeadMinutes: 10, notifyEnabled: true)
+        return s
+    }
+
+    /// Every day from a first day, 30 minutes long from `startMinute`, at the office, with a leg plan.
+    private func plannedDaily(first: Int, title: String, startMinute: Int, outbound: Bool = true, back: Bool = true,
+                              buffer: Int = 5, lead: Int = 10) -> RepeatSeries {
+        RepeatSeries(id: RepeatSeries.newID(), title: title, location: office,
+                     rule: RecurrenceRule(weekdays: [], unit: .daily), lunarCalendar: nil,
+                     firstDayKey: first, lastDayKey: nil, startMinute: startMinute, endMinute: startMinute + 30,
+                     endDayDistance: 0, syncToCalendar: nil, skippedDayKeys: [],
+                     legPlan: LegPlan(outboundFrom: outbound ? home : nil, returnTo: back ? home : nil,
+                                      outboundMode: .car, returnMode: .car, bufferMinutes: buffer,
+                                      notifyLeadMinutes: lead, notifyEnabled: true),
+                     legsFilledThroughDayKey: nil)
+    }
+
+    /// The New Activity card as the screen fills it for a repeat with both travel legs on (the toggles stand once the
+    /// place carries coordinates; the origin and the destination are Home).
+    private func makeLegForm(start: Date, end: Date, title: String = "Standup") -> LegCardForm {
+        var f = makeForm(start: start, end: end, place: office)
+        f.setTitleText(field: rowId(f, "title"), text: title)
+        f.choose(field: rowId(f, LegRowKeys.outboundEnabled), value: "true")
+        f.choose(field: rowId(f, LegRowKeys.originQuery), value: home.name, place: home)
+        f.choose(field: rowId(f, LegRowKeys.returnEnabled), value: "true")
+        f.choose(field: rowId(f, LegRowKeys.returnQuery), value: home.name, place: home)
+        return f
+    }
+
+    private func legCount(_ store: Store, _ occurrence: UUID, _ role: ScheduleAnchor) -> Int {
+        store.events.filter { $0.linkedActivityId == occurrence && ($0.anchor ?? .arrival) == role }.count
+    }
+
+    /// The day keys of the occurrences the legs of a role are linked to, sorted.
+    private func legDayKeys(_ store: Store, _ role: ScheduleAnchor) -> [Int] {
+        store.events.filter { ($0.anchor ?? .arrival) == role }
+            .compactMap { $0.linkedActivityId.flatMap { RepeatSeries.decode($0)?.dayKey } }.sorted()
+    }
+
+    // MARK: AC-001 row 3 - the travel toggles make legs for the window only
+
+    func testRECURRULE_SaveWithTravelTogglesMakesLegsForTheWindowOnly() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        var f = makeLegForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&f, "daily")
+        XCTAssertTrue(f.card.isReady)
+        XCTAssertNotNil(f.activeRecurrence)
+
+        let saved = await store.saveManualActivity(f, calendarDefault: false)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(store.series.count, 1)
+        let series = try XCTUnwrap(store.series.first)
+        XCTAssertEqual(series.legPlan?.outboundFrom, home)
+        XCTAssertEqual(series.legPlan?.returnTo, home)
+        XCTAssertEqual(store.activities.count, 0)
+        XCTAssertEqual(store.events.count, 30, "15 days x 2 legs through the window, not one pair per occurrence")
+        XCTAssertEqual(Set(legDayKeys(store, .arrival)), Set((2...16).map { 20261100 + $0 }))
+        XCTAssertEqual(Set(legDayKeys(store, .departure)), Set((2...16).map { 20261100 + $0 }))
+        XCTAssertEqual(series.legsFilledThroughDayKey, 20261116)
+        XCTAssertEqual(store.drvTravelLookupCount, 2, "one lookup per direction")
+        XCTAssertEqual(relaunched().events.count, 30, "the legs reached events.json")
+    }
+
+    // MARK: AC-016 rows 1-2 - fifteen days of legs
+
+    func testRECURRULE_LegWindowOnlyFifteenDays() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        var f = makeLegForm(start: at(2026, 11, 2, 9), end: at(2026, 11, 2, 9, 30))
+        commit(&f, "every Monday")
+        let saved = await store.saveManualActivity(f, calendarDefault: false)
+        XCTAssertTrue(saved)
+        let series = try XCTUnwrap(store.series.first)
+
+        // Nov 2, 9 and 16 (Nov 16 is day 14, so today + 14 inclusive is 15 days); none for Nov 23.
+        XCTAssertEqual(store.events.count, 6)
+        for d in [20261102, 20261109, 20261116] {
+            let occurrence = series.occurrenceID(dayKey: d)
+            let pair = store.legs(of: occurrence)
+            XCTAssertEqual(pair.outbound?.anchor, .arrival, "outbound of \(d)")
+            XCTAssertEqual(pair.return?.anchor, .departure, "return of \(d)")
+            XCTAssertEqual(store.events.filter { $0.linkedActivityId == occurrence }.count, 2)
+        }
+        XCTAssertTrue(store.events.filter { $0.linkedActivityId == series.occurrenceID(dayKey: 20261123) }.isEmpty)
+        for leg in store.events {
+            XCTAssertEqual(leg.recurrenceId, series.id)
+            XCTAssertEqual(leg.travelSeconds, 900, "the other legs of a direction carry the looked-up time")
+        }
+        XCTAssertEqual(store.legs(of: series.occurrenceID(dayKey: 20261109)).return?.title, "Standup (return)")
+        XCTAssertEqual(store.drvTravelLookupCount, 2, "one lookup per direction, the others are copied")
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+        XCTAssertEqual(relaunched().series.first?.legsFilledThroughDayKey, 20261116, "the mark is on the disk")
+    }
+
+    // MARK: AC-016 row 3 - the fill is idempotent and respects the high-water mark
+
+    func testRECURRULE_FillIsIdempotentAndRespectsHighWaterMark() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let series = plannedStandup()
+        XCTAssertTrue(store.addSeries(series))
+        let (nov9, nov23) = (series.occurrenceID(dayKey: 20261109), series.occurrenceID(dayKey: 20261123))
+
+        // An outbound leg added by hand to a window occurrence while the mark is still nil: no second outbound for it.
+        let byHand = seriesLeg(series, 20261109, .arrival)
+        store.events.append(byHand)
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6, "the hand-made leg and five new ones")
+        XCTAssertEqual(legCount(store, nov9, .arrival), 1)
+        XCTAssertEqual(store.legs(of: nov9).outbound?.id, byHand.id)
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+
+        // The same fill the same day makes no new event.
+        let ids = Set(store.events.map(\.id))
+        let lookups = store.drvTravelLookupCount
+        await store.fillSeriesLegs()
+        XCTAssertEqual(Set(store.events.map(\.id)), ids)
+        XCTAssertEqual(store.drvTravelLookupCount, lookups)
+
+        // A week later only the legs of Nov 23 are added, and no lookup is made: stored legs of both directions exist.
+        let week = at(2026, 11, 9, 8)
+        store.replanNow = { week }
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 8)
+        XCTAssertEqual(store.events.filter { $0.linkedActivityId == nov23 }.count, 2)
+        XCTAssertEqual(store.drvTravelLookupCount, lookups, "the travel time is copied from a stored leg of the series")
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261123)
+    }
+
+    // MARK: AC-016 row 3b - two fills at once make each leg once
+
+    func testRECURRULE_TwoFillsAtOnceMakeEachLegOnce() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let first = plannedStandup()
+        XCTAssertTrue(store.addSeries(first))
+        var gateCalls = 0
+        var held: CheckedContinuation<Void, Never>?
+        store.drvFillGate = {
+            gateCalls += 1
+            // Suspends on the first call only: the pass that `fillAgain` asks for reaches the gate too and must not wait.
+            guard gateCalls == 1 else { return }
+            await withCheckedContinuation { held = $0 }
+        }
+
+        // Call 1 is held at the gate; the test waits for the signal that it got there.
+        let call1 = Task { await store.fillSeriesLegs() }
+        var spins = 0
+        while store.drvFillGateReached == 0, spins < 20_000 { await Task.yield(); spins += 1 }
+        XCTAssertEqual(store.drvFillGateReached, 1, "call 1 reached the gate")
+        XCTAssertNotNil(held)
+
+        // Call 2 returns at once and writes nothing while call 1 is held.
+        let before = store.events.count
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, before, "a call during a running fill makes nothing")
+        XCTAssertEqual(store.drvFillGateReached, 1, "call 2 did not start a pass of its own")
+
+        // A second series is saved while call 1 is held: its own save-time fill (call 3) also returns at once.
+        var f = makeLegForm(start: at(2026, 11, 4, 18), end: at(2026, 11, 4, 19), title: "Gym")
+        commit(&f, "every Wednesday")
+        let saved = await store.saveManualActivity(f, calendarDefault: false)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(store.series.count, 2)
+        XCTAssertEqual(store.events.count, before, "call 3 made nothing either")
+
+        held?.resume()
+        await call1.value
+
+        // Each occurrence has one leg per role, and the second series has its legs too (the pass `fillAgain` asked for).
+        XCTAssertEqual(store.events.count, 10, "Mondays Nov 2, 9, 16 and Wednesdays Nov 4, 11, two legs each")
+        for d in [20261102, 20261109, 20261116] {
+            let occurrence = first.occurrenceID(dayKey: d)
+            XCTAssertEqual(legCount(store, occurrence, .arrival), 1, "outbound of \(d)")
+            XCTAssertEqual(legCount(store, occurrence, .departure), 1, "return of \(d)")
+        }
+        let gym = try XCTUnwrap(store.series.first { $0.title == "Gym" })
+        for d in [20261104, 20261111] {
+            let occurrence = gym.occurrenceID(dayKey: d)
+            XCTAssertEqual(legCount(store, occurrence, .arrival), 1, "Gym outbound of \(d)")
+            XCTAssertEqual(legCount(store, occurrence, .departure), 1, "Gym return of \(d)")
+        }
+        XCTAssertEqual(store.drvFillGateReached, 2, "the second pass reached the gate and did not wait again")
+        XCTAssertEqual(gateCalls, 2)
+    }
+
+    // MARK: AC-016 row 2 - the travel time is looked up once per direction and copied
+
+    func testRECURRULE_FillReusesExistingTravelTime() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let series = plannedStandup()
+        XCTAssertTrue(store.addSeries(series))
+        var known = seriesLeg(series, 20261102, .arrival)
+        known.travelSeconds = 600
+        store.events.append(known)
+
+        await store.fillSeriesLegs()
+        // The outbound time comes from the stored leg (no lookup); the return direction has none and is looked up once.
+        XCTAssertEqual(store.drvTravelLookupCount, 1)
+        for d in [20261109, 20261116] {
+            XCTAssertEqual(store.legs(of: series.occurrenceID(dayKey: d)).outbound?.travelSeconds, 600, "copied for \(d)")
+        }
+        for d in [20261102, 20261109, 20261116] {
+            XCTAssertEqual(store.legs(of: series.occurrenceID(dayKey: d)).return?.travelSeconds, 900, "looked up once for \(d)")
+        }
+        // A fill that finds legs of both directions looks nothing up.
+        let week = at(2026, 11, 9, 8)
+        store.replanNow = { week }
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.drvTravelLookupCount, 1)
+        XCTAssertEqual(store.legs(of: series.occurrenceID(dayKey: 20261123)).outbound?.travelSeconds, 600)
+        XCTAssertEqual(store.legs(of: series.occurrenceID(dayKey: 20261123)).return?.travelSeconds, 900)
+    }
+
+    // MARK: AC-016 row 4 - a deleted leg does not come back
+
+    func testRECURRULE_DeletedLegDoesNotReturn() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let series = plannedStandup()
+        XCTAssertTrue(store.addSeries(series))
+        let nov9 = series.occurrenceID(dayKey: 20261109)
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6)
+
+        store.deleteEvent(try XCTUnwrap(store.legs(of: nov9).outbound))
+        XCTAssertEqual(store.events.count, 5)
+        await store.fillSeriesLegs()
+        XCTAssertNil(store.legs(of: nov9).outbound, "the day is at or below the high-water mark")
+        XCTAssertNotNil(store.legs(of: nov9).return)
+        XCTAssertEqual(store.events.count, 5)
+
+        // Also after a relaunch: the mark is on the disk.
+        let again = relaunched()
+        let clock = fixtureClock
+        again.replanNow = { clock }
+        again.drvTravelLookupOverride = { _, _, _ in 900 }
+        await again.fillSeriesLegs()
+        XCTAssertEqual(again.events.count, 5)
+        XCTAssertNil(again.legs(of: nov9).outbound)
+    }
+
+    // MARK: AC-016 row 5 - a skipped day gets no leg and none is recreated
+
+    func testRECURRULE_SkippedDayGetsNoLegAndNoneIsRecreated() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let series = plannedStandup()
+        XCTAssertTrue(store.addSeries(series))
+        let nov9 = series.occurrenceID(dayKey: 20261109)
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6)
+
+        // The day is deleted after the fill: its legs go with it and the next fill makes nothing for it.
+        store.deleteActivity(try XCTUnwrap(store.activity(id: nov9)))
+        XCTAssertEqual(store.events.count, 4)
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 4)
+        XCTAssertTrue(store.events.filter { $0.linkedActivityId == nov9 }.isEmpty)
+        XCTAssertEqual(store.series[0].skippedDayKeys, [20261109])
+
+        // A day skipped before any fill never gets a leg either.
+        let fresh = fixtureStore()
+        fresh.drvTravelLookupOverride = { _, _, _ in 900 }
+        var skipped = plannedStandup()
+        skipped.skippedDayKeys = [20261109]
+        XCTAssertTrue(fresh.addSeries(skipped))
+        await fresh.fillSeriesLegs()
+        XCTAssertEqual(fresh.events.count, 4)
+        XCTAssertEqual(Set(legDayKeys(fresh, .arrival)), [20261102, 20261116])
+        XCTAssertEqual(Set(legDayKeys(fresh, .departure)), [20261102, 20261116])
+    }
+
+    // MARK: AC-016 row 6 - old legs are pruned
+
+    func testRECURRULE_OldLegsArePruned() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let series = plannedStandup()
+        XCTAssertTrue(store.addSeries(series))
+        let (nov2, nov9, nov16) = (series.occurrenceID(dayKey: 20261102), series.occurrenceID(dayKey: 20261109),
+                                   series.occurrenceID(dayKey: 20261116))
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6)
+        // Nov 2 is edited, so it is a stored copy; its legs are not the series' legs to prune.
+        XCTAssertTrue(store.modifyActivity(id: nov2, newTitle: "Standup (moved)"))
+        XCTAssertEqual(store.events.filter { $0.linkedActivityId == nov2 }.count, 2)
+
+        let later = at(2026, 12, 10, 8)
+        store.replanNow = { later }
+        await store.fillSeriesLegs()
+        XCTAssertNil(store.legs(of: nov9).outbound, "older than 30 days")
+        XCTAssertNil(store.legs(of: nov9).return)
+        XCTAssertNotNil(store.legs(of: nov16).outbound, "Nov 16 is inside the 30 days")
+        XCTAssertNotNil(store.legs(of: nov16).return)
+        XCTAssertNotNil(store.legs(of: nov2).outbound, "a stored copy keeps its legs")
+        XCTAssertNotNil(store.legs(of: nov2).return)
+        // The new window (Dec 14 and Dec 21) got its legs.
+        XCTAssertEqual(store.events.count, 2 + 2 + 4)
+        XCTAssertEqual(Set(legDayKeys(store, .arrival)), [20261102, 20261116, 20261214, 20261221])
+    }
+
+    // MARK: AC-016 row 7 - at most sixty alarms (class B: reads the real clock)
+
+    func testRECURRULE_AlarmsStayAtSixty() async throws {
+        let d0 = classBMonday()
+        let store = EmptyStore.make()
+        let clock = d0.addingTimeInterval(8 * 3600)
+        store.replanNow = { clock }
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        for (title, minute) in [("A", 540), ("B", 720), ("C", 900)] {
+            XCTAssertTrue(store.addSeries(plannedDaily(first: key(d0), title: title, startMinute: minute, buffer: 0, lead: 0)))
+        }
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 90, "3 series x 15 days x 2 legs")
+        XCTAssertTrue(store.events.allSatisfy { ($0.departureDate ?? .distantPast) > clock }, "every leg is in the future")
+
+        store.rescheduleNearestNotifications()
+        let sorted = store.events.sorted {
+            NotificationManager.alarmTime(departure: $0.departureDate!, leadMinutes: $0.notifyLeadMinutes)
+                < NotificationManager.alarmTime(departure: $1.departureDate!, leadMinutes: $1.notifyLeadMinutes)
+        }
+        XCTAssertEqual(store.events.filter { $0.notificationId != nil }.count, 60)
+        guard sorted.count > 60 else { return XCTFail("fewer than 61 legs") }
+        XCTAssertTrue(sorted.prefix(60).allSatisfy { $0.notificationId != nil }, "the 60 earliest alarms are the ones scheduled")
+        XCTAssertNil(sorted[60].notificationId, "the 61st alarm time has none")
+        XCTAssertTrue(sorted.dropFirst(60).allSatisfy { $0.notificationId == nil })
+    }
+
+    // MARK: AC-016 row 8 - no place, no plan, one direction
+
+    func testRECURRULE_SeriesWithoutPlaceOrPlanMakesNoLegs() async throws {
+        // A plan without a place.
+        let noPlace = fixtureStore()
+        noPlace.drvTravelLookupOverride = { _, _, _ in 900 }
+        var placeless = plannedStandup()
+        placeless.location = nil
+        XCTAssertTrue(noPlace.addSeries(placeless))
+        await noPlace.fillSeriesLegs()
+        XCTAssertTrue(noPlace.events.isEmpty)
+        XCTAssertNil(noPlace.series[0].legsFilledThroughDayKey)
+
+        // A place without a plan.
+        let noPlan = fixtureStore()
+        noPlan.drvTravelLookupOverride = { _, _, _ in 900 }
+        XCTAssertTrue(noPlan.addSeries(standup()))
+        await noPlan.fillSeriesLegs()
+        XCTAssertTrue(noPlan.events.isEmpty)
+        XCTAssertNil(noPlan.series[0].legsFilledThroughDayKey)
+
+        // A plan with only an outbound place makes outbound legs only (the positive control for the two rows above).
+        let outboundOnly = fixtureStore()
+        outboundOnly.drvTravelLookupOverride = { _, _, _ in 900 }
+        XCTAssertTrue(outboundOnly.addSeries(plannedStandup(back: false)))
+        await outboundOnly.fillSeriesLegs()
+        XCTAssertEqual(outboundOnly.events.count, 3)
+        XCTAssertEqual(legDayKeys(outboundOnly, .arrival), [20261102, 20261109, 20261116])
+        XCTAssertTrue(legDayKeys(outboundOnly, .departure).isEmpty, "a nil returnTo makes no return leg")
+
+        // And a plan with only a return place makes return legs only.
+        let returnOnly = fixtureStore()
+        returnOnly.drvTravelLookupOverride = { _, _, _ in 900 }
+        XCTAssertTrue(returnOnly.addSeries(plannedStandup(outbound: false)))
+        await returnOnly.fillSeriesLegs()
+        XCTAssertEqual(returnOnly.events.count, 3)
+        XCTAssertEqual(legDayKeys(returnOnly, .departure), [20261102, 20261109, 20261116])
+        XCTAssertTrue(legDayKeys(returnOnly, .arrival).isEmpty)
+    }
+
+    // MARK: AC-016 row 9 - the background path fills legs (class B: reads the real clock)
+
+    func testRECURRULE_BackgroundPathFillsLegs() async throws {
+        let d0 = classBMonday()
+        func day(_ n: Int, _ hour: Int = 0) -> Date { d0.addingTimeInterval(Double(n) * 86400 + Double(hour) * 3600) }
+        let store = EmptyStore.make()
+        var clock = day(0, 8)
+        store.replanNow = { clock }
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        var series = plannedStandup()
+        series.firstDayKey = key(d0)
+        XCTAssertTrue(store.addSeries(series))
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6, "D0, D0+7, D0+14")
+
+        clock = day(7, 8)
+        let (lookups, reschedules) = (store.drvTravelLookupCount, store.drvRescheduleCount)
+        await store.backgroundRefresh()
+        XCTAssertEqual(store.events.count, 8)
+        XCTAssertEqual(store.events.filter { $0.linkedActivityId == series.occurrenceID(dayKey: key(day(21))) }.count, 2,
+                       "the legs of D0+21 came from the fill in the background path")
+        XCTAssertEqual(store.drvTravelLookupCount, lookups, "the refresh selects nothing and the fill copies stored times")
+        XCTAssertEqual(store.drvRescheduleCount, reschedules + 2, "one at the end of the fill, one at the end of the refresh")
+    }
+
+    // MARK: AC-016 row w - the fill skips a role that has a leg
+
+    func testRECURRULE_FillSkipsARoleThatHasALeg() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let series = plannedStandup()
+        XCTAssertTrue(store.addSeries(series))
+        let (nov2, nov9, nov16) = (series.occurrenceID(dayKey: 20261102), series.occurrenceID(dayKey: 20261109),
+                                   series.occurrenceID(dayKey: 20261116))
+        // Legs made by hand before any fill: a return leg for Nov 2 and an outbound leg for Nov 9.
+        let back = seriesLeg(series, 20261102, .departure)
+        let out = seriesLeg(series, 20261109, .arrival)
+        store.events.append(contentsOf: [back, out])
+
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 6)
+        for occurrence in [nov2, nov9, nov16] {
+            XCTAssertEqual(legCount(store, occurrence, .arrival), 1, "one outbound leg for \(occurrence)")
+            XCTAssertEqual(legCount(store, occurrence, .departure), 1, "one return leg for \(occurrence)")
+        }
+        XCTAssertEqual(store.legs(of: nov2).return?.id, back.id, "the hand-made leg was not replaced")
+        XCTAssertEqual(store.legs(of: nov9).outbound?.id, out.id)
+        XCTAssertEqual(store.drvTravelLookupCount, 0, "both directions had a stored leg to copy the time from")
+    }
+
+    // MARK: AC-015 5(b), 5(b2) - the fill after a whole-series leg add
+
+    func testRECURRULE_SecondFillAfterWholeSeriesLegAddIsIdempotent() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let series = standup()
+        XCTAssertTrue(store.addSeries(series))
+        let nov2 = series.occurrenceID(dayKey: 20261102)
+        let preview = try XCTUnwrap(store.previewSeriesLegAdd(activityId: nov2, role: .arrival))
+        let made = await store.addLegToSeries(editedActivityId: nov2, seriesId: series.id, role: .arrival, outerPlace: home,
+                                              mode: .car, bufferMinutes: 5, notifyLeadMinutes: 10,
+                                              targetActivityIds: preview.eligibleIds, editedDetaches: false)
+        XCTAssertEqual(made.added, 3)
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+        let ids = Set(store.events.map(\.id))
+
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 3, "a second fill leaves the events as they are")
+        XCTAssertEqual(Set(store.events.map(\.id)), ids)
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+    }
+
+    func testRECURRULE_AddRoleToASeriesThatHasAMarkKeepsTheMark() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        let series = plannedDaily(first: 20261102, title: "Daily", startMinute: 540, back: false)
+        XCTAssertTrue(store.addSeries(series))
+        await store.fillSeriesLegs()
+        XCTAssertEqual(store.events.count, 15, "outbound legs for Nov 2 ... Nov 16")
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116)
+
+        // Three days later a return role is added to the whole series.
+        let later = at(2026, 11, 5, 8)
+        store.replanNow = { later }
+        let nov5 = series.occurrenceID(dayKey: 20261105)
+        let preview = try XCTUnwrap(store.previewSeriesLegAdd(activityId: nov5, role: .departure))
+        XCTAssertEqual(preview.eligibleIds.count, 15, "Nov 5 ... Nov 19")
+        let made = await store.addLegToSeries(editedActivityId: nov5, seriesId: series.id, role: .departure, outerPlace: home,
+                                              mode: .car, bufferMinutes: 0, notifyLeadMinutes: 10,
+                                              targetActivityIds: preview.eligibleIds, editedDetaches: false)
+        XCTAssertEqual(made.added, 15)
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261116, "an existing mark is left alone")
+        XCTAssertEqual(store.series[0].legPlan?.returnTo, home)
+        XCTAssertEqual(legDayKeys(store, .departure), (5...19).map { 20261100 + $0 })
+
+        // The next fill makes the outbound legs of Nov 17 ... Nov 19 and no second return leg.
+        await store.fillSeriesLegs()
+        XCTAssertEqual(legDayKeys(store, .arrival), (2...19).map { 20261100 + $0 })
+        XCTAssertEqual(legDayKeys(store, .departure), (5...19).map { 20261100 + $0 }, "no duplicate return leg")
+        XCTAssertEqual(store.events.count, 18 + 15)
+        XCTAssertEqual(store.series[0].legsFilledThroughDayKey, 20261119)
     }
 }

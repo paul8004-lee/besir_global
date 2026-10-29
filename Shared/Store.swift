@@ -1419,6 +1419,17 @@ final class Store: ObservableObject {
         return addSeries(made)
     }
 
+    // MARK: - Leg window fill (REQ-016, SPEC-RECURRULE-001)
+
+    /// Test seam, driver-visible like `drvTravelLookupOverride`; application logic never sets it. Awaited once per pass.
+    var drvFillGate: (() async -> Void)?
+    /// Driver-visible counter of the passes that reached the gate point; application logic never reads it.
+    var drvFillGateReached = 0
+
+    func fillSeriesLegs(now: Date? = nil) async {}
+
+    func backgroundRefresh() async {}
+
     /// recurrenceId로 반복 그룹의 이동 구간을 도착 순으로 돌려준다 — 멤버십·정렬 판단의 단일 출처(계약 5).
     func recurringSeries(_ recurrenceId: UUID) -> [ScheduledEvent] {
         events.filter { $0.recurrenceId == recurrenceId }.sorted { $0.arrivalDate < $1.arrivalDate }
