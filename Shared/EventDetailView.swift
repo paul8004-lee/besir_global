@@ -448,6 +448,10 @@ struct EventDetailView: View {
             .padding(.top, 8)
         }
         .confirmationDialog("How do you want to delete this repeating event?", isPresented: $showingDeleteMenu, titleVisibility: .visible) {
+            Button("Delete This Event Only", role: .destructive) {
+                store.deleteEvent(event)
+                dismiss()
+            }
             Button(event.recurrenceId != nil ? "Delete Entire Series" : "Delete All Events with the Same Title (\(sameTitleEvents.count))",
                    role: .destructive) {
                 if let rid = event.recurrenceId {
@@ -455,10 +459,6 @@ struct EventDetailView: View {
                 } else {
                     for e in sameTitleEvents { store.deleteEvent(e) }
                 }
-                dismiss()
-            }
-            Button("Delete This Event Only", role: .destructive) {
-                store.deleteEvent(event)
                 dismiss()
             }
             Button("Cancel", role: .cancel) {}
