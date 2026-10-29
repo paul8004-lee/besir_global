@@ -309,6 +309,26 @@ final class SnapFlow: ObservableObject {
     }
 }
 
+/// Hands a finished outcome to the agent session. The tap's Connections flow is on offer to the log only while the message is
+/// sent, so the agent's packets for it join the tap's flow (the share flow does the same). False, with nothing sent and no offer
+/// left behind, when the session cannot take a message now.
+@MainActor
+enum SnapHandOff {
+    static func perform(_ outcome: SnapOutcome, to session: AgentSession, connections: ConnectionLog = .shared) -> Bool {
+        let accepted: Bool
+        switch outcome {
+        case .message(let text, let shown, let flow):
+            connections.offerFlow(flow)
+            accepted = SharedImport.give(message: text, shown: shown, to: session)
+        case .plan(let text, let shown, let context, let flow):
+            connections.offerFlow(flow)
+            accepted = session.sendPlan(message: text, shown: shown, context: context)
+        }
+        connections.withdrawOffer()
+        return accepted
+    }
+}
+
 /// The camera and its shutter for this device: the AVFoundation pair on iOS, no camera elsewhere.
 @MainActor
 enum SnapDevice {

@@ -793,6 +793,135 @@ final class SnapFlowTests: XCTestCase {
         }
     }
 
+    // MARK: AC-CAMSNAP-012 - the mode dialog and the day context
+
+    /// A place to eat has been found and the flow waits for the travel mode.
+    private func foodRig() async -> SnapRig {
+        let rig = SnapRig(places: [.answer(PlacesTestSupport.nearbyAnswer([("Foo Kitchen", 120)]))])
+        rig.reader.fallback = .success(clue(.foodPlace, name: "Foo Kitchen"))
+        await rig.open()
+        await rig.flow.submit(frame: SnapTestImages.small)
+        return rig
+    }
+
+    func testCAMSNAP_T37_theModeDialogEndsWithNothingOrAPlanOutcome() async throws {
+        // While the dialog is open: no outcome, no preparation, no registration, no calendar read.
+        let waiting = await foodRig()
+        XCTAssertEqual(waiting.flow.phase, .awaitingMode)
+        XCTAssertNil(waiting.flow.takeOutcome(), "no outcome before a mode is chosen")
+        XCTAssertEqual(waiting.prepared, 0)
+        XCTAssertTrue(waiting.registered.isEmpty)
+        XCTAssertEqual(waiting.mirror.reads, 0)
+
+        // Cancel, or the dialog dismissed: the flow ends with nothing.
+        await waiting.flow.chooseMode(nil)
+        XCTAssertEqual(waiting.flow.phase, .done)
+        XCTAssertNil(waiting.flow.takeOutcome(), "Cancel builds no outcome")
+        XCTAssertEqual(waiting.prepared, 0)
+        XCTAssertTrue(waiting.registered.isEmpty, "Cancel registers no place")
+        XCTAssertEqual(waiting.mirror.reads, 0)
+        await waiting.flow.chooseMode(.walk)
+        XCTAssertNil(waiting.flow.takeOutcome(), "a mode after the end builds nothing")
+
+        // Each mode gives one plan outcome with that mode.
+        for mode in PlanMyDay.modeChoices {
+            let rig = await foodRig()
+            await rig.flow.chooseMode(mode)
+            guard case .plan(let text, let shown, let context, _)? = rig.flow.takeOutcome() else {
+                XCTFail("\(mode): a plan outcome")
+                continue
+            }
+            XCTAssertEqual(context.mode, mode)
+            XCTAssertTrue(text.contains("I will travel by \(mode.rawValue). Do not ask me how I travel."), "\(mode)")
+            XCTAssertEqual(shown, SnapMessage.shownMeal)
+            XCTAssertEqual(rig.registered.map(\.name), ["Foo Kitchen"])
+            XCTAssertEqual(rig.prepared, 1)
+            XCTAssertNil(rig.flow.takeOutcome(), "\(mode): one tap, one outcome")
+        }
+
+        // The dialog offers the four modes of Plan my day, under the fixed title.
+        XCTAssertEqual(PlanMyDay.modeChoices.map(\.rawValue), ["car", "transit", "walk", "bicycle"])
+        XCTAssertEqual(SnapLine.travelTitle, "How will you travel?")
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let view = try String(contentsOf: root.appendingPathComponent("Shared/SnapView.swift"), encoding: .utf8)
+        XCTAssertTrue(view.contains("ForEach(PlanMyDay.modeChoices)"), "the buttons are the choices of Plan my day")
+        XCTAssertTrue(view.contains("confirmationDialog(SnapLine.travelTitle"))
+    }
+
+    /// Hands out handles the way an agent session does, so a flow test sees real place handles.
+    private final class RegistryBox {
+        var registry = AgentPlaceRegistry()
+    }
+
+    func testCAMSNAP_T38_theDayContextIsWhatPlanMyDayBuildsFromTheSameInputs() async throws {
+        let harbor = Place(name: "Harbor Office", address: "1 Harbor St, San Francisco, CA 94111, USA", latitude: 37.79, longitude: -122.39)
+        let teamSync = ActivityBlock(title: "Team sync", location: harbor, startDate: TestClock.date("2026-10-27T13:00"),
+                                     endDate: TestClock.date("2026-10-27T14:00"))
+        func entry(_ id: String, _ title: String, _ start: String, _ end: String, allDay: Bool = false, location: String? = nil,
+                   besir: Bool = false) -> CalendarEntry {
+            CalendarEntry(id: id, title: title, start: TestClock.date(start), end: TestClock.date(end), isAllDay: allDay,
+                          location: location, calendarName: "Home", isFromBesir: besir)
+        }
+        let entries = [
+            entry("c1", "Dentist", "2026-10-27T15:00", "2026-10-27T16:00", location: "Dental Care, 5 Oak St"),
+            entry("c2", "Written by besir", "2026-10-27T14:30", "2026-10-27T15:00", besir: true),
+            entry("c3", "Holiday", "2026-10-27T00:00", "2026-10-28T00:00", allDay: true),
+            entry("c4", "Standup", "2026-10-27T11:00", "2026-10-27T11:30")
+        ]
+        func run(_ failure: CalendarReadError?) async throws -> (rig: SnapRig, text: String, shown: String, context: DayPlanContext) {
+            let rig = SnapRig(places: [.answer(PlacesTestSupport.nearbyAnswer([("Foo Kitchen", 120)]))])
+            rig.reader.fallback = .success(clue(.foodPlace, name: "Foo Kitchen"))
+            rig.mirror.canned = entries
+            rig.mirror.failure = failure
+            rig.activities = [teamSync]
+            let box = RegistryBox()
+            var deps = rig.deps
+            deps.prepare = { PlanMyDay.registerStorePlaces($0, registry: &box.registry) }
+            deps.register = { box.registry.register([$0])?.first }
+            rig.flow.start(deps)
+            await rig.flow.begin()
+            await rig.flow.submit(frame: SnapTestImages.small)
+            await rig.flow.chooseMode(.walk)
+            guard case .plan(let text, let shown, let context, _)? = rig.flow.takeOutcome() else {
+                XCTFail("no plan outcome")
+                throw CancellationError()
+            }
+            return (rig, text, shown, context)
+        }
+
+        // The calendar is readable: the Store event, the calendar entry that is neither besir's, all-day nor over.
+        let result = try await run(nil)
+        let expected = [
+            PlanMyDay.Event(handle: "e1", title: "Team sync", start: TestClock.date("2026-10-27T13:00"),
+                            end: TestClock.date("2026-10-27T14:00"), locationText: "Harbor Office", place: harbor, placeHandle: "p1",
+                            source: .besir),
+            PlanMyDay.Event(handle: "e2", title: "Dentist", start: TestClock.date("2026-10-27T15:00"),
+                            end: TestClock.date("2026-10-27T16:00"), locationText: "Dental Care, 5 Oak St", place: nil, placeHandle: nil,
+                            source: .calendar)
+        ]
+        XCTAssertEqual(result.context.events, expected)
+        XCTAssertEqual(result.context.checkWindowEnd, TestClock.date("2026-10-28T00:00"))
+        XCTAssertEqual(result.context.mode, .walk)
+        XCTAssertEqual(result.shown, "I snapped a place to eat.")
+        // The same function, the same inputs: the context holds what Plan my day builds, with the handles of the registry.
+        let plain = PlanMyDay.events(activities: [teamSync], entries: entries, now: TestClock.date("2026-10-27T12:03"), calendar: result.rig.calendar)
+        XCTAssertEqual(plain.events.map(\.handle), ["e1", "e2"])
+        XCTAssertEqual(plain.events.map(\.title), result.context.events.map(\.title))
+        XCTAssertEqual(plain.events.map(\.start), result.context.events.map(\.start))
+        // The message carries the same events (and the place after them), and the chosen place got the handle after the Store place.
+        let line = try XCTUnwrap(result.text.components(separatedBy: "\n").first { $0.hasPrefix("Today's events, as data: ") })
+        let sent = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.dropFirst("Today's events, as data: ".count).utf8)) as? [[String: Any]])
+        XCTAssertEqual(sent.map { $0["id"] as? String }, ["e1", "e2"])
+        XCTAssertEqual(sent.first?["place_id"] as? String, "p1")
+        XCTAssertTrue(result.text.contains("\"place_id\":\"p2\""), "the chosen place is registered after the Store place")
+
+        // The calendar cannot be read: only the Store event, and the chat line says so.
+        let fallback = try await run(.accessDenied)
+        XCTAssertEqual(fallback.context.events.map(\.handle), ["e1"])
+        XCTAssertEqual(fallback.context.events.map(\.title), ["Team sync"])
+        XCTAssertEqual(fallback.shown, "I snapped a place to eat. Calendar not available.")
+    }
+
     // MARK: AC-CAMSNAP-006 and 015 - the source scan
 
     private func scan(_ text: String, for needles: [String]) -> [String] {
