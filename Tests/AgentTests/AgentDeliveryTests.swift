@@ -151,40 +151,6 @@ final class AgentDeliveryTests: XCTestCase {
         XCTAssertNil(AgentDelivery.snapshotText(" \n\t "))
     }
 
-    func testH04_CardLinesAreExactForEveryCombinationOfSuggestionsAndEdits() {
-        let items = [(name: "Ramen", quantity: 2), (name: "Gyoza", quantity: 1)]
-        let suggestedMeal = AgentDelivery.CardMeal(title: "Dinner (Simulated)", time: "7:40 PM", isSuggested: true)
-        func lines(deliveryText: String = "1 Home Road", suggested: Bool, meal: AgentDelivery.CardMeal?) -> [String] {
-            AgentDelivery.cardLines(placeName: "Test Cafe", arrives: "Tue, Nov 3 at 7:40 PM", items: items, deliveryText: deliveryText,
-                                    deliveryIsSuggested: suggested, cardLabel: "Example Debit \u{2022}\u{2022}4242 (Simulated)",
-                                    totalCents: 4000, meal: meal)
-        }
-        XCTAssertEqual(lines(suggested: true, meal: suggestedMeal), [
-            "Order delivery", "Test Cafe", "Arrives Tue, Nov 3 at 7:40 PM", "2 x Ramen", "1 x Gyoza",
-            "To 1 Home Road (suggested from your schedule)", "Pay with Example Debit \u{2022}\u{2022}4242 (Simulated)",
-            "Estimated total $40.00", "Add to schedule: Dinner (Simulated) at 7:40 PM (suggested)", "Example Delivery - Simulated"])
-        // A named place: no mark on the To line.
-        XCTAssertEqual(lines(deliveryText: "5 Library Lane", suggested: false, meal: suggestedMeal)[5], "To 5 Library Lane")
-        // An edited text and an edited title or time: no marks.
-        let edited = AgentDelivery.CardMeal(title: "Family dinner (Simulated)", time: "8:00 PM", isSuggested: false)
-        let editedLines = lines(deliveryText: "12 Example Street", suggested: false, meal: edited)
-        XCTAssertEqual(editedLines[5], "To 12 Example Street")
-        XCTAssertEqual(editedLines[8], "Add to schedule: Family dinner (Simulated) at 8:00 PM")
-        // The entry switched off: no schedule line.
-        let off = lines(suggested: true, meal: nil)
-        XCTAssertEqual(off.count, 9)
-        XCTAssertFalse(off.contains { $0.hasPrefix("Add to schedule") })
-        XCTAssertEqual(off.last, "Example Delivery - Simulated")
-        // The total text.
-        XCTAssertEqual(AgentDelivery.cardLines(placeName: "P", arrives: "A", items: [(name: "Cheese pizza", quantity: 9)], deliveryText: "T",
-                                               deliveryIsSuggested: false, cardLabel: "C", totalCents: 35600, meal: nil)[6],
-                       "Estimated total $356.00")
-        XCTAssertEqual(AgentDelivery.cardLines(placeName: "P", arrives: "A", items: [(name: "Lemonade", quantity: 1)], deliveryText: "T",
-                                               deliveryIsSuggested: false, cardLabel: "C", totalCents: 905, meal: nil)[6],
-                       "Estimated total $9.05")
-        XCTAssertEqual(AgentDelivery.estimatedTotalLine(cents: 65300), "Estimated total $653.00")
-    }
-
     func testH05_FixedTextsAndBuildersAreEnglishFactualAndBuiltFromThePartnerConstants() throws {
         // The fixed words of the card that are the app's own: the header, the meal row labels and the two chips of the meal switch.
         XCTAssertEqual([AgentDelivery.cardHeader, AgentDelivery.mealSwitchLabel, AgentDelivery.mealTitleLabel, AgentDelivery.mealStartLabel],
@@ -193,6 +159,9 @@ final class AgentDeliveryTests: XCTestCase {
         XCTAssertEqual([AgentDelivery.mealSwitchKey, AgentDelivery.mealTitleKey, AgentDelivery.mealStartKey],
                        ["meal", "meal_title", "meal_start"])
         XCTAssertEqual(AgentDelivery.partnerLine, "\(DeliveryClient.partnerName) - Simulated")
+        XCTAssertEqual(AgentDelivery.estimatedTotalLine(cents: 4000), "Estimated total $40.00")
+        XCTAssertEqual(AgentDelivery.estimatedTotalLine(cents: 905), "Estimated total $9.05")
+        XCTAssertEqual(AgentDelivery.estimatedTotalLine(cents: 65300), "Estimated total $653.00")
 
         let options = DeliveryOptions(
             menu: [DeliveryMenuItem(id: "ramen", name: "Ramen", priceCents: 1400), DeliveryMenuItem(id: "gyoza", name: "Gyoza", priceCents: 700)],

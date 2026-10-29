@@ -8,17 +8,12 @@ enum AgentDelivery {
     static let mealMinutes = 60
     static let maxItemLines = 6
 
-    // MARK: The four controls of the card
+    // MARK: The field card (SPEC-CHOICECARD-001)
 
-    /// The labels of the card's controls are fixed words, not captions; the card view uses these constants.
-    static let deliveryPlaceLabel = "Delivery place"
+    /// The labels of the app's own rows are fixed words, not captions. The partner's fields carry their own labels.
     static let mealSwitchLabel = "Add to schedule"
     static let mealTitleLabel = "Meal title"
     static let mealStartLabel = "Start"
-    static let controlLabels = [deliveryPlaceLabel, mealSwitchLabel, mealTitleLabel, mealStartLabel]
-
-    // MARK: The field card (SPEC-CHOICECARD-001)
-
     /// The header of the order card and the keys of the three rows that are the app's own (the partner's fields have its keys).
     static let cardHeader = "Order delivery"
     static let mealSwitchKey = "meal"
@@ -142,33 +137,8 @@ enum AgentDelivery {
 
     // MARK: The card
 
-    /// The meal line of the card: the title as the entry carries it, the start time as text, and whether the card still shows the
-    /// app's own suggestion.
-    struct CardMeal: Equatable {
-        let title: String
-        let time: String
-        let isSuggested: Bool
-    }
-
     /// `Estimated total $40.00`.
     static func estimatedTotalLine(cents: Int) -> String { "Estimated total \(AgentBudget.dollars(cents: cents))" }
-
-    /// The lines of the confirmation card, in order: the heading, the place, the arrival, one line for each item, the delivery
-    /// text (marked while it is the app's suggestion), the card, the estimated total, the meal entry while it is on (marked
-    /// while it is the app's suggestion) and the partner line.
-    static func cardLines(placeName: String, arrives: String, items: [(name: String, quantity: Int)], deliveryText: String,
-                          deliveryIsSuggested: Bool, cardLabel: String, totalCents: Int, meal: CardMeal?) -> [String] {
-        var lines = ["Order delivery", placeName, "Arrives \(arrives)"]
-        lines += items.map { "\($0.quantity) x \($0.name)" }
-        lines.append("To \(deliveryText)" + (deliveryIsSuggested ? " (suggested from your schedule)" : ""))
-        lines.append("Pay with \(cardLabel)")
-        lines.append(estimatedTotalLine(cents: totalCents))
-        if let meal {
-            lines.append("Add to schedule: \(meal.title) at \(meal.time)" + (meal.isSuggested ? " (suggested)" : ""))
-        }
-        lines.append(partnerLine)
-        return lines
-    }
 
     // MARK: Results
 

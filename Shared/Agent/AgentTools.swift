@@ -1,5 +1,4 @@
 import Foundation
-import Combine
 import CoreLocation
 
 // SPEC-AGENT-001: the four schedule tools, SPEC-AGENTPLACE-001: the place and travel-time tools. The app, not the
@@ -196,172 +195,16 @@ enum AgentTools {
     """#
 }
 
-/// SPEC-DELIVERY-001: one value the user changes inside a confirmation card. The view observes it. Once frozen it keeps the value
-/// it had, so an edit made after the Confirm tap changes nothing.
-@MainActor
-class AgentCardField<Value: Equatable>: ObservableObject {
-    @Published var value: Value {
-        didSet { settle(oldValue) }
-    }
-    private(set) var isFrozen = false
-
-    private var settling = false
-    private let normalize: (Value) -> Value
-
-    init(_ value: Value, normalize: @escaping (Value) -> Value = { $0 }) {
-        self.value = value
-        self.normalize = normalize
-    }
-
-    func freeze() { isFrozen = true }
-
-    private func settle(_ old: Value) {
-        guard !settling else { return }
-        settling = true
-        defer { settling = false }
-        let next = isFrozen ? old : normalize(value)
-        if next != value { value = next }
-    }
-}
-
-/// A text the user types in the card. Per keystroke it only removes hidden characters and cuts at `limit` scalars; it never trims
-/// (the one trim and the blank check are made at Confirm, on the snapshot).
-@MainActor
-final class AgentCardText: AgentCardField<String> {
-    let limit: Int
-    /// The app's own suggestion, or nil when the value is not one.
-    let suggestion: String?
-
-    init(text: String, limit: Int, suggestion: String?) {
-        self.limit = limit
-        self.suggestion = suggestion
-        super.init(AgentDelivery.cleanedTyped(text, limit: limit), normalize: { AgentDelivery.cleanedTyped($0, limit: limit) })
-    }
-
-    var text: String {
-        get { value }
-        set { value = newValue }
-    }
-    /// True while the value is the app's suggestion.
-    var isSuggestion: Bool { suggestion != nil && text == suggestion }
-    var isBlank: Bool { AgentDelivery.snapshotText(text) == nil }
-}
-
-/// A switch in the card.
-@MainActor
-final class AgentCardSwitch: AgentCardField<Bool> {
-    init(isOn: Bool) { super.init(isOn) }
-
-    var isOn: Bool {
-        get { value }
-        set { value = newValue }
-    }
-}
-
-/// A time in the card: it keeps the date of `arrival` and has no seconds.
-@MainActor
-final class AgentCardTime: AgentCardField<Date> {
-    let arrival: Date
-    let calendar: Calendar
-
-    init(start: Date, arrival: Date, calendar: Calendar) {
-        self.arrival = arrival
-        self.calendar = calendar
-        super.init(start, normalize: { date in
-            let time = calendar.dateComponents([.hour, .minute], from: date)
-            return calendar.date(bySettingHour: time.hour ?? 0, minute: time.minute ?? 0, second: 0,
-                                 of: calendar.startOfDay(for: arrival)) ?? date
-        })
-    }
-
-    var start: Date {
-        get { value }
-        set { value = newValue }
-    }
-    /// True while the time is the arrival time the app suggested.
-    var isSuggestion: Bool { start == arrival }
-}
-
-/// The editors of one card, and the one object the view observes for all of them.
-@MainActor
-final class AgentCardEditors: ObservableObject {
-    /// What the editors hold at a moment: the snapshot that Confirm takes.
-    struct Values: Equatable {
-        let deliveryText: String?
-        let mealOn: Bool
-        let mealTitle: String?
-        let mealStart: Date?
-    }
-
-    let delivery: AgentCardText?
-    let mealOn: AgentCardSwitch?
-    let mealTitle: AgentCardText?
-    let mealStart: AgentCardTime?
-    private(set) var isFrozen = false
-    private var forwards: [AnyCancellable] = []
-
-    init(delivery: AgentCardText? = nil, mealOn: AgentCardSwitch? = nil, mealTitle: AgentCardText? = nil,
-         mealStart: AgentCardTime? = nil) {
-        self.delivery = delivery
-        self.mealOn = mealOn
-        self.mealTitle = mealTitle
-        self.mealStart = mealStart
-        let changes = [delivery?.objectWillChange, mealOn?.objectWillChange, mealTitle?.objectWillChange, mealStart?.objectWillChange]
-        forwards = changes.compactMap { $0 }.map { $0.sink { [weak self] _ in self?.objectWillChange.send() } }
-    }
-
-    var isEmpty: Bool { delivery == nil && mealOn == nil && mealTitle == nil && mealStart == nil }
-
-    /// False while the delivery text, or a title that is switched on, is blank after trimming. It only reads the values.
-    var canConfirm: Bool {
-        if let delivery, delivery.isBlank { return false }
-        if mealOn?.isOn == true, let mealTitle, mealTitle.isBlank { return false }
-        return true
-    }
-
-    var values: Values {
-        Values(deliveryText: delivery?.text, mealOn: mealOn?.isOn ?? false, mealTitle: mealTitle?.text, mealStart: mealStart?.start)
-    }
-
-    func freeze() {
-        isFrozen = true
-        delivery?.freeze()
-        mealOn?.freeze()
-        mealTitle?.freeze()
-        mealStart?.freeze()
-    }
-}
-
-/// One row of a card. A row of an editable value carries its line and the mark the line holds; the view draws it as a control
-/// while the card waits.
-enum AgentCardRow: Equatable {
-    case text(String)
-    /// The delivery line, `To <text>` and its mark.
-    case delivery(line: String, mark: String)
-    /// The meal entry: its line (nil while the switch is off) and its mark.
-    case meal(line: String?, mark: String)
-
-    var line: String? {
-        switch self {
-        case .text(let line), .delivery(let line, _): return line
-        case .meal(let line, _): return line
-        }
-    }
-}
-
-/// A pending confirmation card: its English lines, its actions, and a single resolution.
+/// A pending confirmation card: its English lines, its actions, and a single resolution. A card has fixed lines or, for a card
+/// drawn from a partner's field list (SPEC-CHOICECARD-001), the model of that list.
 @MainActor
 final class AgentCard {
-    /// The lines in order, the heading first; for a card with editors they are read from the editors.
-    var lines: [String] { fieldCard?.lines ?? (makeRows == nil ? fixedLines : rows.compactMap(\.line)) }
-    /// SPEC-CHOICECARD-001: the model of a card drawn from a partner's field list; nil for the other two forms.
+    /// The lines in order, the heading first; for a field card they are read from its model.
+    var lines: [String] { fieldCard?.lines ?? fixedLines }
+    /// SPEC-CHOICECARD-001: the model of a card drawn from a partner's field list; nil for a card of fixed lines.
     let fieldCard: AgentFieldCard?
-    /// The rows in order; a row of an editable value tells the view where a control goes.
-    var rows: [AgentCardRow] { makeRows?() ?? fixedLines.map { .text($0) } }
-    /// The values the user can change in this card (empty for every card but a delivery card).
-    let editors: AgentCardEditors
-    /// False while an edited value is blank; the chat disables Confirm then.
-    var canConfirm: Bool { fieldCard?.isReady ?? editors.canConfirm }
+    /// False while a field card has a blank required value; the chat disables Confirm then.
+    var canConfirm: Bool { fieldCard?.isReady ?? true }
     /// The actions the card offers.
     let actions = ["Confirm", "Cancel"]
     /// Nil while the card is pending.
@@ -372,26 +215,12 @@ final class AgentCard {
 
     private var taken = false
     private let fixedLines: [String]
-    private let makeRows: (@MainActor () -> [AgentCardRow])?
     private let onConfirm: @MainActor () async -> (AgentResolution, AgentCardMark)
 
     init(lines: [String], showsGoogleMark: Bool = false,
          onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         fixedLines = lines
-        makeRows = nil
         fieldCard = nil
-        editors = AgentCardEditors()
-        self.showsGoogleMark = showsGoogleMark
-        self.onConfirm = onConfirm
-    }
-
-    /// SPEC-DELIVERY-001: a card whose rows are read from its editors.
-    init(editors: AgentCardEditors, showsGoogleMark: Bool = false, rows: @escaping @MainActor () -> [AgentCardRow],
-         onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
-        fixedLines = []
-        makeRows = rows
-        fieldCard = nil
-        self.editors = editors
         self.showsGoogleMark = showsGoogleMark
         self.onConfirm = onConfirm
     }
@@ -400,21 +229,18 @@ final class AgentCard {
     init(fieldCard: AgentFieldCard, showsGoogleMark: Bool = false,
          onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         fixedLines = []
-        makeRows = nil
         self.fieldCard = fieldCard
-        editors = AgentCardEditors()
         self.showsGoogleMark = showsGoogleMark
         self.onConfirm = onConfirm
     }
 
-    /// Acts on the first resolution only and returns its outcome; any later call returns nil. Confirm freezes the editors before
+    /// Acts on the first resolution only and returns its outcome; any later call returns nil. Confirm freezes the field card before
     /// it awaits the closure, so no edit made after the tap changes anything.
     func resolve(_ how: AgentCardResolution) async -> AgentResolution? {
         guard !taken else { return nil }
         taken = true
         switch how {
         case .confirm:
-            editors.freeze()
             fieldCard?.freeze()
             let (resolution, result) = await onConfirm()
             mark = result

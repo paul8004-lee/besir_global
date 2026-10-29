@@ -117,12 +117,16 @@ struct AgentChatView: View {
     private func cardView(_ card: AgentCard) -> some View {
         let pending = session.pendingCard === card
         return VStack(alignment: .leading, spacing: 6) {
-            AgentCardRows(card: card, editors: card.editors, pending: pending, locked: session.isResolving)
+            ForEach(Array(card.lines.enumerated()), id: \.offset) { index, line in
+                Text(verbatim: line)
+                    .font(index == 0 ? .headline : .body)
+                    .foregroundStyle(Theme.ink)
+            }
             if card.showsGoogleMark {
                 GoogleMapsAttribution()
             }
             if pending {
-                AgentCardActions(session: session, card: card, editors: card.editors)
+                AgentCardActions(session: session, card: card)
             } else if let mark = card.mark {
                 Text(verbatim: mark.rawValue)
                     .font(.footnote)
@@ -153,77 +157,6 @@ struct AgentChatView: View {
     }
 }
 
-/// The rows of a card. While the card waits, the rows of its editable values are controls bound to the card's editors (SPEC-DELIVERY-001);
-/// the labels are the fixed words of `AgentDelivery`. It observes the editors because `cardView(_:)` observes only the session.
-private struct AgentCardRows: View {
-    let card: AgentCard
-    @ObservedObject var editors: AgentCardEditors
-    let pending: Bool
-    /// True while the session applies the card: no control takes an edit then.
-    let locked: Bool
-
-    var body: some View {
-        ForEach(Array(card.rows.enumerated()), id: \.offset) { index, row in
-            switch row {
-            case .text(let line):
-                lineView(line, index)
-            case .delivery(let line, let mark):
-                if pending, let delivery = editors.delivery {
-                    VStack(alignment: .leading, spacing: 2) {
-                        TextField(AgentDelivery.deliveryPlaceLabel, text: binding(delivery))
-                            .textFieldStyle(.roundedBorder)
-                        markView(mark)
-                    }
-                    .disabled(locked)
-                } else {
-                    lineView(line, index)
-                }
-            case .meal(let line, let mark):
-                if pending, let on = editors.mealOn {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Toggle(isOn: Binding(get: { on.isOn }, set: { on.isOn = $0 })) {
-                            Text(verbatim: AgentDelivery.mealSwitchLabel)
-                        }
-                        if on.isOn, let title = editors.mealTitle, let start = editors.mealStart {
-                            TextField(AgentDelivery.mealTitleLabel, text: binding(title))
-                                .textFieldStyle(.roundedBorder)
-                            DatePicker(AgentDelivery.mealStartLabel, selection: Binding(get: { start.start }, set: { start.start = $0 }),
-                                       displayedComponents: .hourAndMinute)
-                                .environment(\.calendar, start.calendar)
-                                .environment(\.timeZone, start.calendar.timeZone)
-                            markView(mark)
-                        }
-                    }
-                    .disabled(locked)
-                } else if let line {
-                    lineView(line, index)
-                }
-            }
-        }
-    }
-
-    private func binding(_ field: AgentCardText) -> Binding<String> {
-        Binding(get: { field.text }, set: { field.text = $0 })
-    }
-
-    private func lineView(_ line: String, _ index: Int) -> some View {
-        Text(verbatim: line)
-            .font(index == 0 ? .headline : .body)
-            .foregroundStyle(Theme.ink)
-    }
-
-    /// The mark a line holds (`(suggested ...)`), drawn beside its control.
-    @ViewBuilder
-    private func markView(_ mark: String) -> some View {
-        let text = mark.trimmingCharacters(in: .whitespaces)
-        if !text.isEmpty {
-            Text(verbatim: text)
-                .font(.footnote)
-                .foregroundStyle(Theme.muted)
-        }
-    }
-}
-
 /// SPEC-CHOICECARD-001: a card drawn from a partner's field list. While it waits, the edit card draws it (its own background and
 /// border, built once by the model and never rebuilt here, as `AddActivityView` rules for its card); the chat's Confirm and Cancel
 /// sit below it. Once resolved, the lines the model holds are drawn as plain text inside the chat's own border. It observes the
@@ -250,7 +183,7 @@ private struct AgentFieldCardContent: View {
                 GoogleMapsAttribution()
             }
             if pending {
-                AgentCardActions(session: session, card: card, editors: card.editors, fieldReady: fieldCard.isReady)
+                AgentCardActions(session: session, card: card, fieldReady: fieldCard.isReady)
             } else if let mark = card.mark {
                 Text(verbatim: mark.rawValue)
                     .font(.footnote)
@@ -263,12 +196,11 @@ private struct AgentFieldCardContent: View {
     }
 }
 
-/// Confirm and Cancel of a pending card. Confirm is disabled while an edited value is blank; both are disabled while the session
+/// Confirm and Cancel of a pending card. Confirm is disabled while a required value of a field card is blank; both are disabled while the session
 /// applies the card.
 private struct AgentCardActions: View {
     @ObservedObject var session: AgentSession
     let card: AgentCard
-    @ObservedObject var editors: AgentCardEditors
     /// The readiness of a field card, passed as a value so that a change redraws the buttons; the other forms leave it true.
     var fieldReady = true
 
