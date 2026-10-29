@@ -188,7 +188,8 @@ final class AgentDeliveryTests: XCTestCase {
 
         let options = DeliveryOptions(
             menu: [DeliveryMenuItem(id: "ramen", name: "Ramen", priceCents: 1400), DeliveryMenuItem(id: "gyoza", name: "Gyoza", priceCents: 700)],
-            cards: [DeliveryCard(id: "debit-4242", label: "Example Debit \u{2022}\u{2022}4242 (Simulated)")], deliveryFeeCents: 500)
+            fields: PartnerField.delivery(cards: [DeliveryCard(id: "debit-4242", label: "Example Debit \u{2022}\u{2022}4242 (Simulated)")]),
+            deliveryFeeCents: 500)
         let optionsResult = AgentDelivery.optionsResult(options)
         XCTAssertEqual(Set(optionsResult.keys), ["status", "partner", "simulated", "menu", "cards", "estimated_delivery_fee", "message"])
         XCTAssertEqual(optionsResult["status"] as? String, "ok")

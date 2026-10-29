@@ -14,7 +14,10 @@ final class DeliveryClientTests: XCTestCase {
     private let late = "2026-11-02T23:30"
     private var config: AppConfig { AppConfig(kakaoJsKey: "", proxyBaseURL: "https://\(host)", appToken: token) }
 
-    /// The partner's fixed tables (SPEC-DELIVERY-001 L13), as the held options.
+    private static let sampleCards = [DeliveryCard(id: "debit-4242", label: "Example Debit \u{2022}\u{2022}4242 (Simulated)"),
+                                    DeliveryCard(id: "credit-1881", label: "Example Credit \u{2022}\u{2022}1881 (Simulated)")]
+
+    /// The partner's fixed tables (SPEC-DELIVERY-001 L13) and its order form (SPEC-CHOICECARD-001), as the held options.
     private let options = DeliveryOptions(
         menu: [DeliveryMenuItem(id: "ramen", name: "Ramen", priceCents: 1400),
                DeliveryMenuItem(id: "gyoza", name: "Gyoza", priceCents: 700),
@@ -22,8 +25,7 @@ final class DeliveryClientTests: XCTestCase {
                DeliveryMenuItem(id: "pizza", name: "Cheese pizza", priceCents: 2500),
                DeliveryMenuItem(id: "salad", name: "Garden salad", priceCents: 900),
                DeliveryMenuItem(id: "lemonade", name: "Lemonade", priceCents: 400)],
-        cards: [DeliveryCard(id: "debit-4242", label: "Example Debit \u{2022}\u{2022}4242 (Simulated)"),
-                DeliveryCard(id: "credit-1881", label: "Example Credit \u{2022}\u{2022}1881 (Simulated)")],
+        fields: PartnerField.delivery(cards: DeliveryClientTests.sampleCards),
         deliveryFeeCents: 500)
     /// The same prices, written out once more for the tests' own arithmetic.
     private let prices = ["ramen": 1400, "gyoza": 700, "curry": 1300, "pizza": 2500, "salad": 900, "lemonade": 400]
@@ -75,6 +77,23 @@ final class DeliveryClientTests: XCTestCase {
         return String(decoding: data, as: UTF8.self)
     }
 
+    private func total(of sent: DeliveryRequest) -> Int {
+        sent.items.reduce(500) { $0 + (prices[$1.itemID] ?? 0) * $1.quantity }
+    }
+
+    /// The three result items the Worker sends: the arrival, the estimated total and the status.
+    private func resultItems(arrive: String, total: Int) -> [[String: Any]] {
+        [["name": "Arrival", "kind": "time", "value": arrive], ["name": "Estimated total", "kind": "money", "value": total],
+         ["name": "Status", "kind": "text", "value": "Preparing"]]
+    }
+
+    /// The confirmed answer the client returns for those three items.
+    private func confirmedAnswer(_ orderID: String = "DL-AB12CD", total: Int = 4000, arrive: String? = nil) -> DeliveryAnswer {
+        .confirmed(orderID: orderID, results: [PartnerResultItem(name: "Arrival", value: .time(arrive ?? evening)),
+                                               PartnerResultItem(name: "Estimated total", value: .money(total)),
+                                               PartnerResultItem(name: "Status", value: .text("Preparing"))])
+    }
+
     /// The order answer the Worker gives to `sent` (the default request when nil); the status follows the hours rule.
     /// `mutate` bends it.
     private func object(_ mutate: (inout [String: Any]) -> Void = { _ in }, for sent: DeliveryRequest? = nil) -> String {
@@ -86,8 +105,7 @@ final class DeliveryClientTests: XCTestCase {
                                      "address": sent.address, "card_id": sent.cardID]
         if open {
             fields["order_id"] = "DL-AB12CD"
-            fields["arrival_estimate"] = sent.arriveAt
-            fields["estimated_total_cents"] = sent.items.reduce(500) { $0 + (prices[$1.itemID] ?? 0) * $1.quantity }
+            fields["results"] = resultItems(arrive: sent.arriveAt, total: total(of: sent))
         } else {
             fields["reason"] = "outside_hours"
         }
@@ -107,7 +125,7 @@ final class DeliveryClientTests: XCTestCase {
     private func optionsObject(_ mutate: (inout [String: Any]) -> Void = { _ in }) -> String {
         var fields: [String: Any] = ["partner": "Example Delivery", "simulated": true,
                                      "menu": options.menu.map { menuEntry($0.id, $0.name, $0.priceCents) },
-                                     "cards": options.cards.map { cardEntry($0.id, $0.label) },
+                                     "order_fields": orderFields(),
                                      "delivery_fee_cents": 500]
         mutate(&fields)
         return json(fields)
@@ -116,7 +134,14 @@ final class DeliveryClientTests: XCTestCase {
     /// An options answer whose menu is `entries` and whose cards and fee are the sample's.
     private func optionsObject(menu entries: [[String: Any]]) -> String { optionsObject { $0["menu"] = entries } }
 
-    private func optionsObject(cards entries: [[String: Any]]) -> String { optionsObject { $0["cards"] = entries } }
+    private func optionsObject(cards entries: [[String: Any]]) -> String { optionsObject { $0["order_fields"] = orderFields(cards: entries) } }
+
+    /// The delivery partner's field list as the Worker sends it: the arrival, the delivery place and the card.
+    private func orderFields(cards entries: [[String: Any]]? = nil) -> [[String: Any]] {
+        [["key": "arrive_at", "kind": "time", "label": "Arrival"], ["key": "address", "kind": "place", "label": "Delivery place"],
+         ["key": "card_id", "kind": "pick_one", "label": "Pay with",
+          "options": entries ?? Self.sampleCards.map { cardEntry($0.id, $0.label) }]]
+    }
 
     /// `count` distinct menu entries with lower-case letter ids.
     private func menuOf(_ count: Int, price: Int = 100) -> [[String: Any]] {
@@ -239,15 +264,15 @@ final class DeliveryClientTests: XCTestCase {
 
     func testC04_AConfirmedAnswerGivesTheOrderIdAndTheRecomputedTotal() async {
         let result = await order(BookingSendRecorder(body: object()))
-        XCTAssertEqual(result, .success(.confirmed(orderID: "DL-AB12CD", estimatedTotalCents: 4000)))
+        XCTAssertEqual(result, .success(confirmedAnswer("DL-AB12CD", total: 4000)))
         // Six lines of nine of the real table: 9 x 7200 + 500.
         let all = lines(("ramen", 9), ("gyoza", 9), ("curry", 9), ("pizza", 9), ("salad", 9), ("lemonade", 9))
         let big = await order(BookingSendRecorder(body: object(for: request(items: all))), request(items: all))
-        XCTAssertEqual(big, .success(.confirmed(orderID: "DL-AB12CD", estimatedTotalCents: 65300)))
+        XCTAssertEqual(big, .success(confirmedAnswer("DL-AB12CD", total: 65300)))
         // A single cheapest item: the fee counts once.
         let single = lines(("lemonade", 1))
         let one = await order(BookingSendRecorder(body: object(for: request(items: single))), request(items: single))
-        XCTAssertEqual(one, .success(.confirmed(orderID: "DL-AB12CD", estimatedTotalCents: 900)))
+        XCTAssertEqual(one, .success(confirmedAnswer("DL-AB12CD", total: 900)))
     }
 
     func testC05_ADeclinedAnswerGivesDeclined() async {
@@ -289,14 +314,36 @@ final class DeliveryClientTests: XCTestCase {
         confirmed.append(object { $0["status"] = "CONFIRMED" })
         confirmed.append(object { $0["status"] = true })
         confirmed.append(object { $0.removeValue(forKey: "status") })
+        // The keys of the former answer are an eleventh key; their absence is not the defect, the list is.
         confirmed.append(object { $0["arrival_estimate"] = "2026-11-02T19:50" })
-        confirmed.append(object { $0["arrival_estimate"] = 1940 })
-        confirmed.append(object { $0.removeValue(forKey: "arrival_estimate") })
+        confirmed.append(object { $0["arrival_estimate"] = evening })
+        confirmed.append(object { $0["estimated_total_cents"] = 4000 })
         confirmed.append(object { $0["estimated_total_cents"] = 4001 })
-        confirmed.append(object { $0["estimated_total_cents"] = 3999 })
-        confirmed.append(object { $0["estimated_total_cents"] = "4000" })
-        confirmed.append(object { $0["estimated_total_cents"] = 4000.5 })
-        confirmed.append(object { $0.removeValue(forKey: "estimated_total_cents") })
+        confirmed.append(object { $0.removeValue(forKey: "results"); $0["estimated_total_cents"] = 4000 })
+        confirmed.append(object { $0.removeValue(forKey: "results"); $0["arrival_estimate"] = evening })
+        confirmed.append(object { $0.removeValue(forKey: "results") })
+        // The result list: a total off by one cent either way, a time that is not the requested one, a wrong kind of value.
+        confirmed.append(object { $0["results"] = resultItems(arrive: evening, total: 4001) })
+        confirmed.append(object { $0["results"] = resultItems(arrive: evening, total: 3999) })
+        confirmed.append(object { $0["results"] = resultItems(arrive: "2026-11-02T19:41", total: 4000) })
+        confirmed.append(object { $0["results"] = resultItems(arrive: "2026-11-03T19:40", total: 4000) })
+        confirmed.append(object { $0["results"] = [["name": "Arrival", "kind": "time", "value": evening],
+                                                   ["name": "Estimated total", "kind": "money", "value": "4000"]] })
+        confirmed.append(object { $0["results"] = [["name": "Arrival", "kind": "time", "value": evening],
+                                                   ["name": "Estimated total", "kind": "money", "value": 4000.5]] })
+        confirmed.append(object { $0["results"] = [["name": "Arrival", "kind": "time", "value": evening],
+                                                   ["name": "Estimated total", "kind": "money", "value": true]] })
+        confirmed.append(object { $0["results"] = [["name": "Arrival", "kind": "time", "value": evening],
+                                                   ["name": "Estimated total", "kind": "money", "value": 0]] })
+        confirmed.append(object { $0["results"] = [["name": "Arrival", "kind": "time", "value": evening]] })
+        confirmed.append(object { $0["results"] = [["name": "Estimated total", "kind": "money", "value": 4000]] })
+        confirmed.append(object { $0["results"] = [["name": "Status", "kind": "text", "value": "Preparing"]] })
+        confirmed.append(object { $0["results"] = [] })
+        confirmed.append(object { $0["results"] = "Preparing" })
+        confirmed.append(object { $0["results"] = NSNull() })
+        confirmed.append(object { $0["results"] = [["name": "Arrival", "kind": "time", "value": "2026-11-02T25:00"],
+                                                   ["name": "Estimated total", "kind": "money", "value": 4000]] })
+        confirmed.append(object { $0["results"] = resultItems(arrive: evening, total: 4000).map { var item = $0; item["unit"] = "x"; return item } })
         confirmed.append(object { $0["order_id"] = "EX-AB12CD" })
         confirmed.append(object { $0["order_id"] = 123456789 })
         confirmed.append(object { $0.removeValue(forKey: "order_id") })
@@ -329,6 +376,7 @@ final class DeliveryClientTests: XCTestCase {
         declined.append(object({ $0["order_id"] = "DL-AB12CD" }, for: lateRequest))
         declined.append(object({ $0["arrival_estimate"] = late }, for: lateRequest))
         declined.append(object({ $0["estimated_total_cents"] = 4000 }, for: lateRequest))
+        declined.append(object({ $0["results"] = resultItems(arrive: late, total: 4000) }, for: lateRequest))
         declined.append(object({ $0.removeValue(forKey: "reason") }, for: lateRequest))
         declined.append(object({ $0["reason"] = "no_table" }, for: lateRequest))
         declined.append(object({ $0["reason"] = "closed" }, for: lateRequest))
@@ -344,20 +392,21 @@ final class DeliveryClientTests: XCTestCase {
         assertRefused(declined, sent: lateRequest)
 
         // The status has to agree with the hours rule, in both directions.
-        assertRefused([object({ $0["status"] = "confirmed"; $0["order_id"] = "DL-AB12CD"; $0["arrival_estimate"] = late
-                                $0["estimated_total_cents"] = 4000; $0.removeValue(forKey: "reason") }, for: lateRequest)],
+        assertRefused([object({ $0["status"] = "confirmed"; $0["order_id"] = "DL-AB12CD"
+                                $0["results"] = resultItems(arrive: late, total: 4000); $0.removeValue(forKey: "reason") }, for: lateRequest)],
                       sent: lateRequest)
         assertRefused([object({ $0["status"] = "declined"; $0["reason"] = "outside_hours"; $0.removeValue(forKey: "order_id")
-                                $0.removeValue(forKey: "arrival_estimate"); $0.removeValue(forKey: "estimated_total_cents") })])
+                                $0.removeValue(forKey: "results") })])
         for time in ["2026-11-02T09:59", "2026-11-02T22:01", "2026-11-02T00:00", "2026-11-02T23:59"] {
             let sample = request(arrive: time)
-            assertRefused([object({ $0["status"] = "confirmed"; $0["order_id"] = "DL-AB12CD"; $0["arrival_estimate"] = time
-                                    $0["estimated_total_cents"] = 4000; $0.removeValue(forKey: "reason") }, for: sample)], sent: sample)
+            assertRefused([object({ $0["status"] = "confirmed"; $0["order_id"] = "DL-AB12CD"
+                                    $0["results"] = resultItems(arrive: time, total: 4000); $0.removeValue(forKey: "reason") }, for: sample)],
+                          sent: sample)
         }
         for time in ["2026-11-02T10:00", "2026-11-02T22:00", "2026-11-02T12:00"] {
             let sample = request(arrive: time)
             let result = await order(BookingSendRecorder(body: object(for: sample)), sample)
-            XCTAssertEqual(result, .success(.confirmed(orderID: "DL-AB12CD", estimatedTotalCents: 4000)), time)
+            XCTAssertEqual(result, .success(confirmedAnswer("DL-AB12CD", total: 4000, arrive: time)), time)
         }
         for time in ["2026-11-02T09:59", "2026-11-02T22:01"] {
             let sample = request(arrive: time)
@@ -379,7 +428,7 @@ final class DeliveryClientTests: XCTestCase {
         }
         // Positive counterpart: the same body at 200 is accepted.
         let accepted = await order(BookingSendRecorder(status: 200, body: object()))
-        XCTAssertEqual(accepted, .success(.confirmed(orderID: "DL-AB12CD", estimatedTotalCents: 4000)))
+        XCTAssertEqual(accepted, .success(confirmedAnswer("DL-AB12CD", total: 4000)))
     }
 
     // MARK: C07-C10 failures
@@ -450,24 +499,28 @@ final class DeliveryClientTests: XCTestCase {
         // The order answer: a quantity and the total written as 2.0 and 4000.0.
         let plain = object()
         XCTAssertTrue(plain.contains("\"quantity\":2}"))
-        XCTAssertTrue(plain.contains("\"estimated_total_cents\":4000,"))
+        XCTAssertTrue(plain.contains("\"value\":4000}"))
         let floating = plain.replacingOccurrences(of: "\"quantity\":2}", with: "\"quantity\":2.0}")
-            .replacingOccurrences(of: "\"estimated_total_cents\":4000,", with: "\"estimated_total_cents\":4000.0,")
+            .replacingOccurrences(of: "\"value\":4000}", with: "\"value\":4000.0}")
         XCTAssertTrue(floating.contains("\"quantity\":2.0}"))
-        XCTAssertTrue(floating.contains("\"estimated_total_cents\":4000.0,"))
+        XCTAssertTrue(floating.contains("\"value\":4000.0}"))
         let accepted = await order(BookingSendRecorder(body: floating))
-        XCTAssertEqual(accepted, .success(.confirmed(orderID: "DL-AB12CD", estimatedTotalCents: 4000)))
+        XCTAssertEqual(accepted, .success(confirmedAnswer("DL-AB12CD", total: 4000)))
 
         assertRefused([
-            object { $0["estimated_total_cents"] = true },
+            object { $0["results"] = resultItems(arrive: evening, total: 4000).map { item in
+                var changed = item
+                if item["kind"] as? String == "money" { changed["value"] = true }
+                return changed } },
             object { $0["items"] = [["item_id": "ramen", "quantity": true], ["item_id": "gyoza", "quantity": 1]] },
             plain.replacingOccurrences(of: "\"quantity\":2}", with: "\"quantity\":2.5}"),
-            plain.replacingOccurrences(of: "\"estimated_total_cents\":4000,", with: "\"estimated_total_cents\":4000.5,"),
+            plain.replacingOccurrences(of: "\"value\":4000}", with: "\"value\":4000.5}"),
         ])
-        // A single line of quantity 1 is not read as `true`.
+        // A single line of quantity 1 is not read as `true`, and a total of 900 is not read as `true`.
         let one = request(items: lines(("ramen", 1)))
         assertRefused([object({ $0["items"] = [["item_id": "ramen", "quantity": true]] }, for: one),
-                       object({ $0["estimated_total_cents"] = true }, for: one)], sent: one)
+                       object({ $0["results"] = [["name": "Arrival", "kind": "time", "value": evening],
+                                                 ["name": "Estimated total", "kind": "money", "value": true]] }, for: one)], sent: one)
 
         // The options answer: a price and the fee written as 1400.0 and 500.0.
         let optionsText = optionsObject()
@@ -487,9 +540,9 @@ final class DeliveryClientTests: XCTestCase {
 
     func testC12_TheOrderIdIsDLAndSixOfUpperCaseAsciiLettersAndDigits() async {
         let valid = await order(BookingSendRecorder(body: object { $0["order_id"] = "DL-Z9Y8X7" }))
-        XCTAssertEqual(valid, .success(.confirmed(orderID: "DL-Z9Y8X7", estimatedTotalCents: 4000)))
+        XCTAssertEqual(valid, .success(confirmedAnswer("DL-Z9Y8X7", total: 4000)))
         let digits = await order(BookingSendRecorder(body: object { $0["order_id"] = "DL-012345" }))
-        XCTAssertEqual(digits, .success(.confirmed(orderID: "DL-012345", estimatedTotalCents: 4000)))
+        XCTAssertEqual(digits, .success(confirmedAnswer("DL-012345", total: 4000)))
         var bodies: [String] = []
         for id in ["DL-ab12cd", "DL-AB12Cd", "DL-AB12C", "DL-AB12CDE", "dl-AB12CD", "EX-AB12CD", "XX-AB12CD", "DL-AB12C\n",
                    "DL-AB 2CD", "DL-ÀB12CD", "DL-AB\u{0661}\u{0662}CD", "DL\u{2010}AB12CD", "DLAB12CDX", "DL-", ""] {
@@ -523,7 +576,7 @@ final class DeliveryClientTests: XCTestCase {
         let declined = await order(BookingSendRecorder(body: object(for: lateRequest)), lateRequest, log: log)
         let failed = await order(BookingSendRecorder(status: 500, body: "oops"), log: log)
         XCTAssertEqual(listed, .success(options))
-        XCTAssertEqual(confirmed, .success(.confirmed(orderID: "DL-AB12CD", estimatedTotalCents: 4000)))
+        XCTAssertEqual(confirmed, .success(confirmedAnswer("DL-AB12CD", total: 4000)))
         XCTAssertEqual(declined, .success(.declined))
         XCTAssertEqual(failed, .failure(.other))
 
@@ -580,7 +633,8 @@ final class DeliveryClientTests: XCTestCase {
         bodies.append(optionsObject { $0["simulated"] = 1 })
         bodies.append(optionsObject { $0["extra"] = 1 })
         bodies.append(optionsObject { $0["status"] = "ok" })
-        for key in ["menu", "cards", "delivery_fee_cents"] { bodies.append(optionsObject { $0.removeValue(forKey: key) }) }
+        bodies.append(optionsObject { $0["cards"] = options.cards.map { cardEntry($0.id, $0.label) } })
+        for key in ["menu", "order_fields", "delivery_fee_cents"] { bodies.append(optionsObject { $0.removeValue(forKey: key) }) }
         // The menu.
         bodies.append(optionsObject(menu: []))
         bodies.append(optionsObject(menu: menuOf(13)))
@@ -625,7 +679,9 @@ final class DeliveryClientTests: XCTestCase {
         bodies.append(optionsObject(cards: [["id": "debit-4242", "label": "Example Debit (Simulated)", "number": "4242"]]))
         bodies.append(optionsObject(cards: [["id": "debit-4242"]]))
         bodies.append(optionsObject(cards: [["label": "Example Debit (Simulated)"]]))
-        bodies.append(optionsObject { $0["cards"] = "debit-4242" })
+        bodies.append(optionsObject { $0["order_fields"] = "debit-4242" })
+        bodies.append(optionsObject { $0["order_fields"] = NSNull() })
+        bodies.append(optionsObject { $0["order_fields"] = [] })
         // The fee.
         for fee: Any in [-1, 10001, 5.5, "500", true, NSNull()] { bodies.append(optionsObject { $0["delivery_fee_cents"] = fee }) }
         // A body that is not the object.
@@ -672,7 +728,7 @@ final class DeliveryClientTests: XCTestCase {
         }
         XCTAssertEqual(DeliveryClient.optionsAnswer(from: Data(narrowest.utf8)),
                        DeliveryOptions(menu: [DeliveryMenuItem(id: "a", name: String(repeating: "N", count: 40), priceCents: 1)],
-                                       cards: [DeliveryCard(id: "c", label: "L")], deliveryFeeCents: 0))
+                                       fields: PartnerField.delivery(cards: [DeliveryCard(id: "c", label: "L")]), deliveryFeeCents: 0))
     }
 
     func testC16_TheTotalRuleOfTheOptionsAndAnOrderOfUnheldIdsIsNotSent() async {
@@ -683,11 +739,11 @@ final class DeliveryClientTests: XCTestCase {
         XCTAssertEqual(options.totalCents(for: lines(("ramen", 9), ("gyoza", 9), ("curry", 9), ("pizza", 9), ("salad", 9), ("lemonade", 9))), 65300)
         let letters = (0..<8).map { String(UnicodeScalar(UInt8(97 + $0))) }
         let flat = DeliveryOptions(menu: letters.prefix(6).map { DeliveryMenuItem(id: $0, name: "N", priceCents: 2500) },
-                                   cards: [DeliveryCard(id: "c", label: "L")], deliveryFeeCents: 500)
+                                   fields: PartnerField.delivery(cards: [DeliveryCard(id: "c", label: "L")]), deliveryFeeCents: 500)
         XCTAssertEqual(flat.totalCents(for: letters.prefix(6).map { DeliveryLine(itemID: $0, quantity: 9) }), 135500)
         // Refused: no lines, 7 lines, a repeated id, an unknown id, a quantity outside 1 to 9.
         let wide = DeliveryOptions(menu: letters.map { DeliveryMenuItem(id: $0, name: "N", priceCents: 100) },
-                                   cards: [DeliveryCard(id: "c", label: "L")], deliveryFeeCents: 500)
+                                   fields: PartnerField.delivery(cards: [DeliveryCard(id: "c", label: "L")]), deliveryFeeCents: 500)
         XCTAssertEqual(wide.totalCents(for: letters.prefix(6).map { DeliveryLine(itemID: $0, quantity: 1) }), 1100)
         XCTAssertNil(wide.totalCents(for: letters.prefix(7).map { DeliveryLine(itemID: $0, quantity: 1) }))
         XCTAssertNil(options.totalCents(for: []))
@@ -718,8 +774,130 @@ final class DeliveryClientTests: XCTestCase {
         // Positive counterpart: the sample request is sent.
         let sent = BookingSendRecorder(body: object())
         let accepted = await order(sent, log: log)
-        XCTAssertEqual(accepted, .success(.confirmed(orderID: "DL-AB12CD", estimatedTotalCents: 4000)))
+        XCTAssertEqual(accepted, .success(confirmedAnswer("DL-AB12CD", total: 4000)))
         XCTAssertEqual(sent.requests.count, 1)
+    }
+
+    // MARK: C17-C18 the field list and the result list of the delivery adapter
+
+    func testC17_TheAdapterRuleAcceptsOnlyTheThreeKnownFieldsInAnyOrderAndRefusesTheRest() async throws {
+        // Positive first: the partner's list decodes to the held options, fields in the partner's order.
+        let usual = try XCTUnwrap(DeliveryClient.optionsAnswer(from: Data(optionsObject().utf8)))
+        XCTAssertEqual(usual, options)
+        XCTAssertEqual(usual.fields.map(\.key), ["arrive_at", "address", "card_id"])
+        XCTAssertEqual(usual.cards.map(\.id), ["debit-4242", "credit-1881"])
+        XCTAssertEqual(usual.cards.map(\.label), Self.sampleCards.map(\.label))
+
+        // A reordered list is accepted and the partner's order is kept; so is a relabelled one with other cards.
+        let reordered = optionsObject {
+            let all = orderFields()
+            $0["order_fields"] = [all[2], all[0], all[1]]
+        }
+        let reorderedOptions = try XCTUnwrap(DeliveryClient.optionsAnswer(from: Data(reordered.utf8)))
+        XCTAssertEqual(reorderedOptions.fields.map(\.key), ["card_id", "arrive_at", "address"])
+        XCTAssertEqual(reorderedOptions.cards, usual.cards)
+        let relabelled = optionsObject {
+            $0["order_fields"] = [["key": "arrive_at", "kind": "time", "label": "When"], ["key": "address", "kind": "place", "label": "Where to"],
+                                  ["key": "card_id", "kind": "pick_one", "label": "Card",
+                                   "options": [cardEntry("gold-1", "Example Gold (Simulated)")]]]
+        }
+        let relabelledOptions = try XCTUnwrap(DeliveryClient.optionsAnswer(from: Data(relabelled.utf8)))
+        XCTAssertEqual(relabelledOptions.fields.map(\.label), ["When", "Where to", "Card"])
+        XCTAssertEqual(relabelledOptions.cards, [DeliveryCard(id: "gold-1", label: "Example Gold (Simulated)")])
+        XCTAssertEqual(relabelledOptions.card(id: "gold-1")?.label, "Example Gold (Simulated)")
+
+        let arrive: [String: Any] = ["key": "arrive_at", "kind": "time", "label": "Arrival"]
+        let address: [String: Any] = ["key": "address", "kind": "place", "label": "Delivery place"]
+        let card: [String: Any] = ["key": "card_id", "kind": "pick_one", "label": "Pay with", "options": [cardEntry("debit-4242", "Example Debit (Simulated)")]]
+        let onOff: (String) -> [String: Any] = { key in
+            ["key": key, "kind": "on_off", "label": "Leave at door", "options": [self.cardEntry("true", "Leave"), self.cardEntry("false", "Hand over")]]
+        }
+        let note: [String: Any] = ["key": "note", "kind": "text", "label": "Note"]
+        func listed(_ fields: [[String: Any]]) -> String { optionsObject { $0["order_fields"] = fields } }
+        var bodies: [String] = [
+            // An unknown key (a well-formed text field), a missing key of each of the three, a known key of the wrong kind.
+            listed([arrive, address, card, note]), listed([arrive, card]), listed([address, card]), listed([arrive, address]), listed([]),
+            listed([["key": "arrive_at", "kind": "place", "label": "Arrival"], address, card]),
+            listed([["key": "arrive_at", "kind": "text", "label": "Arrival"], address, card]),
+            listed([arrive, ["key": "address", "kind": "text", "label": "Delivery place"], card]),
+            listed([arrive, ["key": "address", "kind": "time", "label": "Delivery place"], card]),
+            listed([arrive, address, ["key": "card_id", "kind": "text", "label": "Pay with"]]),
+            listed([arrive, address, ["key": "card_id", "kind": "place", "label": "Pay with"]]),
+            // A duplicate key, and a key outside the three in place of one of them.
+            listed([arrive, arrive, address, card]), listed([arrive, address, card, card]),
+            listed([arrive, address, ["key": "payment", "kind": "pick_one", "label": "Pay with", "options": [cardEntry("debit-4242", "Example Debit (Simulated)")]]]),
+            listed([["key": "when", "kind": "time", "label": "Arrival"], address, card]),
+            // An on_off field is refused for the delivery partner, well-formed or not, whatever its key.
+            listed([arrive, address, card, onOff("leave_at_door")]), listed([arrive, address, onOff("card_id")]),
+            listed([onOff("arrive_at"), address, card]), listed([arrive, onOff("address"), card]),
+            listed([arrive, address, card, ["key": "door", "kind": "on_off", "label": "Door"]]),
+            // The shapes of the former answers: the former five keys, four keys, six keys, a top-level cards.
+            optionsObject { $0.removeValue(forKey: "order_fields"); $0["cards"] = options.cards.map { cardEntry($0.id, $0.label) } },
+            optionsObject { $0.removeValue(forKey: "delivery_fee_cents") },
+            optionsObject { $0["cards"] = options.cards.map { cardEntry($0.id, $0.label) } },
+            optionsObject { $0.removeValue(forKey: "order_fields") },
+            optionsObject { $0["order_fields"] = options.cards.map { cardEntry($0.id, $0.label) } },
+        ]
+        // The same list with the pick_one options of the card field defective.
+        bodies.append(listed([arrive, address, ["key": "card_id", "kind": "pick_one", "label": "Pay with", "options": []]]))
+        assertOptionsRefused(bodies)
+        // Each refusal is `other` through the client too.
+        for text in bodies.prefix(6) {
+            let viaClient = await fetchOptions(BookingSendRecorder(body: text))
+            XCTAssertEqual(viaClient, .failure(.other), text)
+        }
+    }
+
+    func testC18_TheConfirmedAnswerIsReadByKindAndOnlyTheExactAdapterShapeIsRecorded() async throws {
+        // Positive first: the three items are accepted, and so is an extra text item.
+        let plain = await order(BookingSendRecorder(body: object()))
+        XCTAssertEqual(plain, .success(confirmedAnswer("DL-AB12CD", total: 4000)))
+        let withExtra = object { $0["results"] = resultItems(arrive: evening, total: 4000) + [["name": "Courier", "kind": "text", "value": "Sam"]] }
+        let extra = await order(BookingSendRecorder(body: withExtra))
+        guard case .success(.confirmed(let orderID, let results)) = extra else { return XCTFail("an extra text item is accepted") }
+        XCTAssertEqual(orderID, "DL-AB12CD")
+        XCTAssertEqual(results.count, 4)
+        XCTAssertEqual(results.moneyCents, 4000)
+        XCTAssertEqual(results.arrival, evening)
+        XCTAssertEqual(results.last, PartnerResultItem(name: "Courier", value: .text("Sam")))
+        // The order of the items is the partner's, and the money item is not tied to a name: the kind decides.
+        let renamed = object { $0["results"] = [["name": "Status", "kind": "text", "value": "Preparing"],
+                                                ["name": "Total due", "kind": "money", "value": 4000],
+                                                ["name": "ETA", "kind": "time", "value": evening]] }
+        let byKind = await order(BookingSendRecorder(body: renamed))
+        guard case .success(.confirmed(_, let renamedResults)) = byKind else { return XCTFail("the kind decides, not the name") }
+        XCTAssertEqual(renamedResults.moneyCents, 4000)
+        XCTAssertEqual(renamedResults.arrival, evening)
+
+        let three = resultItems(arrive: evening, total: 4000)
+        let refused: [String] = [
+            object { $0["results"] = three + [["name": "Tip", "kind": "money", "value": 300]] },
+            object { $0["results"] = three + [["name": "Ready", "kind": "time", "value": evening]] },
+            object { $0["results"] = three + [["name": "Total", "kind": "money", "value": 4000]] },
+            object { $0["results"] = resultItems(arrive: "2026-11-02T19:41", total: 4000) },
+            object { $0["results"] = resultItems(arrive: evening, total: 4001) },
+            object { $0["results"] = resultItems(arrive: evening, total: 3999) },
+            object { $0["results"] = [["name": "Estimated total", "kind": "money", "value": 4000], ["name": "Status", "kind": "text", "value": "Preparing"]] },
+            object { $0["results"] = [["name": "Arrival", "kind": "time", "value": evening], ["name": "Status", "kind": "text", "value": "Preparing"]] },
+            object { $0["results"] = [["name": "Status", "kind": "text", "value": "Preparing"]] },
+            object { $0.removeValue(forKey: "results"); $0["arrival_estimate"] = evening; $0["estimated_total_cents"] = 4000 },
+            object { $0["arrival_estimate"] = evening; $0["estimated_total_cents"] = 4000 },
+        ]
+        assertRefused(refused)
+        // Through the client a refused answer is `other` and records one failure packet, never an order.
+        for text in refused {
+            let (log, _) = makeLog()
+            let result = await order(BookingSendRecorder(body: text), log: log)
+            XCTAssertEqual(result, .failure(.other), text)
+            await log.flush()
+            XCTAssertEqual(packetLines(log), ["besir>deliveryPartner delivery failed Request failed"], text)
+        }
+        // The total is the held menu's: one more line in the request moves the expected total with it.
+        let two = request(items: lines(("lemonade", 1), ("pizza", 1)))
+        let moved = await order(BookingSendRecorder(body: object(for: two)), two)
+        XCTAssertEqual(moved, .success(confirmedAnswer("DL-AB12CD", total: 3400)))
+        let stale = await order(BookingSendRecorder(body: object({ $0["results"] = resultItems(arrive: evening, total: 4000) }, for: two)), two)
+        XCTAssertEqual(stale, .failure(.other))
     }
 
     // MARK: P01-P06 the order packets
@@ -765,7 +943,7 @@ final class DeliveryClientTests: XCTestCase {
                                                BookingSendRecorder(status: 401, body: #"{"error":"unauthorized"}"#),
                                                BookingSendRecorder(body: "[]"),
                                                BookingSendRecorder(body: object { $0["partner"] = "Real Delivery" }),
-                                               BookingSendRecorder(body: object { $0["estimated_total_cents"] = 4001 })]
+                                               BookingSendRecorder(body: object { $0["results"] = resultItems(arrive: evening, total: 4001) })]
         for recorder in failures {
             let (log, _) = makeLog()
             _ = await order(recorder, log: log)
@@ -825,7 +1003,7 @@ final class DeliveryClientTests: XCTestCase {
         for present in [place, evening, address, "ramen", "gyoza", "credit-1881"] { XCTAssertTrue(sent.contains(present), present) }
         XCTAssertTrue(reply.contains("DL-QX7Z9K"))
         XCTAssertTrue(reply.contains("8200"))
-        XCTAssertEqual(result, .success(.confirmed(orderID: "DL-QX7Z9K", estimatedTotalCents: 8200)))
+        XCTAssertEqual(result, .success(confirmedAnswer("DL-QX7Z9K", total: 8200)))
         await log.flush()
         let stored = try String(contentsOf: file, encoding: .utf8)
         XCTAssertTrue(stored.contains("Delivery of 7 items requested"))
@@ -862,7 +1040,7 @@ final class DeliveryClientTests: XCTestCase {
             XCTAssertEqual(packetLines(broken), packetLines(working))
         }
         let confirmed = await order(BookingSendRecorder(body: object()), log: makeLog(failing: true).log)
-        XCTAssertEqual(confirmed, .success(.confirmed(orderID: "DL-AB12CD", estimatedTotalCents: 4000)))
+        XCTAssertEqual(confirmed, .success(confirmedAnswer("DL-AB12CD", total: 4000)))
         let listed = await fetchOptions(BookingSendRecorder(body: optionsObject()), log: makeLog(failing: true).log)
         XCTAssertEqual(listed, .success(options))
     }

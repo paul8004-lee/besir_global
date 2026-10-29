@@ -1440,9 +1440,9 @@ final class AgentToolbox {
             let result = Self.encode(["status": "declined", "partner": DeliveryClient.partnerName, "simulated": true,
                                       "message": AgentDelivery.declinedMessage])
             return (AgentResolution(result: result, notice: nil), .notApplied)
-        case .success(.confirmed(let orderID, let totalCents)):
+        case .success(.confirmed(let orderID, let results)):
             // The client already refuses a different total; the card's total is checked again here.
-            guard totalCents == order.totalCents else { return deliveryUnavailable() }
+            guard let totalCents = results.moneyCents, totalCents == order.totalCents else { return deliveryUnavailable() }
             let f = formats
             // The suggested meal entry, with the write `book(_:)` uses; the written activity is looked up in the Store.
             var meal: AgentDelivery.AppliedMeal?

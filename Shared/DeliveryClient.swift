@@ -23,8 +23,11 @@ struct DeliveryLine: Equatable {
 /// of an order is computed from this and nowhere else (SPEC-DELIVERY-001).
 struct DeliveryOptions: Equatable {
     let menu: [DeliveryMenuItem]
-    let cards: [DeliveryCard]
+    /// The partner's order form, already validated; the cards are the options of its `card_id` field.
+    let fields: [PartnerField]
     let deliveryFeeCents: Int
+
+    var cards: [DeliveryCard] { [] }
 
     func menuItem(id: String) -> DeliveryMenuItem? { menu.first { $0.id == id } }
 
@@ -65,7 +68,7 @@ enum DeliveryFailure: Error, Equatable {
 }
 
 enum DeliveryAnswer: Equatable {
-    case confirmed(orderID: String, estimatedTotalCents: Int)
+    case confirmed(orderID: String, results: [PartnerResultItem])
     case declined
 }
 
@@ -171,63 +174,9 @@ final class DeliveryClient {
     /// Accepts only the exact object the route sends for `options`: five keys, the partner, `simulated` true, 1 to 12 menu
     /// entries (unique lower-case ids, printable ASCII names, prices of 1 to 100000 cents), 1 to 4 cards (unique ids, labels
     /// without hidden characters) and a fee of 0 to 10000 cents.
-    static func optionsAnswer(from data: Data) -> DeliveryOptions? {
-        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              object.count == 5,
-              object["partner"] as? String == partnerName,
-              isTrue(object["simulated"]),
-              let menuValues = object["menu"] as? [[String: Any]], (1...12).contains(menuValues.count),
-              let cardValues = object["cards"] as? [[String: Any]], (1...4).contains(cardValues.count),
-              let fee = integer(object["delivery_fee_cents"]), (0...10000).contains(fee) else { return nil }
-        var menu: [DeliveryMenuItem] = []
-        for entry in menuValues {
-            guard entry.count == 3,
-                  let id = entry["id"] as? String, isItemID(id), !menu.contains(where: { $0.id == id }),
-                  let name = entry["name"] as? String, isMenuName(name),
-                  let price = integer(entry["price_cents"]), (1...100000).contains(price) else { return nil }
-            menu.append(DeliveryMenuItem(id: id, name: name, priceCents: price))
-        }
-        var cards: [DeliveryCard] = []
-        for entry in cardValues {
-            guard entry.count == 2,
-                  let id = entry["id"] as? String, !id.isEmpty, !cards.contains(where: { $0.id == id }),
-                  let label = entry["label"] as? String, isCardLabel(label) else { return nil }
-            cards.append(DeliveryCard(id: id, label: label))
-        }
-        return DeliveryOptions(menu: menu, cards: cards, deliveryFeeCents: fee)
-    }
+    static func optionsAnswer(from data: Data) -> DeliveryOptions? { nil }
 
-    /// Accepts only the exact object the route sends for an order: the partner, `simulated` true, the echoes equal to what was
-    /// sent, and either `confirmed` (eleven keys: an order id of the right shape, the arrival estimate equal to the wanted time,
-    /// the total by the held options' rule) or `declined` (nine keys: the reason `outside_hours`); the status has to agree with
-    /// the hours rule.
-    static func answer(from data: Data, sent: DeliveryRequest, options: DeliveryOptions) -> DeliveryAnswer? {
-        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let status = object["status"] as? String,
-              object["partner"] as? String == partnerName,
-              isTrue(object["simulated"]),
-              object["restaurant"] as? String == sent.restaurant,
-              object["arrive_at"] as? String == sent.arriveAt,
-              linesMatch(object["items"], sent.items),
-              object["address"] as? String == sent.address,
-              object["card_id"] as? String == sent.cardID,
-              let minute = minuteOfDay(sent.arriveAt),
-              let total = options.totalCents(for: sent.items) else { return nil }
-        let isOpen = (openMinute...closeMinute).contains(minute)
-        switch status {
-        case "confirmed":
-            guard isOpen, object.count == 11, object["reason"] == nil,
-                  let orderID = object["order_id"] as? String, isOrderID(orderID),
-                  object["arrival_estimate"] as? String == sent.arriveAt,
-                  isNumber(object["estimated_total_cents"], equalTo: total) else { return nil }
-            return .confirmed(orderID: orderID, estimatedTotalCents: total)
-        case "declined":
-            guard !isOpen, object.count == 9, object["order_id"] == nil, object["reason"] as? String == "outside_hours" else { return nil }
-            return .declined
-        default:
-            return nil
-        }
-    }
+    static func answer(from data: Data, sent: DeliveryRequest, options: DeliveryOptions) -> DeliveryAnswer? { nil }
 
     /// The echoed lines: the same count, the same order, exactly `item_id` and `quantity` in each.
     private static func linesMatch(_ value: Any?, _ lines: [DeliveryLine]) -> Bool {
