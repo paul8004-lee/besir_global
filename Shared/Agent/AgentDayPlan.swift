@@ -10,6 +10,9 @@ enum AgentDayPlan {
     static let checksPerTurn = 3
     /// `search_places` calls that are executed in one plan turn.
     static let searchesPerTurn = 6
+    /// The longest leg the app counts. A Routes answer above this (a wrongly matched, far-away place) is an unchecked leg, not a
+    /// late arrival: exactly this many seconds is still checked.
+    static let maxLegSeconds: TimeInterval = 6 * 3600
     private static let firstIdeaMax = 2
     private static let changeMax = 2
 
@@ -294,13 +297,13 @@ enum AgentDayPlan {
     }
 
     /// The legs and every problem: overlaps first, then late arrivals. `routes` holds the answers of the lookups; a pair with
-    /// no answer (failed, cancelled, offline, beyond the cap) or with a missing place is an unchecked leg. A leg is late by
+    /// no answer (failed, cancelled, offline, beyond the cap), with a missing place or longer than `maxLegSeconds` is an unchecked leg. A leg is late by
     /// the whole minutes (rounded up) that the leave time is before the end of the stop it starts from.
     static func evaluate(stops: [Stop], routes: [Pair: AgentRoute], bufferMinutes: Int) -> (legs: [Leg], problems: [Problem]) {
         var legs: [Leg] = []
         var late: [Problem] = []
         for (pair, lookup) in candidates(stops) {
-            guard lookup, let route = routes[pair] else {
+            guard lookup, let route = routes[pair], route.seconds <= maxLegSeconds else {
                 legs.append(Leg(from: pair.from, to: pair.to, route: nil, leave: nil))
                 continue
             }
