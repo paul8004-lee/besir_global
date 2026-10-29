@@ -534,9 +534,9 @@ enum ScheduleLogic {
 /// 이제 N일·N개월·N년·한국 음력·날짜 목록까지 한 타입이 표현한다(SPEC-UIKIT-019 REQ-002·008).
 /// 필드를 넓혔을 뿐 옛 init 호출(`RecurrenceRule(weekdays:everyNWeeks:…)`)은 그대로 컴파일된다 —
 /// 새 필드는 모두 기본값이 있고, 기본 `unit`이 옛 동작(요일 집합)이다.
-struct RecurrenceRule {
+struct RecurrenceRule: Codable {
     /// 규칙의 종류. `weekly`가 옛 동작이고 나머지는 019에서 더했다.
-    enum Unit: Equatable { case weekly, daily, monthly, yearly, lunar, dateList }
+    enum Unit: String, Codable, Equatable { case weekly, daily, monthly, yearly, lunar, dateList }
 
     /// 반복 요일(1=일 … 7=토, `Calendar.component(.weekday:)` 기준). 주 단위 반복과
     /// "매월 n번째 요일"(`unit == .monthly`)이 읽는다.
@@ -568,6 +568,10 @@ struct RecurrenceRule {
     /// 드라이버 가시 계수기: 전개 함수 `dates(from:through:…)`가 불린 횟수. 앱 논리는 읽지 않는다.
     /// 먼 종료 날짜가 전개 **전에** 회차 수 셈에서 걸러지는지(REQ-007) 드라이버가 이 값으로 잰다.
     static var drvExpansionCount = 0
+
+    /// Driver-visible counter: loop iterations the expansion core walked, one per iteration in every branch. Application
+    /// logic never reads it; a test reads it to show the walk does not grow with the distance to the window.
+    static var drvWalkSteps = 0
 
     /// 간격(N일·N주·N개월·N년마다의 N)의 상한. 뜻이 있는 간격(천 일·천 주·천 달·천 해)보다 넉넉히 크고, 전개 코어의
     /// `step * n`·`year += n`이 아래 시야(horizonYears) 안에서 넘치지 않는 값이다 — 모델이 Int.max 같은 값을 실어 오면
@@ -608,6 +612,12 @@ struct RecurrenceRule {
         Self.drvExpansionCount += 1
         return generate(from: startDate, through: endDate, calendar: calendar,
                         lunarCalendar: lunarCalendar, stopAfter: nil)
+    }
+
+    /// Window entry point (stub: the window is not applied yet).
+    func dates(from startDate: Date, through endDate: Date, startingAt windowStart: Date, calendar: Calendar = .current,
+               lunarCalendar: Calendar.Identifier = RecurrenceRule.defaultLunarIdentifier) -> [Date] {
+        generate(from: startDate, through: endDate, calendar: calendar, lunarCalendar: lunarCalendar, stopAfter: nil)
     }
 
     /// 종료 날짜까지의 회차 수. 센 개수가 `limit`을 넘는 순간 멈추므로 반환값은 많아야 `limit + 1`이다.
