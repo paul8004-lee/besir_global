@@ -71,7 +71,7 @@ final class BudgetToolRig {
     var ledgerFile: URL { folder.appendingPathComponent(BudgetLedger.fileName) }
 
     init(config: AppConfig = BudgetToolFixture.config, partner: BudgetToolPartner = BudgetToolPartner(),
-         tables: EchoPartner = EchoPartner(), places: [Place] = [BookingFixture.place]) {
+         tables: EchoPartner = EchoPartner(), places: [Place] = [BookingFixture.place], injectBudget: Bool = true) {
         let store = EmptyStore.make()
         store.config = AppConfig()
         let clock = MutableClock()
@@ -80,9 +80,12 @@ final class BudgetToolRig {
                                 secrets: { [BudgetToolFixture.token, BudgetToolFixture.host] })
         let ledger = BudgetLedger(fileURL: folder.appendingPathComponent(BudgetLedger.fileName))
         let box = BookingConfigBox(config)
+        // Without an injected budget client the toolbox builds its own from the Store's configuration (no proxy here).
+        let budget: (() -> BudgetClient)? = injectBudget
+            ? { BudgetClient(config: box.config, ledger: ledger, send: partner.send, connections: log) } : nil
         let toolbox = AgentToolbox(store: store, now: { clock.now }, timeZone: { clock.zone },
                                    booking: { BookingClient(config: box.config, send: tables.send, connections: log) },
-                                   budget: { BudgetClient(config: box.config, ledger: ledger, send: partner.send, connections: log) })
+                                   budget: budget)
         _ = toolbox.registry.register(places)
         self.store = store
         self.clock = clock
@@ -149,8 +152,9 @@ final class BudgetToolRig {
 @MainActor
 final class AgentBudgetToolTests: XCTestCase {
     private func makeRig(config: AppConfig = BudgetToolFixture.config, partner: BudgetToolPartner = BudgetToolPartner(),
-                         tables: EchoPartner = EchoPartner()) -> BudgetToolRig {
-        let rig = BudgetToolRig(config: config, partner: partner, tables: tables)
+                         tables: EchoPartner = EchoPartner(), places: [Place] = [BookingFixture.place],
+                         injectBudget: Bool = true) -> BudgetToolRig {
+        let rig = BudgetToolRig(config: config, partner: partner, tables: tables, places: places, injectBudget: injectBudget)
         let folder = rig.folder
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         return rig
@@ -649,5 +653,351 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertEqual(rig.ledger.spentCents(weekStart: BudgetToolFixture.week), 0)
         let packets = await rig.packets()
         XCTAssertTrue(packets.isEmpty)
+    }
+
+    // MARK: G21-G32 the booking hook
+
+    private func bookingCard(_ rig: BudgetToolRig, party: String = "2", start: String = BookingFixture.start) throws -> AgentCard {
+        try XCTUnwrap(rig.call("request_booking", ["place_id": "p1", "start": start, "party_size": party]).card)
+    }
+
+    private func confirmed(_ card: AgentCard) async throws -> AgentResolution {
+        let resolution = await card.resolve(.confirm)
+        return try XCTUnwrap(resolution)
+    }
+
+    private func budgetPackets(_ rig: BudgetToolRig) async -> [ConnectionPacket] {
+        await rig.packets().filter { $0.kind == .budget }
+    }
+
+    func testBUDGET_G21_AConfirmedBookingSendsItsEstimatedSpendUnderTheBookingsFlow() async throws {
+        let rig = makeRig()
+        let resolution = try await confirmed(try bookingCard(rig))
+        XCTAssertEqual(resolution.status, "applied")
+        XCTAssertEqual(rig.tables.requests.count, 1)
+        XCTAssertEqual(rig.partner.requests.count, 1)
+        let sent = try XCTUnwrap(rig.partner.body())
+        XCTAssertEqual(Set(sent.keys), ["op", "week_start", "spent_cents", "amount_cents", "request_id"])
+        XCTAssertEqual(sent["op"] as? String, "spend")
+        XCTAssertEqual(sent["amount_cents"] as? Int, 6000)
+        XCTAssertEqual(sent["week_start"] as? String, BudgetToolFixture.week)
+        XCTAssertEqual(sent["spent_cents"] as? Int, 0)
+        XCTAssertNotNil(UUID(uuidString: try XCTUnwrap(sent["request_id"] as? String)))
+        let entries = rig.entries
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0]["isEstimate"] as? Bool, true)
+        XCTAssertEqual(entries[0]["amountCents"] as? Int, 6000)
+        XCTAssertEqual(entries[0]["weekStart"] as? String, BudgetToolFixture.week)
+
+        let packets = await rig.packets()
+        XCTAssertEqual(packets.map(\.summary), ["Table for 2 requested", "Reservation confirmed", "Spend sent", "Spend recorded"])
+        XCTAssertEqual(Set(packets.map(\.flowID)).count, 1)
+        XCTAssertNotNil(packets.first?.flowID)
+        let flows = ConnectionFlows.group(packets)
+        XCTAssertEqual(flows.count, 1)
+        XCTAssertEqual(flows.first?.chain, [.besir, .bookingPartner, .besir, .budgetPartner, .besir])
+
+        // A table in the next week is counted there.
+        let next = makeRig()
+        _ = try await confirmed(try bookingCard(next, start: "2026-11-02T19:00"))
+        XCTAssertEqual(next.partner.body()?["week_start"] as? String, "2026-11-02")
+        XCTAssertEqual(next.ledger.spentCents(weekStart: "2026-11-02"), 6000)
+        XCTAssertEqual(next.ledger.spentCents(weekStart: BudgetToolFixture.week), 0)
+    }
+
+    func testBUDGET_G22_TheBookingResultGainsTheBudgetBlockAndTheSentenceAndTheNoticeIsTheWithinForm() async throws {
+        let rig = makeRig()
+        let card = try bookingCard(rig)
+        let resolution = try await confirmed(card)
+        XCTAssertEqual(card.mark, .confirmed)
+        XCTAssertEqual(resolution.status, "applied")
+        XCTAssertEqual(rig.store.activities.count, 1)
+        XCTAssertEqual(resolution.notice, "Estimated spend $60.00 sent to Example Budget (Simulated): $140.00 left this week.")
+        let json = try XCTUnwrap(resolution.json)
+        XCTAssertEqual(json["reservation_code"] as? String, "EX-AB12CD")
+        XCTAssertEqual(json["partner"] as? String, "Example Tables")
+        let block = try XCTUnwrap(json["budget"] as? [String: Any])
+        XCTAssertEqual(Set(block.keys), ["simulated", "status", "estimated_spend", "week", "includes_estimate", "left"])
+        XCTAssertEqual(block["status"] as? String, "recorded")
+        XCTAssertEqual(block["estimated_spend"] as? String, "$60.00")
+        XCTAssertEqual(block["week"] as? String, "this week")
+        XCTAssertEqual(block["includes_estimate"] as? Bool, true)
+        XCTAssertEqual(block["left"] as? String, "$140.00")
+        XCTAssertEqual(json["message"] as? String, AgentBooking.appliedMessage + " " + AgentBudget.bookingRecordedSentence)
+        let sentence = AgentBudget.bookingRecordedSentence.lowercased()
+        XCTAssertTrue(sentence.contains("estimate") && sentence.contains("simulated") && sentence.contains("fact"))
+        XCTAssertTrue(sentence.contains("do not call record_spend for this table"))
+    }
+
+    func testBUDGET_G23_TheOverNoticeAndTheForTheWeekOfFormForAnotherWeek() async throws {
+        let over = makeRig()
+        over.hold(19000)
+        let first = try await confirmed(try bookingCard(over))
+        XCTAssertEqual(first.notice, "Estimated spend $60.00 sent to Example Budget (Simulated): $50.00 over the budget this week.")
+        let overBlock = try XCTUnwrap(first.json?["budget"] as? [String: Any])
+        XCTAssertEqual(Set(overBlock.keys), ["simulated", "status", "estimated_spend", "week", "includes_estimate", "over_by"])
+        XCTAssertEqual(overBlock["over_by"] as? String, "$50.00")
+        XCTAssertNil(overBlock["left"])
+
+        let next = makeRig()
+        let second = try await confirmed(try bookingCard(next, start: "2026-11-02T19:00"))
+        XCTAssertEqual(second.notice, "Estimated spend $60.00 sent to Example Budget (Simulated): $140.00 left for the week of Nov 2.")
+        XCTAssertEqual((second.json?["budget"] as? [String: Any])?["week"] as? String, "week of Nov 2")
+
+        let nextOver = makeRig()
+        nextOver.hold(19000, week: "2026-11-02")
+        let third = try await confirmed(try bookingCard(nextOver, start: "2026-11-02T19:00"))
+        XCTAssertEqual(third.notice,
+                       "Estimated spend $60.00 sent to Example Budget (Simulated): $50.00 over the budget for the week of Nov 2.")
+        XCTAssertEqual(AgentBudget.weekPhrase(weekStart: "2026-11-02", currentWeekStart: "2026-11-02"), "this week")
+        XCTAssertEqual(AgentBudget.weekPhrase(weekStart: "2026-12-07", currentWeekStart: "2026-11-02"), "week of Dec 7")
+    }
+
+    func testBUDGET_G24_ADeclinedAFailedAndACancelledBookingSendNoBudgetRequest() async throws {
+        let declined = makeRig()
+        let declinedResolution = try await confirmed(try bookingCard(declined, party: "9"))
+        XCTAssertEqual(declinedResolution.status, "declined")
+        XCTAssertNil(declinedResolution.notice)
+
+        let failed = makeRig()
+        failed.tables.mode = .status(500, "oops")
+        let failedCard = try bookingCard(failed)
+        let failedResolution = try await confirmed(failedCard)
+        XCTAssertEqual(failedResolution.status, "unavailable")
+        XCTAssertEqual(failedResolution.notice, AgentBooking.unavailableNotice)
+
+        let cancelled = makeRig()
+        let cancelledCard = try bookingCard(cancelled)
+        let cancelledResolution = await cancelledCard.resolve(.cancel)
+        XCTAssertEqual(cancelledResolution?.status, "declined")
+
+        let late = makeRig()
+        let lateCard = try bookingCard(late)
+        late.clock.now = TestClock.date("2026-10-28T19:01")
+        let lateResolution = try await confirmed(lateCard)
+        XCTAssertEqual(lateResolution.status, "rejected")
+
+        for (name, rig) in [("declined", declined), ("failed", failed), ("cancelled", cancelled), ("late", late)] {
+            XCTAssertEqual(rig.partner.requests.count, 0, name)
+            XCTAssertTrue(rig.entries.isEmpty, name)
+            let packets = await budgetPackets(rig)
+            XCTAssertTrue(packets.isEmpty, name)
+        }
+    }
+
+    func testBUDGET_G25_ABudgetFailureLeavesTheBookingAppliedAndSaysSo() async throws {
+        let modes: [(String, BudgetToolPartner.Mode)] = [
+            ("offline", .error(URLError(.notConnectedToInternet))), ("missing route", .status(404, "Not found")),
+            ("server", .status(500, "oops")), ("bad body", .status(200, "[]")),
+        ]
+        for (name, mode) in modes {
+            let rig = makeRig()
+            rig.partner.mode = mode
+            let card = try bookingCard(rig)
+            let resolution = try await confirmed(card)
+            XCTAssertEqual(resolution.status, "applied", name)
+            XCTAssertEqual(card.mark, .confirmed, name)
+            XCTAssertEqual(rig.store.activities.count, 1, name)
+            XCTAssertEqual(resolution.notice, "The estimated spend could not be sent to Example Budget (Simulated).", name)
+            let json = try XCTUnwrap(resolution.json, name)
+            XCTAssertEqual(json["reservation_code"] as? String, "EX-AB12CD", name)
+            let block = try XCTUnwrap(json["budget"] as? [String: Any], name)
+            XCTAssertEqual(Set(block.keys), ["simulated", "status"], name)
+            XCTAssertEqual(block["status"] as? String, "unavailable", name)
+            XCTAssertEqual(block["simulated"] as? Bool, true, name)
+            XCTAssertEqual(json["message"] as? String, AgentBooking.appliedMessage + " " + AgentBudget.bookingUnavailableSentence, name)
+            XCTAssertTrue(rig.entries.isEmpty, name)
+            XCTAssertEqual(rig.ledger.spentCents(weekStart: BudgetToolFixture.week), 0, name)
+            let lines = await rig.lines()
+            XCTAssertEqual(lines.last, "besir>budgetPartner budget failed Request failed", name)
+        }
+    }
+
+    func testBUDGET_G26_WithNoProxyTheBookingResultIsTheBaseResultWithNoNoticeAndNoBudgetPacket() async throws {
+        // No budget client is injected: the default one is built from the Store's configuration, which has no proxy.
+        let rig = makeRig(injectBudget: false)
+        let resolution = try await confirmed(try bookingCard(rig))
+        let entry = try XCTUnwrap(rig.store.activities.first)
+        let expected: [String: Any] = ["status": "applied", "partner": "Example Tables", "simulated": true,
+                                       "reservation_code": "EX-AB12CD", "id": entry.id.uuidString, "title": entry.title,
+                                       "start": BookingFixture.start, "end": TestClock.local(entry.endDate),
+                                       "message": AgentBooking.appliedMessage, "location": "Pasta Palace"]
+        XCTAssertEqual(resolution.result, AgentToolbox.encode(expected))
+        XCTAssertNil(resolution.json?["budget"])
+        XCTAssertNil(resolution.notice)
+        XCTAssertEqual(rig.tables.requests.count, 1)
+        XCTAssertEqual(rig.partner.requests.count, 0)
+        let packets = await budgetPackets(rig)
+        XCTAssertTrue(packets.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rig.ledgerFile.path))
+        let lines = await rig.lines()
+        XCTAssertEqual(lines, ["besir>bookingPartner booking ok Table for 2 requested", "bookingPartner>besir booking ok Reservation confirmed"])
+    }
+
+    func testBUDGET_G27_APartyOfEightSendsTwentyFourThousandCents() async throws {
+        let rig = makeRig()
+        let resolution = try await confirmed(try bookingCard(rig, party: "8"))
+        XCTAssertEqual(resolution.status, "applied")
+        XCTAssertEqual(rig.partner.body()?["amount_cents"] as? Int, 24000)
+        XCTAssertEqual(resolution.notice, "Estimated spend $240.00 sent to Example Budget (Simulated): $40.00 over the budget this week.")
+        XCTAssertEqual((resolution.json?["budget"] as? [String: Any])?["estimated_spend"] as? String, "$240.00")
+        XCTAssertEqual(AgentBudget.estimatePerPersonCents, 3000)
+    }
+
+    func testBUDGET_G28_EveryFixedTextIsEnglishHoldsNoAdviceWordAndMarksSimulatedAndEstimates() async throws {
+        let advice = try NSRegularExpression(pattern: #"\b(should|recommend|advise|afford|save|invest|cut back|stop spending|overspend)\b"#,
+                                             options: [.caseInsensitive])
+        func hits(_ text: String) -> Int { advice.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text)) }
+        // The scan can fire.
+        XCTAssertEqual(hits("You should save and invest. Do not overspend. Stop spending, cut back, afford it, advise, recommend."), 9)
+        XCTAssertEqual(hits("Give no advice about savings or the saved amount."), 0)
+
+        var notices: [String] = []
+        let cases: [(Int, String, BudgetToolPartner.Mode)] = [(0, BookingFixture.start, .worker), (19000, BookingFixture.start, .worker),
+                                                              (0, "2026-11-02T19:00", .worker), (0, BookingFixture.start, .status(500, "oops"))]
+        for (hold, start, mode) in cases {
+            let rig = makeRig()
+            rig.partner.mode = mode
+            if hold > 0 { rig.hold(hold) }
+            let resolution = try await confirmed(try bookingCard(rig, start: start))
+            notices.append(try XCTUnwrap(resolution.notice))
+        }
+        XCTAssertEqual(notices.count, 4)
+        for notice in notices {
+            XCTAssertTrue(notice.contains("Simulated"), notice)
+            XCTAssertTrue(notice.lowercased().contains("estimated spend"), notice)
+        }
+
+        let live = makeRig()
+        let left = try await live.runJSON(live.call("get_budget_left"))
+        let spent = try await live.runJSON(live.spend("18.50"))
+        live.partner.mode = .status(500, "oops")
+        let leftDown = try await live.runJSON(live.call("get_budget_left"))
+        let spentDown = try await live.runJSON(live.spend("5"))
+        let models = [left, spent, leftDown, spentDown].compactMap { $0["message"] as? String }
+        XCTAssertEqual(models.count, 4)
+        for message in models { XCTAssertTrue(message.lowercased().contains("simulated"), message) }
+        XCTAssertTrue(AgentBudget.leftMessage.contains("estimated spending"))
+        XCTAssertTrue(AgentBudget.spendMessage.contains("estimated spending"))
+        XCTAssertTrue(AgentBudget.bookingRecordedSentence.contains("estimates"))
+
+        var texts = notices + models
+        texts += [AgentBudget.leftMessage, AgentBudget.leftUnavailableMessage, AgentBudget.spendMessage, AgentBudget.spendUnavailableMessage,
+                  AgentBudget.bookingRecordedSentence, AgentBudget.bookingUnavailableSentence, AgentBudget.bookingFailureNotice,
+                  Text.unavailable, Text.amount, Text.wrongType("amount"), Text.notObject]
+        for decl in declarations() where ["get_budget_left", "record_spend"].contains(decl["name"] as? String ?? "") {
+            texts.append(try XCTUnwrap(decl["description"] as? String))
+            let properties = (decl["parameters"] as? [String: Any])?["properties"] as? [String: Any] ?? [:]
+            for spec in properties.values { texts.append(try XCTUnwrap((spec as? [String: Any])?["description"] as? String)) }
+        }
+        XCTAssertGreaterThanOrEqual(texts.count, 20)
+        for text in texts {
+            XCTAssertFalse(text.isEmpty)
+            XCTAssertEqual(hits(text), 0, text)
+            XCTAssertTrue(text.unicodeScalars.allSatisfy(\.isASCII), "English only: \(text)")
+        }
+    }
+
+    func testBUDGET_G29_ThePlaceTheTitleTheTimeAndTheCodeNeverReachTheBudgetRequestAPacketOrTheFile() async throws {
+        let place = Place(name: "Sentinel Bistro Zq9", address: "9 Zq Street", latitude: 1, longitude: 2)
+        let rig = makeRig(places: [place])
+        let resolution = try await confirmed(try bookingCard(rig))
+        // The sentinels exist where they are allowed to be.
+        let title = try XCTUnwrap(rig.store.activities.first?.title)
+        XCTAssertTrue(title.contains("Sentinel Bistro Zq9"))
+        XCTAssertTrue(resolution.result.contains("EX-AB12CD"))
+        XCTAssertTrue(resolution.result.contains("Sentinel Bistro Zq9"))
+        XCTAssertTrue(resolution.result.contains(BookingFixture.start))
+
+        let left = try await rig.runJSON(rig.call("get_budget_left"))
+        let spent = try await rig.runJSON(rig.spend("18.50"))
+        var seen: [String] = []
+        for request in rig.partner.requests {
+            seen.append(String(decoding: try XCTUnwrap(request.httpBody), as: UTF8.self))
+        }
+        XCTAssertEqual(seen.count, 3)
+        let packets = await budgetPackets(rig)
+        XCTAssertEqual(packets.count, 6)
+        seen.append(String(decoding: try JSONEncoder().encode(packets), as: UTF8.self))
+        seen.append(String(decoding: try Data(contentsOf: rig.ledgerFile), as: UTF8.self))
+        seen.append(AgentToolbox.encode(try XCTUnwrap(resolution.json?["budget"] as? [String: Any])))
+        seen.append(try XCTUnwrap(resolution.notice))
+        seen.append(AgentToolbox.encode(left))
+        seen.append(AgentToolbox.encode(spent))
+        for word in ["Sentinel", "Bistro", "Zq9", "Table for", "EX-AB12CD", "19:00", "2026-10-28", "Pasta"] {
+            for text in seen { XCTAssertFalse(text.contains(word), "\(word) in \(text)") }
+        }
+    }
+
+    func testBUDGET_G30_TheToolNamesAppearInTheLogAsGetBudgetLeftAndRecordSpend() async throws {
+        XCTAssertEqual(AgentSession.toolCallSummary("get_budget_left"), "get budget left")
+        XCTAssertEqual(AgentSession.toolCallSummary("record_spend"), "record spend")
+        let rig = makeRig()
+        let fake = FakeTransport([.turn(Turns.turn(Turns.call("get_budget_left", "{}", id: "c1"))),
+                                  .turn(Turns.turn(Turns.call("record_spend", PlaceTurns.arguments(["amount": "18.50"]), id: "c2"))),
+                                  .turn(Turns.text("Done."))])
+        let session = AgentSession(toolbox: rig.tools, transport: fake, connections: rig.log)
+        session.send("How much is left? I spent 18.50 on lunch.")
+        await session.settle()
+        let packets = await rig.packets()
+        let calls = packets.filter { $0.kind == .agentToolCall }
+        XCTAssertEqual(calls.map(\.summary), ["get budget left", "record spend"])
+        XCTAssertEqual(calls.map(\.status), [.ok, .ok])
+        let budget = packets.filter { $0.kind == .budget }
+        XCTAssertEqual(budget.map(\.summary), ["Budget left asked", "Budget left answered", "Spend sent", "Spend recorded"])
+        XCTAssertEqual(Set(budget.map(\.flowID)), [calls[0].flowID])
+        XCTAssertEqual(rig.ledger.spentCents(weekStart: BudgetToolFixture.week), 1850)
+        XCTAssertEqual(rig.partner.requests.count, 2)
+        XCTAssertNil(session.pendingCard, "record_spend asks for no confirmation")
+    }
+
+    func testBUDGET_G31_ATaskCancelledWhileTheBudgetRequestIsInFlightLeavesTheBookingApplied() async throws {
+        let rig = makeRig()
+        rig.partner.duringSend = { withUnsafeCurrentTask { $0?.cancel() } }
+        let card = try bookingCard(rig)
+        let resolved = await Task { await card.resolve(.confirm) }.value
+        let resolution = try XCTUnwrap(resolved)
+        XCTAssertEqual(rig.partner.requests.count, 1, "the budget stub answered a valid spend")
+        XCTAssertEqual(resolution.status, "applied")
+        XCTAssertEqual(card.mark, .confirmed)
+        XCTAssertEqual(rig.store.activities.count, 1)
+        XCTAssertEqual((resolution.json?["budget"] as? [String: Any])?["status"] as? String, "unavailable")
+        XCTAssertNil(resolution.notice, "a cancelled task says nothing about the budget")
+        XCTAssertTrue(rig.entries.isEmpty)
+        XCTAssertEqual(rig.ledger.spentCents(weekStart: BudgetToolFixture.week), 0)
+        let packets = await budgetPackets(rig)
+        XCTAssertTrue(packets.isEmpty)
+        let lines = await rig.lines()
+        XCTAssertEqual(lines, ["besir>bookingPartner booking ok Table for 2 requested", "bookingPartner>besir booking ok Reservation confirmed"])
+    }
+
+    func testBUDGET_G32_TheBookingBudgetBlockHoldsSimulatedAndExactlyTheKeysOfEachForm() async throws {
+        let within = BudgetStanding(weekStart: "2026-10-26", budgetCents: 20000, spentCents: 6000, leftCents: 14000, isWithin: true,
+                                    includesEstimate: true)
+        let over = BudgetStanding(weekStart: "2026-10-26", budgetCents: 20000, spentCents: 25000, leftCents: -5000, isWithin: false,
+                                  includesEstimate: true)
+        let recorded = AgentBudget.BookingSpend.recorded(amountCents: 6000, standing: within, week: "this week").block
+        XCTAssertEqual(Set(recorded.keys), ["simulated", "status", "estimated_spend", "week", "includes_estimate", "left"])
+        XCTAssertEqual(recorded["simulated"] as? Bool, true)
+        XCTAssertEqual(recorded["status"] as? String, "recorded")
+        XCTAssertEqual(recorded["includes_estimate"] as? Bool, true)
+        let overBlock = AgentBudget.BookingSpend.recorded(amountCents: 6000, standing: over, week: "week of Nov 2").block
+        XCTAssertEqual(Set(overBlock.keys), ["simulated", "status", "estimated_spend", "week", "includes_estimate", "over_by"])
+        XCTAssertEqual(overBlock["over_by"] as? String, "$50.00")
+        XCTAssertEqual(overBlock["week"] as? String, "week of Nov 2")
+        let down = AgentBudget.BookingSpend.unavailable(notify: true)
+        XCTAssertEqual(Set(down.block.keys), ["simulated", "status"])
+        XCTAssertEqual(down.block["simulated"] as? Bool, true)
+        XCTAssertEqual(down.block["status"] as? String, "unavailable")
+        XCTAssertEqual(down.notice, "The estimated spend could not be sent to Example Budget (Simulated).")
+        XCTAssertNil(AgentBudget.BookingSpend.unavailable(notify: false).notice)
+
+        // The same forms in a live result.
+        let rig = makeRig()
+        let live = try await confirmed(try bookingCard(rig))
+        let block = try XCTUnwrap(live.json?["budget"] as? [String: Any])
+        XCTAssertEqual(NSDictionary(dictionary: block), NSDictionary(dictionary: recorded))
+        XCTAssertEqual(AgentBudget.dollars(cents: 123_450), "$1,234.50")
+        XCTAssertEqual(AgentBudget.dollars(cents: 5), "$0.05")
     }
 }

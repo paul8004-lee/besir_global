@@ -912,7 +912,8 @@ final class AgentToolbox {
                 let result = Self.encode(["status": "rejected", "message": Say.bookWindow])
                 return (AgentResolution(result: result, notice: Say.startPassed), .notApplied)
             }
-            let answer = await bookingClient().book(request, flow: ConnectionLog.beginFlow())
+            let flow = ConnectionLog.beginFlow()
+            let answer = await bookingClient().book(request, flow: flow)
             // Cancellation is checked after the answer is known and before anything is written.
             guard !Task.isCancelled else { return bookingUnavailable() }
             switch answer {
@@ -928,9 +929,30 @@ final class AgentToolbox {
                     startDate: start, endDate: start.addingTimeInterval(AgentBooking.entryDuration), travelFrom: nil,
                     returnTo: nil, outboundMode: .walk, returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0,
                     syncToCalendar: store.calendarSyncDefault, travelSecondsHint: nil)
-                return bookingApplied(made.activityId, code: code)
+                // SPEC-BUDGET-001: the table is booked and on the schedule; its estimated spend goes to the budget partner
+                // under the booking's own flow. With no proxy nothing is sent and the result is the base one.
+                let budget = await sendEstimatedSpend(partySize: partySize, start: start, flow: flow)
+                return bookingApplied(made.activityId, code: code, budget: budget)
             }
         })
+    }
+
+    /// One `spend` of the table's estimated amount, counted in the week of the table's start. Nil when the proxy is not
+    /// configured. A failure, or a task cancelled meanwhile, never changes the booking.
+    private func sendEstimatedSpend(partySize: Int, start: Date, flow: UUID) async -> AgentBudget.BookingSpend? {
+        let client = budgetClient()
+        guard client.isConfigured else { return nil }
+        let amount = partySize * AgentBudget.estimatePerPersonCents
+        let tableWeek = BudgetWeek.start(of: start, in: zone())
+        let result = await client.spend(amountCents: amount, isEstimate: true, weekStart: tableWeek,
+                                        requestID: UUID().uuidString, flow: flow)
+        switch result {
+        case .success(let standing):
+            let week = AgentBudget.weekPhrase(weekStart: tableWeek, currentWeekStart: BudgetWeek.start(of: now(), in: zone()))
+            return .recorded(amountCents: amount, standing: standing, week: week)
+        case .failure:
+            return .unavailable(notify: !Task.isCancelled)
+        }
     }
 
     private func bookingUnavailable() -> (AgentResolution, AgentCardMark) {
@@ -941,7 +963,7 @@ final class AgentToolbox {
 
     /// `applied`, with the entry's values read back from the Store. Not private so a test can reach the read-back refusal,
     /// which the Store write cannot be made to produce (it never suspends between the write and the read).
-    func bookingApplied(_ id: UUID, code: String) -> (AgentResolution, AgentCardMark) {
+    func bookingApplied(_ id: UUID, code: String, budget: AgentBudget.BookingSpend? = nil) -> (AgentResolution, AgentCardMark) {
         guard let stored = store.activities.first(where: { $0.id == id }) else { return (notFound(), .notApplied) }
         let local = formats.local
         var object: [String: Any] = ["status": "applied", "partner": BookingClient.partnerName, "simulated": true,
@@ -949,7 +971,11 @@ final class AgentToolbox {
                                      "start": local.string(from: stored.startDate), "end": local.string(from: stored.endDate),
                                      "message": AgentBooking.appliedMessage]
         if let place = stored.location { object["location"] = AgentPlaces.displayName(place.name) }
-        return (AgentResolution(result: Self.encode(object), notice: nil), .confirmed)
+        if let budget {
+            object["budget"] = budget.block
+            object["message"] = AgentBooking.appliedMessage + " " + budget.sentence
+        }
+        return (AgentResolution(result: Self.encode(object), notice: budget?.notice), .confirmed)
     }
 
     // MARK: - Budget (SPEC-BUDGET-001)
