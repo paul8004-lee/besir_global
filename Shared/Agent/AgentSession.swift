@@ -159,6 +159,8 @@ final class AgentSession: ObservableObject {
     private var currentRequest: UUID?
     private var requestTask: Task<Void, Never>?
     private var requestsThisMessage = 0
+    /// Model requests the message being served may make: 6, or 12 for a plan message.
+    private var requestCap = AgentSession.maxRequests
     /// The call a pending card belongs to, and the calls that came after it in the same response.
     private var pendingCalls: (first: AgentCall, extras: [AgentCall])?
     /// Set when the sheet closes while a tapped card is still being applied: record the result, send nothing.
@@ -210,14 +212,40 @@ final class AgentSession: ObservableObject {
     func send(_ text: String, shown: String? = nil) {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard canSend, !clean.isEmpty else { return }
+        toolbox.endDayPlan()
+        begin(clean, shown: shown, cap: Self.maxRequests)
+    }
+
+    /// The path of every user message: the flow, the history, the chat line and the first request.
+    private func begin(_ clean: String, shown: String?, cap: Int) {
         let line = shown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         flow = connections.takeOfferedFlow() ?? ConnectionLog.beginFlow()
         history.append(.user(clean))
         entries.append(AgentLogEntry(kind: .user(line.isEmpty ? clean : line)))
+        requestCap = cap
         requestsThisMessage = 0
         googleDataThisMessage = false
         startRequest()
     }
+
+    /// SPEC-PLANDAY-001: sends the one plan message with the request cap of a plan (12). The plan turn starts here and ends
+    /// at the next ordinary message or at a new chat. False when a message cannot be taken now.
+    @discardableResult
+    func sendPlan(message: String, shown: String? = nil, context: DayPlanContext) -> Bool {
+        let clean = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard canSend, !clean.isEmpty else { return false }
+        toolbox.beginDayPlan(context)
+        begin(clean, shown: shown, cap: PlanMyDay.requestCap)
+        return true
+    }
+
+    /// SPEC-PLANDAY-001: registers up to eight Store places as handles in this session and returns the events with them.
+    func prepareDayPlan(events: [PlanMyDay.Event]) -> [PlanMyDay.Event] {
+        PlanMyDay.registerStorePlaces(events, registry: &toolbox.registry)
+    }
+
+    /// Called by `newChat`, so whoever holds state that must not outlive the chat (a held plan) can drop it.
+    var onNewChat: (() -> Void)?
 
     func confirmCard() async { await resolve(.confirm) }
 
@@ -238,6 +266,8 @@ final class AgentSession: ObservableObject {
         entries = []
         history = []
         requestsThisMessage = 0
+        requestCap = Self.maxRequests
+        onNewChat?()
         if let card { _ = await card.resolve(.dismiss) }
     }
 
@@ -394,7 +424,7 @@ final class AgentSession: ObservableObject {
         let extras = Array(calls.dropFirst())
         entries.append(AgentLogEntry(kind: .tool(name: first.name, arguments: first.arguments)))
 
-        if requestsThisMessage >= Self.maxRequests {
+        if requestsThisMessage >= requestCap {
             record((first, extras), firstResult: Line.stepLimit, notice: nil)
             endTurn(with: Line.tooManySteps)
             return

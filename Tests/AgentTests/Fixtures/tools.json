@@ -141,6 +141,38 @@
   },
   {
     "type": "function",
+    "name": "check_day_plan",
+    "description": "Check the stops of a day plan against the user's schedule. The app finds overlaps and late arrivals and works out every travel time. Returns a plan_id.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "stops": {
+          "type": "string",
+          "description": "A JSON array of 1 to 8 stops. A new stop is an object with title, start and end as local date-times (YYYY-MM-DDTHH:MM) and optionally a place_id returned by search_places. An existing event is an object with event set to its id from the plan message; it may also have a place_id."
+        }
+      },
+      "required": ["stops"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "show_day_plan",
+    "description": "Show the user a checked day plan to add to their schedule. The user confirms before anything is added.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "description": "The plan_id returned by check_day_plan."
+        }
+      },
+      "required": ["plan_id"],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
     "name": "request_booking",
     "description": "Ask a simulated table-booking partner for a table at a place found with search_places. The booking is simulated, not a real reservation: always call the result simulated. The user confirms before anything is sent.",
     "parameters": {
