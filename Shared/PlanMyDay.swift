@@ -118,7 +118,8 @@ enum PlanMyDay {
     // MARK: The message (REQ-PLANDAY-006)
 
     /// The fixed sentences of plan.md section 3.2 in order, then the events and the shared items as JSON data lines.
-    static func compose(now: Date, zone: TimeZone, mode: TransportMode, events: [Event], shared: [Shared]) -> String {
+    static func compose(now: Date, zone: TimeZone, mode: TransportMode, events: [Event], shared: [Shared],
+                        calendarAvailable: Bool = true) -> String {
         let local = formatter("yyyy-MM-dd'T'HH:mm", zone)
         let weekday = formatter("EEEE", zone)
         let eventValues: [[String: Any]] = events.map { event in
@@ -191,4 +192,5 @@ struct DayPlanContext {
     let mode: TransportMode
     let events: [PlanMyDay.Event]
     let checkWindowEnd: Date
+    var calendarAvailable: Bool = true
 }
