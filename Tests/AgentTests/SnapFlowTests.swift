@@ -589,7 +589,7 @@ final class SnapFlowTests: XCTestCase {
         let circle = try XCTUnwrap(PlacesTestSupport.circle(of: body))
         XCTAssertEqual(circle.latitude, 37.7749, accuracy: 1e-9)
         XCTAssertEqual(circle.longitude, -122.4194, accuracy: 1e-9)
-        XCTAssertEqual(circle.radius, 250, accuracy: 1e-9)
+        XCTAssertEqual(circle.radius, 500, accuracy: 1e-9)
         XCTAssertEqual((body["pageSize"] as? NSNumber)?.intValue, 20)
         XCTAssertNil(body["includedType"], "a free-text search with no place type")
         XCTAssertEqual(request.value(forHTTPHeaderField: GooglePlaces.fieldMaskHeader), GooglePlaces.fieldMask)
@@ -633,15 +633,31 @@ final class SnapFlowTests: XCTestCase {
         // (d) three places, nearest first
         (rig, _) = await run(answer([("B", 180), ("C", 90), ("A", 120)]))
         XCTAssertEqual(summary(rig.rows), ["C 90m", "A 120m", "B 180m"])
-        // (e) five answered: the one beyond 250 m is dropped and the list holds three
-        (rig, _) = await run(answer([("Far", 400), ("B", 180), ("C", 90), ("D", 240), ("A", 120)]))
+        // (e) five answered: the one beyond 500 m is dropped and the list holds three
+        (rig, _) = await run(answer([("Far", 650), ("B", 180),("C", 90), ("D", 240), ("A", 120)]))
         XCTAssertEqual(summary(rig.rows), ["C 90m", "A 120m", "B 180m"])
         // (f) a failed transport
         (rig, _) = await run(.status(500))
         XCTAssertEqual(rig.flow.phase, .line(SnapLine.noMatch))
         // (g) one place inside the radius and one beyond it: the far one is dropped, so there is no list
-        (rig, _) = await run(answer([("Far", 400), ("A", 120)]))
+        (rig, _) = await run(answer([("Far", 650), ("A", 120)]))
         XCTAssertEqual(rig.flow.phase, .awaitingMode)
+    }
+
+    func testCAMDEVICE_T05_theRadiusBoundaryIs500Metres() async {
+        // A place 480 m away is inside the radius: the flow goes on with it and registers it.
+        let inside = SnapRig(places: [.answer(PlacesTestSupport.nearbyAnswer([("Inside", 480)]))])
+        inside.reader.fallback = .success(clue(.otherPlace, name: "Inside"))
+        await inside.open()
+        await inside.flow.submit(frame: SnapTestImages.small)
+        XCTAssertEqual(inside.registered.map(\.name), ["Inside"])
+        // A place 520 m away is beyond it: nothing is registered and the flow ends with the no-match line.
+        let outside = SnapRig(places: [.answer(PlacesTestSupport.nearbyAnswer([("Outside", 520)]))])
+        outside.reader.fallback = .success(clue(.otherPlace, name: "Outside"))
+        await outside.open()
+        await outside.flow.submit(frame: SnapTestImages.small)
+        XCTAssertEqual(outside.flow.phase, .line(SnapLine.noMatch))
+        XCTAssertEqual(outside.registered.map(\.name), [])
     }
 
     func testCAMSNAP_T35_candidateRowsAreCutCleanAndCarryTheGoogleMark() async throws {
@@ -957,6 +973,81 @@ final class SnapFlowTests: XCTestCase {
             XCTAssertEqual(scan("let x = \(word)()", for: forbidden), [word], "the scan must find a planted \(word)")
         }
         XCTAssertEqual(scan("let output = AVCapturePhotoOutput()", for: forbidden), [])
+    }
+
+    // MARK: SPEC-CAMDEVICE-001 - the capture guard
+
+    /// The source lines with every `/* */` span and everything from `//` to the end of the line removed. The result keeps
+    /// one entry per source line, so a line that held only a comment is empty.
+    private func codeLines(of text: String) -> [String] {
+        var lines: [String] = []
+        var current = ""
+        var inBlock = false
+        var inLine = false
+        let chars = Array(text)
+        var index = 0
+        while index < chars.count {
+            let char = chars[index]
+            let next: Character? = index + 1 < chars.count ? chars[index + 1] : nil
+            if char == "\n" {
+                lines.append(current)
+                current = ""
+                inLine = false
+                index += 1
+            } else if inLine {
+                index += 1
+            } else if inBlock {
+                if char == "*", next == "/" {
+                    inBlock = false
+                    index += 2
+                } else {
+                    index += 1
+                }
+            } else if char == "/", next == "/" {
+                inLine = true
+                index += 2
+            } else if char == "/", next == "*" {
+                inBlock = true
+                index += 2
+            } else {
+                current.append(char)
+                index += 1
+            }
+        }
+        lines.append(current)
+        return lines
+    }
+
+    /// True when one code line before the line holding `capturePhoto(with` starts with `guard` and holds both
+    /// `session.isRunning` and `isActive`.
+    private func captureIsGuarded(_ text: String) -> Bool {
+        let lines = codeLines(of: text)
+        guard let capture = lines.firstIndex(where: { $0.contains("capturePhoto(with") }) else { return false }
+        return lines[..<capture].contains { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            return trimmed.hasPrefix("guard") && trimmed.contains("session.isRunning") && trimmed.contains("isActive")
+        }
+    }
+
+    func testCAMDEVICE_T06_theCaptureIsRefusedUnlessTheSessionRunsAndTheConnectionIsActive() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let text = try String(contentsOf: root.appendingPathComponent("Shared/SnapCapture.swift"), encoding: .utf8)
+        XCTAssertTrue(text.contains("final class SnapCamera"), "Shared/SnapCapture.swift is the real file")
+        XCTAssertTrue(text.contains("capturePhoto(with"), "the capture call is in the file")
+        XCTAssertTrue(captureIsGuarded(text), "a guard on the running session and the active connection comes before the capture")
+
+        // Planted texts: the checker must tell a real guard from each wrong build.
+        let guardLine = "        guard configured, pending == nil, session.isRunning, output.connection(with: .video)?.isActive == true else { return nil }"
+        let captureLine = "        output.capturePhoto(with: AVCapturePhotoSettings(), delegate: self)"
+        XCTAssertTrue(captureIsGuarded("\(guardLine)\n\(captureLine)\n"), "a guard before the capture")
+        XCTAssertFalse(captureIsGuarded("\(captureLine)\n\(guardLine)\n"), "a guard after the capture")
+        XCTAssertFalse(captureIsGuarded("        guard configured, pending == nil else { return nil }\n\(captureLine)\n"), "no guard on the session")
+        XCTAssertFalse(captureIsGuarded("        // \(guardLine.trimmingCharacters(in: .whitespaces))\n\(captureLine)\n"), "a // comment")
+        XCTAssertFalse(captureIsGuarded("        /* \(guardLine.trimmingCharacters(in: .whitespaces)) */\n\(captureLine)\n"), "a /* */ comment")
+        XCTAssertFalse(captureIsGuarded("        /*\n\(guardLine)\n        */\n\(captureLine)\n"), "a multi-line /* */ comment")
+        XCTAssertFalse(captureIsGuarded("        _ = session.isRunning && output.connection(with: .video)?.isActive == true\n\(captureLine)\n"),
+                       "a statement that is not a guard")
     }
 
     // MARK: AC-CAMSNAP-006 and 008 - the generation rule
