@@ -1442,6 +1442,43 @@ final class DayPlanToolTests: XCTestCase {
         XCTAssertTrue(shown.lines.allSatisfy { !$0.contains("\n") && !$0.contains("\u{0007}") })
         XCTAssertTrue(card.store.activities.isEmpty, "showing a card writes nothing")
     }
+
+    // MARK: cause of the W2 walk failure (card t19, evidence only)
+
+    /// The W2 state: the Store holds no activity and the only event is an Apple Calendar entry with a location text. This
+    /// pins what the model is shown and what it is not, as they are today; it repairs nothing.
+    @MainActor
+    func testPLANDAY_T74_aCalendarOnlyEventReachesTheModelInThePlanMessageButNotThroughListActivities() async throws {
+        let entry = CalendarEntry(id: "ek-1", title: "Team meeting", start: date("15:00"), end: date("16:00"), isAllDay: false,
+                                  location: "Team HQ, 1 Market St, San Francisco", calendarName: "Home", isFromBesir: false)
+        let gathered = PlanMyDay.events(activities: [], entries: [entry], now: TestClock.now,
+                                        calendar: Calendar(identifier: .gregorian).with(zone: TestClock.zone))
+
+        // (1) The plan message carries the event: handle e1, its location text, no place_id.
+        let message = PlanMyDay.compose(now: TestClock.now, zone: TestClock.zone, mode: .car, events: gathered.events, shared: [])
+        let eventLine = try XCTUnwrap(message.components(separatedBy: "\n").first { $0.hasPrefix("Today's events, as data: ") })
+        let packet = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(eventLine.dropFirst("Today's events, as data: ".count).utf8)) as? [[String: Any]])
+        XCTAssertEqual(packet.count, 1)
+        XCTAssertEqual(packet.first?["id"] as? String, "e1")
+        XCTAssertEqual(packet.first?["source"] as? String, "calendar")
+        XCTAssertEqual(packet.first?["location"] as? String, "Team HQ, 1 Market St, San Francisco")
+        XCTAssertTrue(packet.first?["place_id"] is NSNull, "a calendar entry never has a registered place")
+
+        // (2) list_activities on the same day answers with nothing: it reads the Store only, the calendar entry is not there.
+        let rig = planRig(events: gathered.events)
+        XCTAssertTrue(rig.store.activities.isEmpty)
+        let listed = await rig.run("list_activities", ["from": "2026-10-27T00:00", "to": "2026-10-27T23:59"])
+        XCTAssertEqual(listed.json?["count"] as? Int, 0)
+        XCTAssertEqual((listed.json?["items"] as? [Any])?.count, 0)
+
+        // (3) The two new stops of the W2 transcript, with no stop that names e1: no route is looked up for any leg.
+        let stops = [stopObject("Ferry Building Marketplace", "12:00", "13:00", place: "p1"),
+                     stopObject("Housewarming Party", "19:30", "21:30", place: "p2")]
+        let reply = await check(rig, stops)
+        XCTAssertEqual(rig.routes.callCount, 0, "e1 has no place and was not given one, so no leg has both ends")
+        XCTAssertFalse(unchecked(reply).isEmpty)
+        print("T74 packet:", packet, "\nT74 list_activities:", listed.text ?? "nil", "\nT74 check_day_plan:", reply.text ?? "nil")
+    }
 }
 
 private extension PlanMyDay.Event {
