@@ -245,8 +245,10 @@ final class ReplanTests: XCTestCase {
         XCTAssertEqual(late.kind, .late)
         let checked = at("2026-10-27T20:20")
         let early = Replan.displayLines(for: late, event: lateEvent, now: checked.addingTimeInterval(14 * 60 + 59), timeZone: zone)
-        XCTAssertEqual(early?.headline, "Leave now to arrive about 8:51 PM, 11 min late")
-        XCTAssertEqual(early?.draft, "Hi, I'm running late.")
+        XCTAssertEqual(early?.headline, "Leave now to arrive about 9:05 PM, 26 min late")
+        XCTAssertEqual(early?.draft, Replan.templateDraft(lateBy: 26, title: "Dinner with Sam",
+                                                          estimate: checked.addingTimeInterval(14 * 60 + 59 + 31 * 60),
+                                                          timeZone: zone))
         XCTAssertEqual(early?.kind, .late)
         XCTAssertNil(Replan.displayLines(for: late, event: lateEvent, now: checked.addingTimeInterval(15 * 60), timeZone: zone))
     }
@@ -445,5 +447,75 @@ final class ReplanTests: XCTestCase {
             XCTAssertNil(outcome.draft, "\(live)")
         }
         XCTAssertNotNil(classify(live: 31 * 60, now: "2026-10-27T20:20").arrivalEstimate)
+    }
+
+    // MARK: SPEC-REPLAN-003 late numbers follow the clock
+
+    /// Fixture: arrival 8:40 PM, live 31 min, check 8:20 PM (stored 11 min late, arrival estimate 8:51 PM).
+    private func lateFixture() -> (event: ScheduledEvent, outcome: ReplanOutcome, checked: Date) {
+        let lateEvent = event(arrival: "2026-10-27T20:40")
+        let outcome = classify(live: 31 * 60, now: "2026-10-27T20:20", event: lateEvent)
+        return (lateEvent, outcome, at("2026-10-27T20:20"))
+    }
+
+    func testREPLAN_LateNumbersFollowTheClock() throws {
+        let fixture = lateFixture()
+        XCTAssertEqual(fixture.outcome.kind, .late)
+        XCTAssertEqual(fixture.outcome.minutes, 11)
+        let rows: [(offset: TimeInterval, minutes: Int, arrival: String)] = [
+            (-30, 11, "8:51 PM"),          // computed 10.5 min and 8:50 PM, held at the stored values
+            (0, 11, "8:51 PM"),
+            (180, 14, "8:54 PM"),
+            (190, 15, "8:54 PM"),          // 14.17 min rounds up to 15 (to nearest would give 14)
+            (210, 15, "8:54 PM"),
+            (14 * 60 + 59, 26, "9:05 PM")
+        ]
+        for row in rows {
+            let now = fixture.checked.addingTimeInterval(row.offset)
+            let lines = try XCTUnwrap(Replan.displayLines(for: fixture.outcome, event: fixture.event, now: now, timeZone: zone),
+                                      "\(row.offset)")
+            XCTAssertEqual(lines.headline, "Leave now to arrive about \(row.arrival), \(row.minutes) min late", "\(row.offset)")
+            // The minutes are the ones the classification gives for the same clock and the same live time.
+            let again = Replan.classify(eventID: fixture.event.id, trigger: .appOpen, checkedAt: fixture.checked,
+                                        inputs: ReplanInputs(event: fixture.event),
+                                        referenceDeparture: at("2026-10-27T20:07"), referenceTravel: 18 * 60,
+                                        liveTravel: 31 * 60, noTrafficTravel: nil, now: now)
+            XCTAssertEqual(again.minutes, row.minutes, "\(row.offset)")
+        }
+        XCTAssertNil(Replan.displayLines(for: fixture.outcome, event: fixture.event,
+                                         now: fixture.checked.addingTimeInterval(15 * 60), timeZone: zone))
+    }
+
+    func testREPLAN_MessageCarriesTheHeadlineNumbers() throws {
+        var fixture = lateFixture()
+        fixture.outcome.draft = "stale"
+        let now = fixture.checked.addingTimeInterval(180)
+        let estimate = now.addingTimeInterval(31 * 60)
+        let lines = try XCTUnwrap(Replan.displayLines(for: fixture.outcome, event: fixture.event, now: now, timeZone: zone))
+        XCTAssertEqual(lines.headline, "Leave now to arrive about 8:54 PM, 14 min late")
+        XCTAssertEqual(lines.draft, Replan.templateDraft(lateBy: 14, title: "Dinner with Sam", estimate: estimate, timeZone: zone))
+
+        var renamed = fixture.event
+        renamed.title = "Lunch"
+        let lunch = try XCTUnwrap(Replan.displayLines(for: fixture.outcome, event: renamed, now: now, timeZone: zone))
+        XCTAssertTrue(try XCTUnwrap(lunch.draft).contains("Lunch"))
+
+        func digitRunsOf(_ text: String) -> [String] {
+            var runs: [String] = []
+            var current = ""
+            for ch in text {
+                if ch.isASCII, ch.isNumber { current.append(ch) } else if !current.isEmpty { runs.append(current); current = "" }
+            }
+            if !current.isEmpty { runs.append(current) }
+            return runs
+        }
+        XCTAssertEqual(digitRunsOf(try XCTUnwrap(lines.draft)), digitRunsOf("14 8:54 PM"))
+
+        // A draft attached to a non-late outcome is never shown.
+        var earlier = classify(live: 31 * 60, free: 18 * 60, event: fixture.event)
+        earlier.draft = "x"
+        var shown = fixture.event
+        shown.departureDate = earlier.newDeparture
+        XCTAssertNil(Replan.displayLines(for: earlier, event: shown, now: at("2026-10-27T19:31"), timeZone: zone)?.draft)
     }
 }
