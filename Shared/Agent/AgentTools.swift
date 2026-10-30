@@ -1222,7 +1222,7 @@ final class AgentToolbox {
                                                     requestID: requestID, flow: flow)
             switch answer {
             case .failure:
-                // A task cancelled meanwhile says nothing to the user, as in the booking hook.
+                // A task cancelled meanwhile says nothing to the user, as in the partner request.
                 return AgentLookupOutput(result: budgetUnavailable(AgentBudget.spendUnavailableMessage), showsGoogleData: false,
                                          notice: Task.isCancelled ? nil : AgentBudget.spendFailureNotice)
             case .success(let standing):

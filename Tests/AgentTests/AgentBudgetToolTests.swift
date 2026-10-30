@@ -148,7 +148,7 @@ final class BudgetToolRig {
     }
 }
 
-/// SPEC-BUDGET-001 AC-BUDGET-006 to 010: the two tools, the gate, the lookups and the booking hook.
+/// SPEC-BUDGET-001 AC-BUDGET-006 to 010: the two tools, the gate, the lookups and the partner request hook.
 @MainActor
 final class AgentBudgetToolTests: XCTestCase {
     private func makeRig(config: AppConfig = BudgetToolFixture.config, partner: BudgetToolPartner = BudgetToolPartner(),
@@ -655,7 +655,7 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertTrue(packets.isEmpty)
     }
 
-    // MARK: G21-G32 the booking hook
+    // MARK: G21-G32 the partner request hook
 
     /// The card of a partner request: the chat line is set as the user's, `get_partners` runs, then `request_partner` is called
     /// with the party and the start (and a restaurant and a name), each with a quote.

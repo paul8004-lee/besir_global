@@ -3,7 +3,7 @@ import XCTest
 
 /// SPEC-DELIVERY-001 AC-DELIVERY-003 and AC-DELIVERY-004: one fixed request per call (the options and the order), only an exact
 /// answer is accepted, the total is the one the held options give, and the exchange is drawn as packets that hold fixed words
-/// and counts only. Every log is built with a temporary file; the scripted sender is the one the booking client tests use (the
+/// and counts only. Every log is built with a temporary file; the scripted sender is the one the partner client tests use (the
 /// function type is the same).
 @MainActor
 final class DeliveryClientTests: XCTestCase {
