@@ -234,8 +234,8 @@ final class AgentCard {
         self.onConfirm = onConfirm
     }
 
-    /// Acts on the first resolution only and returns its outcome; any later call returns nil. Confirm freezes the field card before
-    /// it awaits the closure, so no edit made after the tap changes anything.
+    /// Acts on the first resolution only and returns its outcome; any later call returns nil. Every resolution freezes the field card
+    /// (Confirm before it awaits the closure), so no edit or armed search made after the tap changes anything.
     func resolve(_ how: AgentCardResolution) async -> AgentResolution? {
         guard !taken else { return nil }
         taken = true
@@ -246,6 +246,7 @@ final class AgentCard {
             mark = result
             return resolution
         case .cancel, .dismiss:
+            fieldCard?.freeze()
             mark = .cancelled
             return AgentResolution(result: AgentToolbox.declinedResult, notice: nil)
         }
