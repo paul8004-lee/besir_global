@@ -563,6 +563,227 @@ final class AgentFieldCardTests: XCTestCase {
         model.setText("meal_title", "x")
         for field in model.card.fields { XCTAssertNil(field.note, field.key) }
     }
+
+    // MARK: M14-M17 the number kind, optional fields and a number row under a switch (SPEC-BOOKCARD-001 REQ-010)
+
+    private var sizeSpec: AgentFieldSpec { AgentFieldSpec(key: "party_size", kind: .number, label: "Party size") }
+    private var nameSpec: AgentFieldSpec { AgentFieldSpec(key: "name", kind: .text, label: "Name") }
+    private var optionalNote: AgentFieldSpec { AgentFieldSpec(key: "note", kind: .text, label: "Note", isOptional: true) }
+    /// The row besir writes itself for the length of a schedule entry: at most 3 digits, a valid range of 5 to 720.
+    private var lengthSpec: AgentFieldSpec { AgentFieldSpec(key: "schedule-length", kind: .number, label: "Length (min)", limit: 3, range: 5...720) }
+
+    func testM14_ANumberFieldKeepsOnlyAsciiDigitsCutAtTheLimitWithoutLeadingZerosAndHonoursItsRange() throws {
+        let model = make([.field(sizeSpec, value: nil, source: .blank), .field(lengthSpec, value: .number(60), source: .inferred)])
+        XCTAssertEqual(model.card.fields.map(\.kind), [.title, .title], "positive: a number row is the typed row of a text field")
+        XCTAssertEqual(model.values.int("schedule-length"), 60, "positive: a seed that fits its limit is kept")
+        XCTAssertEqual(try XCTUnwrap(model.field("schedule-length")).chosen, "60")
+        XCTAssertNil(model.values.int("party_size"))
+        XCTAssertEqual(model.source(of: "party_size"), .blank)
+
+        // Only ASCII digits stay; the value is a whole number and the source is entered.
+        XCTAssertTrue(model.setText("party_size", "4a 2-"))
+        XCTAssertEqual(model.values.int("party_size"), 42)
+        XCTAssertEqual(model.values.entry("party_size")?.value, .number(42))
+        XCTAssertEqual(try XCTUnwrap(model.field("party_size")).chosen, "42")
+        XCTAssertEqual(model.source(of: "party_size"), .entered)
+        XCTAssertNil(model.values.text("party_size"))
+        // Digits of other scripts and full-width digits are not ASCII digits.
+        XCTAssertTrue(model.setText("party_size", "\u{0663}\u{FF14}"))
+        XCTAssertNil(model.values.int("party_size"))
+        XCTAssertNil(try XCTUnwrap(model.field("party_size")).chosen)
+        // Cut at 9 digits without a limit of its own.
+        XCTAssertTrue(model.setText("party_size", "1234567890123"))
+        XCTAssertEqual(model.values.int("party_size"), 123_456_789)
+        XCTAssertEqual(try XCTUnwrap(model.field("party_size")).chosen, "123456789")
+        // Leading zeros are dropped, and `000` reads 0.
+        XCTAssertTrue(model.setText("party_size", "007"))
+        XCTAssertEqual(model.values.int("party_size"), 7)
+        XCTAssertEqual(try XCTUnwrap(model.field("party_size")).chosen, "7")
+        XCTAssertTrue(model.setText("party_size", "000"))
+        XCTAssertEqual(model.values.int("party_size"), 0)
+        XCTAssertEqual(try XCTUnwrap(model.field("party_size")).chosen, "0")
+        // Empty, or nothing but other characters, is blank and clears the value.
+        for blank in ["", "abc", " "] {
+            XCTAssertTrue(model.setText("party_size", "5"))
+            XCTAssertTrue(model.setText("party_size", blank))
+            XCTAssertNil(model.values.int("party_size"), blank)
+            XCTAssertNil(try XCTUnwrap(model.field("party_size")).chosen, blank)
+            XCTAssertEqual(model.source(of: "party_size"), .blank, blank)
+        }
+        // The limit of the seed cuts a number row: 3 for the length row.
+        XCTAssertTrue(model.setText("schedule-length", "12345"))
+        XCTAssertEqual(model.values.int("schedule-length"), 123)
+        // A number row takes no chip, and a text row still takes text.
+        XCTAssertFalse(model.chooseOption("party_size", "true"))
+        XCTAssertFalse(model.setText("nothing", "1"))
+
+        // The range of 5 to 720 decides readiness and nothing else: 4 and 721 are shown as typed and block the card.
+        XCTAssertTrue(model.setText("party_size", "2"))
+        for (typed, ready) in [("4", false), ("5", true), ("720", true), ("721", false), ("60", true), ("0", false)] {
+            XCTAssertTrue(model.setText("schedule-length", typed))
+            XCTAssertEqual(model.values.int("schedule-length"), Int(typed), typed)
+            XCTAssertEqual(try XCTUnwrap(model.field("schedule-length")).chosen, typed, typed)
+            XCTAssertEqual(model.isReady, ready, typed)
+        }
+        // A seed made from a partner's field has no range, and a number of any size is ready.
+        let fromPartner = try XCTUnwrap(AgentFieldSpec(PartnerField(key: "count", kind: .number, label: "Count", options: [])))
+        XCTAssertEqual(fromPartner.kind, .number)
+        XCTAssertNil(fromPartner.range)
+        XCTAssertNil(fromPartner.limit)
+        let partnerModel = make([.field(fromPartner, value: nil, source: .blank)])
+        XCTAssertFalse(partnerModel.isReady)
+        XCTAssertTrue(partnerModel.setText("count", "999999999"))
+        XCTAssertTrue(partnerModel.isReady)
+        XCTAssertTrue(partnerModel.setText("count", "0"))
+        XCTAssertTrue(partnerModel.isReady)
+        // A seed value that does not fit its limit reads as blank.
+        let tooLong = make([.field(lengthSpec, value: .number(1234), source: .inferred), .field(sizeSpec, value: .number(-3), source: .inferred)])
+        XCTAssertNil(tooLong.values.int("schedule-length"))
+        XCTAssertNil(tooLong.values.int("party_size"))
+        XCTAssertEqual(tooLong.source(of: "schedule-length"), .blank)
+    }
+
+    func testM15_AnOptionalBlankFieldDoesNotBlockAndARequiredBlankStillDoes() throws {
+        let model = make([.field(nameSpec, value: .text("Sam"), source: .stated), .field(optionalNote, value: nil, source: .blank)])
+        XCTAssertEqual(model.card.fields.count, 2, "positive: the card was built")
+        XCTAssertTrue(model.isReady, "an optional blank leaves the card ready")
+        XCTAssertNil(model.values.text("note"))
+        XCTAssertNil(model.values.entry("note")?.value, "the snapshot holds no value for a blank optional field")
+        XCTAssertEqual(model.values.entry("note")?.source, .blank)
+        XCTAssertNil(try XCTUnwrap(model.field("note")).chosen)
+        // Typing in the optional field and clearing it keeps the card ready.
+        XCTAssertTrue(model.setText("note", "door code"))
+        XCTAssertTrue(model.isReady)
+        XCTAssertEqual(model.values.text("note"), "door code")
+        XCTAssertTrue(model.setText("note", ""))
+        XCTAssertTrue(model.isReady)
+        XCTAssertNil(model.values.entry("note")?.value)
+        XCTAssertTrue(model.setText("note", "   "))
+        XCTAssertTrue(model.isReady)
+
+        // A required blank, or a text of spaces only, blocks whatever the optional field holds.
+        let blankName = make([.field(nameSpec, value: nil, source: .blank), .field(optionalNote, value: .text("kept"), source: .stated)])
+        XCTAssertEqual(blankName.values.text("note"), "kept")
+        XCTAssertFalse(blankName.isReady)
+        XCTAssertTrue(blankName.setText("name", "   "))
+        XCTAssertFalse(blankName.isReady)
+        XCTAssertTrue(blankName.setText("name", "Sam"))
+        XCTAssertTrue(blankName.isReady)
+        XCTAssertTrue(blankName.setText("name", ""))
+        XCTAssertFalse(blankName.isReady)
+
+        // The same holds for an optional number and an optional place: blank is ready; a value out of range is not.
+        let optionalSize = AgentFieldSpec(key: "extra", kind: .number, label: "Extra", isOptional: true)
+        let optionalPlace = AgentFieldSpec(key: "where_to", kind: .place, label: "Where", isOptional: true)
+        let many = make([.field(nameSpec, value: .text("Sam"), source: .stated), .field(optionalSize, value: nil, source: .blank),
+                         .field(optionalPlace, value: nil, source: .blank)])
+        XCTAssertTrue(many.isReady)
+        XCTAssertTrue(many.setText("extra", "12"))
+        XCTAssertTrue(many.isReady)
+        XCTAssertTrue(many.setText("extra", ""))
+        XCTAssertTrue(many.isReady)
+        let optionalRanged = AgentFieldSpec(key: "pct", kind: .number, label: "Percent", isOptional: true, range: 1...100)
+        let ranged = make([.field(optionalRanged, value: nil, source: .blank)])
+        XCTAssertTrue(ranged.isReady)
+        XCTAssertTrue(ranged.setText("pct", "101"))
+        XCTAssertFalse(ranged.isReady, "a value that lies outside its range is not chosen, optional or not")
+        XCTAssertTrue(ranged.setText("pct", ""))
+        XCTAssertTrue(ranged.isReady)
+    }
+
+    func testM16_AFieldSeedFromAPartnerFieldCarriesItsOptionalityAndTheLinesHoldNoWordForIt() throws {
+        let optional = try XCTUnwrap(AgentFieldSpec(PartnerField(key: "note", kind: .text, label: "Note", options: [], isOptional: true)))
+        XCTAssertTrue(optional.isOptional)
+        XCTAssertEqual(optional.kind, .text)
+        let mandatory = try XCTUnwrap(AgentFieldSpec(PartnerField(key: "name", kind: .text, label: "Name", options: [])))
+        XCTAssertFalse(mandatory.isOptional)
+        let number = try XCTUnwrap(AgentFieldSpec(PartnerField(key: "party_size", kind: .number, label: "Party size", options: [], isOptional: true)))
+        XCTAssertEqual(number.kind, .number)
+        XCTAssertTrue(number.isOptional)
+        XCTAssertFalse(sizeSpec.isOptional)
+        XCTAssertNil(sizeSpec.range)
+
+        // An optional blank is drawn as every blank row is, and nothing says optional or required.
+        let model = make([.field(try XCTUnwrap(AgentFieldSpec(PartnerField(key: "party_size", kind: .number, label: "Party size", options: []))),
+                                 value: nil, source: .blank), .field(optional, value: nil, source: .blank)])
+        XCTAssertEqual(model.lines, ["Order delivery", "Party size:", "Note:"])
+        XCTAssertTrue(model.setText("party_size", "4"))
+        XCTAssertEqual(model.lines, ["Order delivery", "Party size: 4", "Note:"])
+        for line in model.lines {
+            XCTAssertFalse(line.lowercased().contains("optional"), line)
+            XCTAssertFalse(line.lowercased().contains("required"), line)
+        }
+        for field in model.card.fields { XCTAssertNil(field.note, field.key) }
+        XCTAssertEqual(model.values.int("party_size"), 4)
+        XCTAssertNil(model.values.entry("note")?.value)
+        XCTAssertTrue(model.isReady)
+
+        // An optional blank does not hide a required blank behind it, whichever comes first.
+        let hidden = make([.field(optional, value: nil, source: .blank), .field(mandatory, value: nil, source: .blank)])
+        XCTAssertFalse(hidden.isReady)
+        XCTAssertTrue(hidden.setText("note", "x"))
+        XCTAssertFalse(hidden.isReady)
+        XCTAssertTrue(hidden.setText("name", "Sam"))
+        XCTAssertTrue(hidden.isReady)
+    }
+
+    func testM17_ANumberRowUnderASwitchIsReadyOnlyWhileTheSwitchIsOnAndRemembersItsValueEvenWhenInvalid() throws {
+        func rows(_ length: AgentFieldValue? = .number(60)) -> [AgentFieldRow] {
+            [.field(nameSpec, value: .text("Sam"), source: .stated),
+             .switchField(mealSwitch, value: .flag(true), source: .inferred, dependents: [.field(lengthSpec, value: length, source: length == nil ? .blank : .inferred)])]
+        }
+        let model = make(rows())
+        XCTAssertEqual(keys(model), ["name", "meal", "schedule-length"], "positive: the row stands after its switch")
+        XCTAssertEqual(model.values.int("schedule-length"), 60)
+        XCTAssertEqual(model.source(of: "schedule-length"), .inferred)
+        XCTAssertTrue(model.isReady, "built with 60 while the switch is on")
+
+        // Blank or 721 makes the card not ready while the switch is on; turning the switch off removes the row.
+        XCTAssertTrue(model.setText("schedule-length", ""))
+        XCTAssertFalse(model.isReady)
+        XCTAssertTrue(model.chooseOption("meal", "false"))
+        XCTAssertNil(model.field("schedule-length"))
+        XCTAssertNil(model.values.entry("schedule-length"), "no entry for a row that is off the card")
+        XCTAssertTrue(model.isReady, "the blank row is off the card")
+        XCTAssertTrue(model.chooseOption("meal", "true"))
+        XCTAssertFalse(model.isReady, "the blank row is back with its switch")
+        XCTAssertNil(try XCTUnwrap(model.field("schedule-length")).chosen)
+        XCTAssertTrue(model.setText("schedule-length", "721"))
+        XCTAssertFalse(model.isReady)
+        XCTAssertTrue(model.chooseOption("meal", "false"))
+        XCTAssertTrue(model.isReady, "an invalid row is off the card")
+        XCTAssertNil(model.values.entry("schedule-length"))
+
+        // Typing 90, turning the switch off and on again restores 90, not 60.
+        let typed = make(rows())
+        XCTAssertTrue(typed.setText("schedule-length", "90"))
+        XCTAssertTrue(typed.chooseOption("meal", "false"))
+        XCTAssertTrue(typed.chooseOption("meal", "true"))
+        XCTAssertEqual(typed.values.int("schedule-length"), 90)
+        XCTAssertEqual(try XCTUnwrap(typed.field("schedule-length")).chosen, "90")
+        XCTAssertEqual(typed.source(of: "schedule-length"), .entered)
+        XCTAssertTrue(typed.isReady)
+
+        // An invalid value is restored as typed and the card is not ready until it is corrected.
+        for invalid in ["721", "4", ""] {
+            let run = make(rows())
+            XCTAssertTrue(run.setText("schedule-length", invalid))
+            XCTAssertTrue(run.chooseOption("meal", "false"))
+            XCTAssertTrue(run.chooseOption("meal", "true"))
+            XCTAssertEqual(run.values.int("schedule-length"), Int(invalid), invalid)
+            XCTAssertEqual(try XCTUnwrap(run.field("schedule-length")).chosen, invalid.isEmpty ? nil : invalid, invalid)
+            XCTAssertFalse(run.isReady, invalid)
+            XCTAssertTrue(run.setText("schedule-length", "720"))
+            XCTAssertTrue(run.isReady, invalid)
+        }
+
+        // After the freeze the row changes nothing.
+        typed.freeze()
+        XCTAssertFalse(typed.setText("schedule-length", "30"))
+        XCTAssertFalse(typed.chooseOption("meal", "false"))
+        XCTAssertEqual(typed.values.int("schedule-length"), 90)
+        XCTAssertNotNil(typed.field("schedule-length"))
+    }
 }
 
 /// A search that answers when the test says so: the closure waits for `answer`.

@@ -41,6 +41,8 @@ enum AgentFieldValue: Equatable {
     case option(String)
     /// The chosen side of an `on_off` field.
     case flag(Bool)
+    /// The whole number of a `number` field.
+    case number(Int)
 }
 
 /// One chip of a `pick_one` or `on_off` field.
@@ -58,13 +60,20 @@ struct AgentFieldSpec: Equatable {
     var options: [AgentFieldOption] = []
     /// Text only: the most characters the field holds. Without one the field holds `AgentDelivery.maxDeliveryText`.
     var limit: Int?
+    /// True when the card may leave the field blank.
+    var isOptional = false
+    /// Number only: the values the field may hold. Only a seed besir writes itself sets one.
+    var range: ClosedRange<Int>?
 
-    init(key: String, kind: AgentFieldKind, label: String, options: [AgentFieldOption] = [], limit: Int? = nil) {
+    init(key: String, kind: AgentFieldKind, label: String, options: [AgentFieldOption] = [], limit: Int? = nil,
+         isOptional: Bool = false, range: ClosedRange<Int>? = nil) {
         self.key = key
         self.kind = kind
         self.label = label
         self.options = options
         self.limit = limit
+        self.isOptional = isOptional
+        self.range = range
     }
 
     /// The seed of a field the partner named; nil when its chips do not fit its kind.
@@ -138,6 +147,9 @@ indirect enum AgentFieldRow {
             if case .flag(let on)? = entry(key)?.value { return on }
             return nil
         }
+
+        /// Skeleton: no number is read yet.
+        func int(_ key: String) -> Int? { nil }
     }
 
     private struct Slot {
@@ -428,6 +440,7 @@ indirect enum AgentFieldRow {
         case .time(let date)?: return BesirTime.isoFormatter.string(from: date)
         case .option(let id)?: return id
         case .flag(let on)?: return on ? AgentFieldSpec.onValue : AgentFieldSpec.offValue
+        case .number?: return nil
         case nil: return nil
         }
     }
