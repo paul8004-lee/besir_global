@@ -2,7 +2,7 @@ import Foundation
 
 /// The word a partner uses for the kind of one field of its order form (SPEC-CHOICECARD-001 REQ-002).
 enum PartnerFieldKind: String, CaseIterable, Equatable {
-    case text, place, time
+    case text, place, time, number
     case pickOne = "pick_one"
     case onOff = "on_off"
 
@@ -23,6 +23,14 @@ struct PartnerField: Equatable {
     let label: String
     /// Empty for every kind but `pick_one` and `on_off`.
     let options: [PartnerOption]
+    /// True when the partner marked the field optional. Defaulted, so a field written without it is required.
+    var isOptional = false
+}
+
+/// One entry of the result-field list a partner announces before the card is drawn: the name and the kind of a result item.
+struct PartnerResultSpec: Equatable {
+    let name: String
+    let kind: PartnerResultKind
 }
 
 enum PartnerResultKind: String, Equatable {
@@ -81,7 +89,7 @@ enum PartnerForm {
 
     private static func field(from object: [String: Any]) -> PartnerField? {
         guard let key = object["key"] as? String, isFieldKey(key),
-              let word = object["kind"] as? String, let kind = PartnerFieldKind(rawValue: word),
+              let word = object["kind"] as? String, let kind = PartnerFieldKind(rawValue: word), kind != .number,
               let label = object["label"] as? String, isLabel(label, upTo: maxFieldLabelLength) else { return nil }
         guard kind.hasOptions else {
             return object.count == 3 ? PartnerField(key: key, kind: kind, label: label, options: []) : nil
@@ -140,6 +148,9 @@ enum PartnerForm {
             return PartnerResultItem(name: name, value: .text(text))
         }
     }
+
+    /// The announced result fields. Skeleton: nothing is read yet.
+    static func resultFields(from value: Any?) -> [PartnerResultSpec]? { nil }
 
     // MARK: Shared reading rules
 

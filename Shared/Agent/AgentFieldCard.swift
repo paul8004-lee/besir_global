@@ -6,9 +6,9 @@ import Foundation
 
 /// The kind of one field, as the partner's form names it (`PartnerFieldKind`) or as the app's own row says it.
 enum AgentFieldKind: Equatable {
-    case text, place, time, pickOne, onOff
+    case text, place, time, pickOne, onOff, number
 
-    /// The five wire words; nil for any other word.
+    /// The six wire words; nil for any other word.
     init?(wire: String) {
         guard let kind = PartnerFieldKind(rawValue: wire) else { return nil }
         self.init(kind)
@@ -21,6 +21,7 @@ enum AgentFieldKind: Equatable {
         case .time: self = .time
         case .pickOne: self = .pickOne
         case .onOff: self = .onOff
+        case .number: self = .number
         }
     }
 }
@@ -72,7 +73,7 @@ struct AgentFieldSpec: Equatable {
         switch kind {
         case .pickOne: guard !field.options.isEmpty else { return nil }
         case .onOff: guard field.options.count == 2 else { return nil }
-        case .text, .place, .time: break
+        case .text, .place, .time, .number: break
         }
         self.init(key: field.key, kind: kind, label: field.label, options: field.options.map { AgentFieldOption(id: $0.id, label: $0.label) })
     }
@@ -245,7 +246,7 @@ indirect enum AgentFieldRow {
         case .onOff:
             guard value == AgentFieldSpec.onValue || value == AgentFieldSpec.offValue else { return false }
             slot.value = .flag(value == AgentFieldSpec.onValue)
-        case .text, .place, .time:
+        case .text, .place, .time, .number:
             return false
         }
         slot.source = .entered
@@ -401,7 +402,7 @@ indirect enum AgentFieldRow {
         let spec = slot.spec
         let chosen = chosenText(slot.value)
         switch spec.kind {
-        case .text:
+        case .text, .number:
             return EditField(key: key, kind: .title, label: spec.label, options: [], allowsCustom: true,
                              chosen: chosen.map { $0.trimmingCharacters(in: .whitespaces) })
         case .place:

@@ -18,11 +18,16 @@ final class PartnerFormTests: XCTestCase {
 
     private func option(_ id: String, _ label: String) -> [String: Any] { ["id": id, "label": label] }
 
-    private func field(_ key: String, _ kind: String, _ label: String, options: [[String: Any]]? = nil) -> [String: Any] {
+    private func field(_ key: String, _ kind: String, _ label: String, options: [[String: Any]]? = nil, optional: Any? = nil) -> [String: Any] {
         var object: [String: Any] = ["key": key, "kind": kind, "label": label]
         if let options { object["options"] = options }
+        if let optional { object["optional"] = optional }
         return object
     }
+
+    private func resultFields(_ value: Any) -> [PartnerResultSpec]? { PartnerForm.resultFields(from: wire(value)) }
+
+    private func spec(_ name: String, _ kind: String) -> [String: Any] { ["name": name, "kind": kind] }
 
     private var cardOptions: [[String: Any]] {
         [option("debit-4242", "Example Debit \u{2022}\u{2022}4242 (Simulated)"), option("credit-1881", "Example Credit \u{2022}\u{2022}1881 (Simulated)")]
@@ -146,6 +151,127 @@ final class PartnerFormTests: XCTestCase {
         // Positive counterpart: the same shapes without the defect are accepted.
         XCTAssertNotNil(fields([field("a", "on_off", "A", options: [option("true", "Add"), option("false", "Skip")])]))
         XCTAssertNotNil(fields([field("a", "pick_one", "A", options: [option("x", "Wide \u{2022} dot")])]))
+    }
+
+    // MARK: W05-W07 the number kind and the optional marker
+
+    func testW05_ANumberFieldAndAnOptionalFieldDecodeWithTheirKindsAndTheOthersAreRequired() throws {
+        let list: [[String: Any]] = [
+            field("restaurant", "text", "Restaurant"), field("party_size", "number", "Party size"), field("start", "time", "Time"),
+            field("name", "text", "Name"), field("note", "text", "Note", optional: true)]
+        let decoded = try XCTUnwrap(fields(list))
+        XCTAssertEqual(decoded.map(\.key), ["restaurant", "party_size", "start", "name", "note"])
+        XCTAssertEqual(decoded.map(\.kind), [.text, .number, .time, .text, .text])
+        XCTAssertEqual(decoded.map(\.isOptional), [false, false, false, false, true])
+        XCTAssertEqual(decoded[1].options, [])
+        // The partner's order is kept whatever the kinds.
+        let reversed = try XCTUnwrap(fields(Array(list.reversed())))
+        XCTAssertEqual(reversed.map(\.key), ["note", "name", "start", "party_size", "restaurant"])
+
+        // The key order `key, kind, label, options, optional` decodes for a pick_one.
+        let chips = [option("small", "Small"), option("large_2", "Large")]
+        let pick = try XCTUnwrap(fields([field("size", "pick_one", "Size", options: chips, optional: true)]))
+        XCTAssertEqual(pick[0].kind, .pickOne)
+        XCTAssertEqual(pick[0].options, [PartnerOption(id: "small", label: "Small"), PartnerOption(id: "large_2", label: "Large")])
+        XCTAssertTrue(pick[0].isOptional)
+        XCTAssertFalse(try XCTUnwrap(fields([field("size", "pick_one", "Size", options: chips)]))[0].isOptional)
+
+        // Optional is accepted on every kind but on_off.
+        for kind in ["text", "place", "time", "number"] {
+            let one = try XCTUnwrap(fields([field("a", kind, "A", optional: true)]), kind)
+            XCTAssertTrue(one[0].isOptional, kind)
+        }
+        // A field built without the marker is required.
+        XCTAssertFalse(PartnerField(key: "a", kind: .text, label: "A", options: []).isOptional)
+    }
+
+    func testW06_AnOptionalMarkerThatIsNotTheBooleanTrueOrIsOnTheWrongKindMakesTheWholeListUnusable() throws {
+        // Positive first: the valid list decodes (a reader that refuses a trailing optional cannot satisfy this).
+        let valid: [[String: Any]] = [field("party_size", "number", "Party size"), field("note", "text", "Note", optional: true)]
+        let good = try XCTUnwrap(fields(valid))
+        XCTAssertEqual(good.map(\.isOptional), [false, true])
+
+        let chips = [option("small", "Small")]
+        let cases: [(String, Any)] = [
+            ("optional false", [field("note", "text", "Note", optional: false)]),
+            ("optional as the text true", [field("note", "text", "Note", optional: "true")]),
+            ("optional as the number 1", [field("note", "text", "Note", optional: 1)]),
+            ("optional as the number 0", [field("note", "text", "Note", optional: 0)]),
+            ("optional as null", [field("note", "text", "Note", optional: NSNull())]),
+            ("optional as a list", [field("note", "text", "Note", optional: [true])]),
+            ("optional on an on_off field", [field("door", "on_off", "Door", options: onOffOptions, optional: true)]),
+            ("a number field with options", [field("size", "number", "Size", options: chips)]),
+            ("a number field with empty options", [field("size", "number", "Size", options: [])]),
+            ("a number field with options and optional", [field("size", "number", "Size", options: chips, optional: true)]),
+            ("a fifth key on a pick_one field", [["key": "a", "kind": "pick_one", "label": "A", "options": chips, "optional": true, "hint": "x"]]),
+            ("a fourth key beside optional on a text field", [["key": "a", "kind": "text", "label": "A", "optional": true, "hint": "x"]]),
+            ("a fifth key on a text field", [["key": "a", "kind": "text", "label": "A", "optional": true, "hint": "x", "more": 1]]),
+            ("one bad optional among good fields", [field("a", "text", "A"), field("b", "text", "B", optional: false), field("c", "text", "C")]),
+        ]
+        assertUnusable(cases) { fields($0) != nil }
+
+        // `optional` is a key of the parsed dictionary, never a position: the same keys in another order decode alike.
+        let text = #"[{"optional":true,"label":"Note","kind":"text","key":"note"},{"label":"Size","options":[{"id":"small","label":"Small"}],"optional":true,"kind":"pick_one","key":"size"}]"#
+        let parsed = try JSONSerialization.jsonObject(with: Data(text.utf8))
+        let reordered = try XCTUnwrap(PartnerForm.fields(from: parsed))
+        XCTAssertEqual(reordered.map(\.key), ["note", "size"])
+        XCTAssertEqual(reordered.map(\.isOptional), [true, true])
+        XCTAssertEqual(reordered[1].options, [PartnerOption(id: "small", label: "Small")])
+    }
+
+    func testW07_TheNumberKindIsAKindOfItsOwnWithThreeKeysAndAnUnknownWordIsStillRefused() throws {
+        XCTAssertEqual(PartnerFieldKind(rawValue: "number"), .number)
+        XCTAssertFalse(PartnerFieldKind.number.hasOptions)
+        let decoded = try XCTUnwrap(fields([field("party_size", "number", "Party size")]))
+        XCTAssertEqual(decoded.count, 1)
+        XCTAssertEqual(decoded[0].kind, .number)
+        XCTAssertEqual(decoded[0].label, "Party size")
+        XCTAssertEqual(decoded[0].options, [])
+        XCTAssertFalse(decoded[0].isOptional)
+        // The kind sits among others, in any position.
+        let mixed = try XCTUnwrap(fields([field("a", "number", "A"), field("b", "time", "B"), field("c", "number", "C")]))
+        XCTAssertEqual(mixed.map(\.kind), [.number, .time, .number])
+        // Another word for a number is not a kind.
+        let cases: [(String, Any)] = [
+            ("integer", [field("a", "integer", "A")]), ("int", [field("a", "int", "A")]), ("Number in upper case", [field("a", "Number", "A")]),
+            ("float", [field("a", "float", "A")]), ("decimal", [field("a", "decimal", "A")]),
+        ]
+        assertUnusable(cases) { fields($0) != nil }
+    }
+
+    // MARK: W08 the result-field list
+
+    func testW08_TheResultFieldListDecodesWithKindsAndEachDefectIsRefused() throws {
+        let booking: [[String: Any]] = [spec("Booking time", "time"), spec("Reservation number", "text"), spec("Estimated cost", "money"),
+                                        spec("Partner note", "text")]
+        let decoded = try XCTUnwrap(resultFields(booking))
+        XCTAssertEqual(decoded, [PartnerResultSpec(name: "Booking time", kind: .time), PartnerResultSpec(name: "Reservation number", kind: .text),
+                                 PartnerResultSpec(name: "Estimated cost", kind: .money), PartnerResultSpec(name: "Partner note", kind: .text)])
+        XCTAssertEqual(decoded.map(\.kind), [.time, .text, .money, .text])
+
+        // The edges: one item, eight items, a 40-character name, the printable ASCII range.
+        XCTAssertEqual(resultFields([spec("A", "text")])?.count, 1)
+        XCTAssertEqual(resultFields((0..<8).map { spec("N\($0)", "text") })?.count, 8)
+        XCTAssertEqual(resultFields([spec(String(repeating: "N", count: 40), "money")])?.first?.name.count, 40)
+        XCTAssertEqual(resultFields([spec("Price (est.) #1: ok~", "text")])?.first?.name, "Price (est.) #1: ok~")
+        XCTAssertNotNil(resultFields([spec("A", "time")]))
+        XCTAssertNotNil(resultFields([spec("A", "money")]))
+
+        let cases: [(String, Any)] = [
+            ("not an array", spec("A", "text")), ("null", NSNull()), ("a string", "A"), ("zero items", [Any]()),
+            ("nine items", (0..<9).map { spec("N\($0)", "text") }), ("an item that is not an object", ["A"]),
+            ("a second time item", [spec("A", "time"), spec("B", "text"), spec("C", "time")]),
+            ("a second money item", [spec("A", "money"), spec("B", "money")]),
+            ("an unknown kind", [spec("A", "link")]), ("a kind in upper case", [spec("A", "Text")]), ("a kind not a string", [["name": "A", "kind": 1]]),
+            ("a name of 41 characters", [spec(String(repeating: "N", count: 41), "text")]), ("an empty name", [spec("", "text")]),
+            ("a name with a non-ASCII character", [spec("Caf\u{00E9}", "text")]), ("a name with a newline", [spec("A\nB", "text")]),
+            ("a name with a tab", [spec("A\tB", "text")]), ("a name not a string", [["name": 5, "kind": "text"]]),
+            ("an extra key", [["name": "A", "kind": "text", "unit": "usd"]]),
+            ("a value key", [["name": "A", "kind": "text", "value": "x"]]),
+            ("a missing name", [["kind": "text"]]), ("a missing kind", [["name": "A"]]),
+            ("one bad item among good ones", [spec("A", "text"), spec("B", "link"), spec("C", "text")]),
+        ]
+        assertUnusable(cases) { resultFields($0) != nil }
     }
 
     // MARK: W03-W04 the result list
