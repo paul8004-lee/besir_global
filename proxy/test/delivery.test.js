@@ -21,18 +21,19 @@ const valid = (over = {}) => ({
 const ORDER_KEYS = ["op", "request_id", "restaurant", "arrive_at", "items", "address", "card_id"];
 const CONFIRMED_KEYS = [
   "address",
-  "arrival_estimate",
   "arrive_at",
   "card_id",
-  "estimated_total_cents",
   "items",
   "order_id",
   "partner",
   "restaurant",
+  "results",
   "simulated",
   "status",
 ];
 const DECLINED_KEYS = ["address", "arrive_at", "card_id", "items", "partner", "reason", "restaurant", "simulated", "status"];
+const OPTIONS_KEYS = ["delivery_fee_cents", "menu", "order_fields", "partner", "simulated"];
+const OLD_ANSWER_KEYS = ["arrival_estimate", "estimated_total_cents"];
 
 // The partner's fixed tables of L13, written out here on purpose: the route and the test do not share them.
 const MENU = [
@@ -48,6 +49,15 @@ const CARDS = [
   { id: "credit-1881", label: "Example Credit \u2022\u20221881 (Simulated)" },
 ];
 const FEE = 500;
+// The fields of the order, written out here on purpose, in the partner's order and with the key order of the contract.
+const FIELDS = [
+  { key: "arrive_at", kind: "time", label: "Arrival" },
+  { key: "address", kind: "place", label: "Delivery place" },
+  { key: "card_id", kind: "pick_one", label: "Pay with", options: CARDS },
+];
+
+// The money item of a confirmed answer.
+const moneyOf = (body) => body.results.find((item) => item.kind === "money").value;
 
 // A body object is JSON-encoded; `raw` sends the string as it is.
 const call = (body, { token = "app-test", raw, method = "POST", e = env, path = "/delivery" } = {}) =>
@@ -103,7 +113,7 @@ test("AC-DELIVERY-001 D02: a non-POST is 405 and the other routes still answer 4
   }
 });
 
-test("AC-DELIVERY-002 D03: an order at 19:40 gives exactly the eleven keys of a confirmed order", async () => {
+test("AC-CHOICECARD-003 D03: an order at 19:40 gives exactly the ten keys of a confirmed order", async () => {
   const items = [
     { item_id: "gyoza", quantity: 1 },
     { item_id: "ramen", quantity: 2 },
@@ -121,12 +131,14 @@ test("AC-DELIVERY-002 D03: an order at 19:40 gives exactly the eleven keys of a 
   assert.deepEqual(body.items, items);
   assert.equal(body.address, "12 Test Street");
   assert.equal(body.card_id, "credit-1881");
-  assert.equal(body.arrival_estimate, "2026-11-02T19:40");
-  assert.equal(body.estimated_total_cents, 700 + 2 * 1400 + 500);
+  assert.equal(moneyOf(body), 700 + 2 * 1400 + 500);
   assert.match(body.order_id, /^DL-[A-Z0-9]{6}$/);
+  for (const key of OLD_ANSWER_KEYS) {
+    assert.equal(key in body, false, key);
+  }
 });
 
-test("AC-DELIVERY-002 D04: an order at 23:30 gives exactly the nine keys of a declined order", async () => {
+test("AC-CHOICECARD-003 D04: an order at 23:30 gives exactly the nine keys of a declined order", async () => {
   const res = await call(valid({ arrive_at: "2026-11-02T23:30" }));
   assert.equal(res.status, 200);
   const body = await res.json();
@@ -140,12 +152,12 @@ test("AC-DELIVERY-002 D04: an order at 23:30 gives exactly the nine keys of a de
   assert.deepEqual(body.items, LINES);
   assert.equal(body.address, "12 Test Street");
   assert.equal(body.card_id, "debit-4242");
-  for (const key of ["order_id", "arrival_estimate", "estimated_total_cents"]) {
+  for (const key of ["order_id", "results", ...OLD_ANSWER_KEYS]) {
     assert.equal(key in body, false, key);
   }
 });
 
-test("AC-DELIVERY-002 D05: the hours edges are 10:00 and 22:00 confirmed, 09:59 and 22:01 declined", async () => {
+test("AC-CHOICECARD-003 D05: the hours edges are 10:00 and 22:00 confirmed, 09:59 and 22:01 declined", async () => {
   for (const time of ["10:00", "22:00", "10:01", "21:59", "12:00"]) {
     const body = await (await call(valid({ arrive_at: `2026-11-02T${time}` }))).json();
     assert.equal(body.status, "confirmed", time);
@@ -159,14 +171,14 @@ test("AC-DELIVERY-002 D05: the hours edges are 10:00 and 22:00 confirmed, 09:59 
   }
 });
 
-test("AC-DELIVERY-002 D06: the estimated total is the sum of price times quantity plus 500, always an integer", async () => {
+test("AC-CHOICECARD-004 D06: the money item is the sum of price times quantity plus 500, always an integer", async () => {
   const options = await (await call({ op: "options" })).json();
   const price = Object.fromEntries(options.menu.map((entry) => [entry.id, entry.price_cents]));
   const totalOf = async (items) => {
     const body = await (await call(valid({ items }))).json();
     assert.equal(body.status, "confirmed");
-    assert.equal(Number.isInteger(body.estimated_total_cents), true);
-    return body.estimated_total_cents;
+    assert.equal(Number.isInteger(moneyOf(body)), true);
+    return moneyOf(body);
   };
   for (const item of MENU) {
     assert.equal(price[item.id], item.price_cents, `the options answer prices ${item.id}`);
@@ -330,7 +342,7 @@ test("AC-DELIVERY-001 D10: items hold 1 to 6 lines of known items, quantity 1 to
   assert.equal(two.status, 200);
   const body = await two.json();
   assert.deepEqual(body.items, [{ item_id: "ramen", quantity: 2 }]);
-  assert.equal(body.estimated_total_cents, 2 * 1400 + 500);
+  assert.equal(moneyOf(body), 2 * 1400 + 500);
   // One line, six lines (every menu item once), quantity 1 and 9.
   for (const items of [
     [{ item_id: "lemonade", quantity: 1 }],
@@ -494,19 +506,21 @@ test("AC-DELIVERY-002 D14: /delivery is routed next to the others and every answ
   }
 });
 
-test("AC-DELIVERY-002 D15: the options answer holds exactly five keys and the fixed tables", async () => {
+test("AC-CHOICECARD-001 D15: the options answer holds exactly five keys, the fixed tables and the field list", async () => {
   const res = await call({ op: "options" });
   assert.equal(res.status, 200);
   assert.match(res.headers.get("content-type"), /application\/json/);
   const body = await res.json();
-  assert.deepEqual(Object.keys(body).sort(), ["cards", "delivery_fee_cents", "menu", "partner", "simulated"]);
+  assert.deepEqual(Object.keys(body).sort(), OPTIONS_KEYS);
+  assert.equal("cards" in body, false);
   assert.equal(body.partner, "Example Delivery");
   assert.equal(body.simulated, true);
   assert.deepEqual(body.menu, MENU);
-  assert.deepEqual(body.cards, CARDS);
+  assert.deepEqual(body.order_fields, FIELDS);
   assert.equal(body.delivery_fee_cents, FEE);
   assert.equal(body.menu.length, 6);
-  assert.equal(body.cards.length, 2);
+  const cards = body.order_fields.find((field) => field.key === "card_id").options;
+  assert.equal(cards.length, 2);
   for (const entry of body.menu) {
     assert.deepEqual(Object.keys(entry).sort(), ["id", "name", "price_cents"]);
     assert.match(entry.id, /^[a-z]+$/);
@@ -517,14 +531,14 @@ test("AC-DELIVERY-002 D15: the options answer holds exactly five keys and the fi
   const prices = body.menu.map((entry) => entry.price_cents);
   assert.equal(Math.min(...prices), 400);
   assert.equal(Math.max(...prices), 2500);
-  for (const entry of body.cards) {
+  for (const entry of cards) {
     assert.deepEqual(Object.keys(entry).sort(), ["id", "label"]);
     assert.match(entry.id, /^[a-z0-9-]+$/);
     assert.match(entry.label, /\(Simulated\)$/);
   }
   assert.equal(JSON.stringify(body).includes("\u2022\u2022"), true, "the card labels hold the bullet characters");
   const wording = /calorie|kcal|nutrition|health|diet|vitamin/i;
-  for (const entry of [...body.menu.map((item) => item.name), ...body.cards.map((card) => card.label)]) {
+  for (const entry of [...body.menu.map((item) => item.name), ...cards.map((card) => card.label)]) {
     assert.equal(wording.test(entry), false, entry);
   }
   // The same answer every time.
@@ -573,5 +587,260 @@ test("AC-DELIVERY-001 D16: address is 1 to 120 code points and card_id names one
   }
   for (const card_id of ["", "nope", "DEBIT-4242", "Credit-1881", " debit-4242", "debit-4242 ", "debit-4243", 5, null, ["debit-4242"]]) {
     await expectError(await call(valid({ card_id })), 400, "invalid_field");
+  }
+});
+
+test("AC-CHOICECARD-002 D17: order_fields is the three fields in order, with the key order of the contract", async () => {
+  const body = await (await call({ op: "options" })).json();
+  assert.equal(Array.isArray(body.order_fields), true);
+  assert.deepEqual(
+    body.order_fields.map((field) => [field.key, field.kind, field.label]),
+    [
+      ["arrive_at", "time", "Arrival"],
+      ["address", "place", "Delivery place"],
+      ["card_id", "pick_one", "Pay with"],
+    ],
+  );
+  assert.deepEqual(Object.keys(body.order_fields[0]), ["key", "kind", "label"]);
+  assert.deepEqual(Object.keys(body.order_fields[1]), ["key", "kind", "label"]);
+  assert.deepEqual(Object.keys(body.order_fields[2]), ["key", "kind", "label", "options"]);
+  // The options of the card field are the partner's cards, id and label, in order: the same table the order check reads.
+  assert.deepEqual(body.order_fields[2].options, CARDS);
+  for (const option of body.order_fields[2].options) {
+    assert.deepEqual(Object.keys(option), ["id", "label"]);
+    const accepted = await (await call(valid({ card_id: option.id }))).json();
+    assert.equal(accepted.card_id, option.id);
+  }
+  // The delivery partner has no on_off field.
+  assert.equal(body.order_fields.some((field) => field.kind === "on_off"), false);
+});
+
+test("AC-CHOICECARD-004 D18: results is the arrival, the estimated total and the status, in that order", async () => {
+  const items = [
+    { item_id: "gyoza", quantity: 1 },
+    { item_id: "ramen", quantity: 2 },
+  ];
+  const body = await (await call(valid({ items }))).json();
+  assert.equal(body.status, "confirmed");
+  assert.deepEqual(body.results, [
+    { name: "Arrival", kind: "time", value: "2026-11-02T19:40" },
+    { name: "Estimated total", kind: "money", value: 700 + 2 * 1400 + 500 },
+    { name: "Status", kind: "text", value: "Preparing" },
+  ]);
+  assert.deepEqual(
+    body.results.map((item) => item.kind),
+    ["time", "money", "text"],
+  );
+  for (const item of body.results) {
+    assert.deepEqual(Object.keys(item), ["name", "kind", "value"]);
+  }
+  assert.equal(body.results[0].value, body.arrive_at);
+  assert.equal(Number.isInteger(body.results[1].value), true);
+  // The time item follows the requested arrival.
+  const later = await (await call(valid({ arrive_at: "2027-01-05T12:30" }))).json();
+  assert.equal(later.results[0].value, "2027-01-05T12:30");
+});
+
+test("AC-CHOICECARD-003 D19: no top-level cards, no old confirmed keys, and answer-side keys are unknown as request keys", async () => {
+  const options = await (await call({ op: "options" })).json();
+  assert.equal("cards" in options, false);
+  for (const time of ["10:00", "22:00", "19:40", "09:59", "22:01"]) {
+    const body = await (await call(valid({ arrive_at: `2026-11-02T${time}` }))).json();
+    for (const key of OLD_ANSWER_KEYS) {
+      assert.equal(key in body, false, `${key} at ${time}`);
+    }
+  }
+  // Positive control: the confirmed answer holds the key that replaced them.
+  assert.equal(Array.isArray((await (await call(valid())).json()).results), true);
+  for (const key of ["order_fields", "results", "cards"]) {
+    await expectError(await call({ ...valid(), [key]: [] }), 400, "unknown_field");
+    await expectError(await call({ op: "options", [key]: [] }), 400, "unknown_field");
+  }
+});
+
+// An independent statement of the field and result grammar: nothing here is imported from the route.
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+const FIELD_KINDS = ["text", "place", "time", "pick_one", "on_off"];
+const length = (text) => [...text].length;
+const plain = (text, longest) =>
+  typeof text === "string" && !HIDDEN.test(text) && length(text) >= 1 && length(text) <= longest;
+const plainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+const sameKeys = (value, keys) => plainObject(value) && JSON.stringify(Object.keys(value)) === JSON.stringify(keys);
+
+function optionDefects(field) {
+  const defects = [];
+  const options = field.options;
+  if (!Array.isArray(options)) return [`${field.key}: options missing`];
+  for (const option of options) {
+    if (!plainObject(option) || JSON.stringify(Object.keys(option).sort()) !== '["id","label"]') {
+      defects.push(`${field.key}: option keys`);
+    } else if (!plain(option.label, 60)) {
+      defects.push(`${field.key}: option label`);
+    }
+  }
+  if (defects.length > 0) return defects;
+  const ids = options.map((option) => option.id);
+  if (field.kind === "pick_one") {
+    if (options.length < 1 || options.length > 4) defects.push(`${field.key}: option count`);
+    if (!ids.every((id) => typeof id === "string" && /^[a-z0-9_-]{1,32}$/.test(id))) defects.push(`${field.key}: option id`);
+    if (new Set(ids).size !== ids.length) defects.push(`${field.key}: option id repeated`);
+  } else {
+    if (JSON.stringify(ids) !== '["true","false"]') defects.push(`${field.key}: on_off ids`);
+    if (options.length === 2 && options[0].label === options[1].label) defects.push(`${field.key}: on_off labels`);
+  }
+  return defects;
+}
+
+function fieldListDefects(fields) {
+  if (!Array.isArray(fields) || fields.length < 1 || fields.length > 8) return ["field count"];
+  const defects = [];
+  const seen = new Set();
+  for (const field of fields) {
+    if (!plainObject(field)) {
+      defects.push("field is not an object");
+      continue;
+    }
+    const withOptions = field.kind === "pick_one" || field.kind === "on_off";
+    if (!sameKeys(field, withOptions ? ["key", "kind", "label", "options"] : ["key", "kind", "label"])) {
+      defects.push(`${field.key}: keys`);
+    }
+    if (typeof field.key !== "string" || !/^[a-z_]{1,32}$/.test(field.key)) defects.push(`${field.key}: key form`);
+    if (seen.has(field.key)) defects.push(`${field.key}: key repeated`);
+    seen.add(field.key);
+    if (!FIELD_KINDS.includes(field.kind)) defects.push(`${field.key}: kind`);
+    if (!plain(field.label, 40)) defects.push(`${field.key}: label`);
+    if (withOptions) defects.push(...optionDefects(field));
+  }
+  return defects;
+}
+
+function realMinute(text) {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(text);
+  if (!parts) return false;
+  const [year, month, day, hour, minute] = parts.slice(1).map(Number);
+  const when = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  return (
+    year >= 2000 &&
+    year <= 2199 &&
+    when.getUTCFullYear() === year &&
+    when.getUTCMonth() === month - 1 &&
+    when.getUTCDate() === day &&
+    when.getUTCHours() === hour &&
+    when.getUTCMinutes() === minute
+  );
+}
+
+function resultListDefects(results) {
+  if (!Array.isArray(results) || results.length < 1 || results.length > 8) return ["item count"];
+  const defects = [];
+  for (const item of results) {
+    if (!sameKeys(item, ["name", "kind", "value"])) {
+      defects.push("item keys");
+      continue;
+    }
+    if (typeof item.name !== "string" || !/^[\x20-\x7e]{1,40}$/.test(item.name)) defects.push(`${item.name}: name`);
+    if (item.kind === "time") {
+      if (typeof item.value !== "string" || !realMinute(item.value)) defects.push(`${item.name}: time value`);
+    } else if (item.kind === "money") {
+      if (!Number.isInteger(item.value) || item.value < 1 || item.value > 1000000) defects.push(`${item.name}: money value`);
+    } else if (item.kind === "text") {
+      if (!plain(item.value, 80)) defects.push(`${item.name}: text value`);
+    } else {
+      defects.push(`${item.name}: kind`);
+    }
+  }
+  for (const kind of ["time", "money"]) {
+    if (results.filter((item) => item.kind === kind).length > 1) defects.push(`two ${kind} items`);
+  }
+  return defects;
+}
+
+test("AC-CHOICECARD-002 D20: an independent validator accepts every answer the route gives", async () => {
+  // The validator itself: it accepts a list of all five kinds, with the on_off options rule, and refuses each defect.
+  const everyKind = [
+    { key: "note", kind: "text", label: "Note" },
+    { key: "where", kind: "place", label: "Where" },
+    { key: "when", kind: "time", label: "When" },
+    { key: "pay", kind: "pick_one", label: "Pay", options: [{ id: "a-1", label: "A" }, { id: "b_2", label: "B" }] },
+    { key: "door", kind: "on_off", label: "Leave at door", options: [{ id: "true", label: "Leave" }, { id: "false", label: "Hand over" }] },
+  ];
+  assert.deepEqual(fieldListDefects(everyKind), []);
+  const defective = [
+    [],
+    Array.from({ length: 9 }, (_, i) => ({ key: `k${"a".repeat(i)}`.replace(/\d/g, ""), kind: "text", label: "L" })),
+    [{ key: "Door", kind: "text", label: "L" }],
+    [{ key: "a".repeat(33), kind: "text", label: "L" }],
+    [{ key: "a", kind: "number", label: "L" }],
+    [{ key: "a", kind: "text", label: "" }],
+    [{ key: "a", kind: "text", label: "a​b" }],
+    [{ key: "a", kind: "text", label: "x".repeat(41) }],
+    [{ key: "a", kind: "text", label: "L", options: [] }],
+    [{ key: "a", kind: "text", label: "L", extra: 1 }],
+    [{ key: "a", kind: "text", label: "L" }, { key: "a", kind: "time", label: "M" }],
+    [{ key: "a", kind: "pick_one", label: "L" }],
+    [{ key: "a", kind: "pick_one", label: "L", options: [] }],
+    [{ key: "a", kind: "pick_one", label: "L", options: ["a", "b", "c", "d", "e"].map((id) => ({ id, label: id })) }],
+    [{ key: "a", kind: "pick_one", label: "L", options: [{ id: "x", label: "X" }, { id: "x", label: "Y" }] }],
+    [{ key: "a", kind: "pick_one", label: "L", options: [{ id: "X", label: "X" }] }],
+    [{ key: "a", kind: "pick_one", label: "L", options: [{ id: "x", label: "" }] }],
+    [{ key: "a", kind: "pick_one", label: "L", options: [{ id: "x", label: "y".repeat(61) }] }],
+    [{ key: "a", kind: "pick_one", label: "L", options: [{ id: "x", label: "X", extra: 1 }] }],
+    [{ key: "a", kind: "on_off", label: "L" }],
+    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "true", label: "Yes" }] }],
+    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "true", label: "A" }, { id: "false", label: "B" }, { id: "x", label: "C" }] }],
+    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "false", label: "A" }, { id: "true", label: "B" }] }],
+    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "yes", label: "A" }, { id: "no", label: "B" }] }],
+    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "true", label: "Same" }, { id: "false", label: "Same" }] }],
+    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "true", label: "A" }, { id: "false", label: "" }] }],
+    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "true", label: "A" }, { id: "false", label: "B " }] }],
+    [{ key: "a", kind: "text", options: [], label: "L" }],
+  ];
+  for (const list of defective) {
+    assert.notDeepEqual(fieldListDefects(list), [], JSON.stringify(list));
+  }
+  const goodResults = [
+    { name: "Arrival", kind: "time", value: "2026-11-02T19:40" },
+    { name: "Estimated total", kind: "money", value: 4000 },
+    { name: "Status", kind: "text", value: "Preparing" },
+  ];
+  assert.deepEqual(resultListDefects(goodResults), []);
+  assert.deepEqual(resultListDefects([...goodResults, { name: "Note", kind: "text", value: "Second" }]), []);
+  const badResults = [
+    [],
+    [...goodResults, goodResults[1]],
+    [...goodResults, goodResults[0]],
+    [{ name: "Arrival", kind: "time", value: "2026-02-29T19:40" }],
+    [{ name: "Arrival", kind: "time", value: "2026-11-02T25:00" }],
+    [{ name: "Total", kind: "money", value: 4000.5 }],
+    [{ name: "Total", kind: "money", value: 0 }],
+    [{ name: "Total", kind: "money", value: 1000001 }],
+    [{ name: "Total", kind: "money", value: "4000" }],
+    [{ name: "Total", kind: "money", value: true }],
+    [{ name: "Status", kind: "text", value: "" }],
+    [{ name: "Status", kind: "text", value: "x".repeat(81) }],
+    [{ name: "Status", kind: "text", value: "a\u0007b" }],
+    [{ name: "N".repeat(41), kind: "text", value: "x" }],
+    [{ name: "Café", kind: "text", value: "x" }],
+    [{ name: "Status", kind: "flag", value: "x" }],
+    [{ name: "Status", kind: "text", value: "x", extra: 1 }],
+    [{ kind: "text", name: "Status", value: "x" }],
+    Array.from({ length: 9 }, (_, i) => ({ name: `Note ${i}`, kind: "text", value: "x" })),
+  ];
+  for (const list of badResults) {
+    assert.notDeepEqual(resultListDefects(list), [], JSON.stringify(list));
+  }
+  // Every answer of the route: the options answer, and a confirmed order at several times, mixes and cards.
+  const options = await (await call({ op: "options" })).json();
+  assert.deepEqual(fieldListDefects(options.order_fields), []);
+  const keys = options.order_fields.map((field) => field.key);
+  assert.equal(new Set(keys).size, keys.length);
+  for (const time of ["10:00", "12:30", "19:40", "22:00"]) {
+    for (const items of [LINES, MENU.map((item) => ({ item_id: item.id, quantity: 9 })), [{ item_id: "lemonade", quantity: 1 }]]) {
+      for (const card of CARDS) {
+        const body = await (await call(valid({ arrive_at: `2026-11-02T${time}`, items, card_id: card.id }))).json();
+        assert.equal(body.status, "confirmed");
+        assert.deepEqual(resultListDefects(body.results), [], `${time} ${card.id}`);
+      }
+    }
   }
 });
