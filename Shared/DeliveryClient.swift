@@ -202,9 +202,10 @@ final class DeliveryClient {
         return DeliveryOptions(menu: menu, fields: fields, deliveryFeeCents: fee)
     }
 
-    /// The adapter rule: the three known keys, each once, each of its own kind. A duplicate is already refused by `PartnerForm`.
+    /// The adapter rule: the three known keys, each once, each of its own kind and each required. A duplicate is already
+    /// refused by `PartnerForm`; an optional field is refused here because the delivery order has no field it may leave out.
     private static func isDeliveryForm(_ fields: [PartnerField]) -> Bool {
-        fields.count == knownFields.count && fields.allSatisfy { knownFields[$0.key] == $0.kind }
+        fields.count == knownFields.count && fields.allSatisfy { knownFields[$0.key] == $0.kind && !$0.isOptional }
     }
 
     /// Accepts only the exact object the route sends for an order: the partner, `simulated` true, the echoes equal to what was
