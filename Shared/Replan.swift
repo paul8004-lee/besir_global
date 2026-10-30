@@ -73,6 +73,13 @@ enum Replan {
 
     // MARK: - Classification
 
+    /// The late minutes: whole minutes, rounded up, of `now + live travel - arrival`; 0 when not late. One rule for
+    /// `classify` and for the card (REQ-REPLAN-308).
+    static func lateMinutes(now: Date, liveTravel: TimeInterval, arrival: Date) -> Int {
+        let over = now.addingTimeInterval(liveTravel).timeIntervalSince(arrival)
+        return over > 0 ? Int((over / 60).rounded(.up)) : 0
+    }
+
     /// REQ-REPLAN-004. `referenceDeparture` and `referenceTravel` are the first plan of the cycle.
     static func classify(eventID: UUID, trigger: ReplanTrigger, checkedAt: Date, inputs: ReplanInputs,
                          referenceDeparture: Date, referenceTravel: TimeInterval,
@@ -83,8 +90,7 @@ enum Replan {
         var minutes = 0
         var estimate: Date?
         if (inputs.anchor ?? .arrival) == .arrival {
-            let overSeconds = now.addingTimeInterval(liveTravel).timeIntervalSince(inputs.arrivalDate)
-            let lateBy = overSeconds > 0 ? Int((overSeconds / 60).rounded(.up)) : 0
+            let lateBy = lateMinutes(now: now, liveTravel: liveTravel, arrival: inputs.arrivalDate)
             let delta = referenceDeparture.timeIntervalSince(newDeparture)
             if lateBy >= 1 {
                 kind = .late

@@ -100,6 +100,8 @@ final class Store: ObservableObject {
     /// unstored occurrence is kept.
     nonisolated static let legWindowDays = 14
     nonisolated static let legRetentionDays = 30
+    /// How far ahead the app-open check reaches, in minutes. The tap of a pending alert uses the same number.
+    nonisolated static let refreshWindowMinutes = 120
     /// Where the Muse Spark draft request goes; a test replaces it.
     var replanDraftSend: ReplanDraftClient.Send = { try await URLSession(configuration: .ephemeral).data(for: $0) }
     /// When the last successful live lookup of an event finished.
@@ -2988,6 +2990,20 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The alert of an event is pending: it wants one and its alarm time is ahead. The complement of the fired test of
+    /// `selectRefreshTargets`.
+    static func alertIsPending(wants: Bool, departure: Date, leadMinutes: Int, now: Date) -> Bool {
+        false
+    }
+
+    enum TapRoute: Equatable { case baseline, nothing, fired }
+
+    /// Where the tap of an alert goes: a pending alert is a baseline check when the app-open selection would select the
+    /// event, and nothing otherwise; everything else keeps the fired-alert path.
+    static func tapRoute(for event: ScheduledEvent, now: Date, withinMinutes: Int) -> TapRoute {
+        .fired
+    }
+
     /// @MX:NOTE 계약 5 — 알림 시각은 alarmTime 호출로만 계산한다(본문 2줄). 옛 출발은 await 뒤
     /// id로 다시 읽은 레코드의 출발이다(사본이 아니라, D3). 순수 함수라 드라이버가 값 표로 단언한다.
     /// 일반 static(메인 액터 격리)인 이유는 selectRefreshTargets 머리말과 같다(SPEC-ONTIME-005 M17).
@@ -3020,7 +3036,24 @@ final class Store: ObservableObject {
     /// SPEC-REPLAN-001: `trigger` says who asked. `.appOpen` (the default; the foreground call) looks up with traffic and
     /// keeps a replan outcome; `.background` (the baseline app-refresh task) is not live, keeps no outcome and leaves every
     /// car event alone.
-    func refreshUpcomingEstimates(withinMinutes: Int = 120, trigger: ReplanTrigger = .appOpen) async {
+    func refreshUpcomingEstimates(withinMinutes: Int = Store.refreshWindowMinutes, trigger: ReplanTrigger = .appOpen) async {
+        let postAlertIDs = await refreshBaselineEstimates(withinMinutes: withinMinutes, trigger: trigger)
+        await replanPostAlertEvents(postAlertIDs)
+    }
+
+    /// The foreground sequence (SPEC-REPLAN-003): the legs of the repeats, the baseline check, the alert reschedule, then the
+    /// after-alert checks.
+    func runAppOpenPass() async {
+        // The legs of the repeats for the next days are made before the alarms are rescheduled.
+        await fillSeriesLegs()
+        await refreshUpcomingEstimates()
+        rescheduleNearestNotifications()
+    }
+
+    /// The baseline pass of `refreshUpcomingEstimates`: the events whose alert has not fired. Returns the ids of the events
+    /// the after-alert pass checks next.
+    private func refreshBaselineEstimates(withinMinutes: Int = Store.refreshWindowMinutes,
+                                          trigger: ReplanTrigger = .appOpen) async -> [UUID] {
         let now = Date()
         // 인덱스가 아니라 id로 대상을 잡는다 — 아래 루프는 await로 중단되고, 그 사이 동기화나
         // 사용자의 추가·삭제로 events 배열이 바뀌면 인덱스가 다른 일정을 가리키거나(엉뚱한 일정을
@@ -3035,50 +3068,64 @@ final class Store: ObservableObject {
         // Events the window skips because their alert fired or their departure passed, while the arrival is ahead.
         let postAlertIDs = trigger == .appOpen
             ? Store.selectPostAlertTargets(events: events, now: replanNow(), withinMinutes: withinMinutes) : []
-        guard !targetIDs.isEmpty || !postAlertIDs.isEmpty else { return }
+        guard !targetIDs.isEmpty || !postAlertIDs.isEmpty else { return [] }
         for id in targetIDs {
-            guard let idx = events.firstIndex(where: { $0.id == id }) else { continue }
-            var event = events[idx]
-            let before = event   // await 전 사본 — 재조회가 실제로 바꾼 필드만 가려내는 기준
-            // Live only for the two foreground triggers and for an event anchored on arrival (REQ-REPLAN-005, 009).
-            let live = trigger != .background && (event.anchor ?? .arrival) == .arrival
-            let started = replanNow()
-            if live {
-                if isLookupInFlight(id) || recentLiveLookup(of: id, at: started) { continue }
-                beginLookup(id)
-                lastLiveAnswers[id] = nil
-            }
-            let decision: RefreshAlarmDecision?
-            switch event.anchor ?? .arrival {
-            case .arrival:
-                // 유지 모드 — 재조회가 실패해도 직전 이동시간·출발 시각·알림을 지우지 않는다(REQ-001).
-                decision = await applyEstimate(to: &event, keepOnFailure: true, live: live)
-            case .departure:
-                guard let dep = event.departureDate else { continue }
-                decision = await applyDepartureAnchoredEstimate(to: &event, departureDate: dep, keepOnFailure: true)
-            }
-            if live { endLookup(id) }
-            // 버림(nil = 레코드 없음·출발 nil·조회 중 옛 알림 울림)이면 되쓰기도 생략한다(REQ-004, Q2=A).
-            guard let decision else { continue }
-            // await 후 인덱스를 다시 찾는다(위와 같은 이유).
-            guard let writeIdx = events.firstIndex(where: { $0.id == id }) else { continue }
-            // 레코드를 통째로 되쓰지 않고 재조회가 바꾼 필드만 지금 레코드에 붙인다. await 동안 다른 쓰기(다른 기기에서
-            // 받아 적용한 제목·버퍼 등)가 이 레코드를 고쳤다면, 통째 되쓰기는 그 고침을 낡은 사본으로 되돌리고
-            // 저장 감지가 그 낡은 판을 새 시각으로 다시 올려 모든 기기에서 고침이 사라진다.
-            Store.patchEstimateFields(from: before, to: event, into: &events[writeIdx])
-            // 따라잡기·늦음은 재예약 꼬리에서 즉시 요청으로 보낸다(REQ-001·002). 되쓴 직후 같은 동기
-            // 구간에 적재한다 — 먼저 적으면 그 틈의 꺼냄이 옛 레코드(알림 미래)를 보고 버린다(감사 N5).
-            if decision == .catchUp || decision == .late {
-                pendingCatchUpIDs.insert(event.id)
-            }
-            if live, let answer = lastLiveAnswers.removeValue(forKey: id) {
-                recordOutcomeOfOpenPass(before: before, started: started, trigger: trigger, answer: answer)
-            }
+            _ = await refreshOneEstimate(id: id, trigger: trigger)
         }
         if !targetIDs.isEmpty { save() }
-        for id in postAlertIDs {
+        return postAlertIDs
+    }
+
+    /// The after-alert pass of the app open: one live check for each event the baseline pass left out.
+    private func replanPostAlertEvents(_ ids: [UUID]) async {
+        for id in ids {
             await replanAfterAlert(id: id, trigger: .appOpen)
         }
+    }
+
+    /// The baseline step for one event, moved out of the loop of `refreshBaselineEstimates` unchanged. Returns true only when
+    /// a live answer was recorded and the record patched; a guard skip, a failed lookup and a discarded answer return false.
+    private func refreshOneEstimate(id: UUID, trigger: ReplanTrigger) async -> Bool {
+        guard let idx = events.firstIndex(where: { $0.id == id }) else { return false }
+        var event = events[idx]
+        let before = event   // the copy before the await: the reference for which fields the lookup really changed
+        // Live only for the two foreground triggers and for an event anchored on arrival (REQ-REPLAN-005, 009).
+        let live = trigger != .background && (event.anchor ?? .arrival) == .arrival
+        let started = replanNow()
+        if live {
+            if isLookupInFlight(id) || recentLiveLookup(of: id, at: started) { return false }
+            beginLookup(id)
+            lastLiveAnswers[id] = nil
+        }
+        let decision: RefreshAlarmDecision?
+        switch event.anchor ?? .arrival {
+        case .arrival:
+            // Keep mode: a failed lookup does not erase the previous travel time, departure or alert (REQ-001).
+            decision = await applyEstimate(to: &event, keepOnFailure: true, live: live)
+        case .departure:
+            guard let dep = event.departureDate else { return false }
+            decision = await applyDepartureAnchoredEstimate(to: &event, departureDate: dep, keepOnFailure: true)
+        }
+        if live { endLookup(id) }
+        // A discard (nil = no record, no departure, or the old alert rang during the lookup) skips the write-back too (REQ-004, Q2=A).
+        guard let decision else { return false }
+        // The index is found again after the await (same reason as above).
+        guard let writeIdx = events.firstIndex(where: { $0.id == id }) else { return false }
+        // The record is not written back whole: only the fields the lookup changed are put on the current record. If another
+        // write (a title or buffer applied from another device) edited the record during the await, a whole write-back would
+        // revert that edit to a stale copy, and the save detection would push the stale version to every device.
+        Store.patchEstimateFields(from: before, to: event, into: &events[writeIdx])
+        // A catch-up or late alert is sent as an immediate request at the end of the reschedule (REQ-001, 002). It is queued in
+        // the same synchronous stretch right after the write-back: queued earlier, a drain in the gap would see the old record
+        // (alert in the future) and drop it (audit N5).
+        if decision == .catchUp || decision == .late {
+            pendingCatchUpIDs.insert(event.id)
+        }
+        if live, let answer = lastLiveAnswers.removeValue(forKey: id) {
+            recordOutcomeOfOpenPass(before: before, started: started, trigger: trigger, answer: answer)
+            return true
+        }
+        return false
     }
 
     // MARK: - Live replan (SPEC-REPLAN-001, card t18)

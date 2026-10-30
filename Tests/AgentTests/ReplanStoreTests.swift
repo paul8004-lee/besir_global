@@ -34,6 +34,12 @@ enum ReplanFixtures {
         event(now: now, arrivalIn: 33 * 60, lead: 15)
     }
 
+    /// A fired alert with room for a second reading 301 seconds later: stored departure 40 minutes ahead, alarm 5 minutes
+    /// behind, arrival 63 minutes away.
+    static func firedEventWithSlack(now: Date) -> ScheduledEvent {
+        event(now: now, arrivalIn: 63 * 60, lead: 45)
+    }
+
     /// An event whose departure passed 11 minutes ago while its arrival is 12 minutes away.
     static func lateEvent(now: Date) -> ScheduledEvent {
         event(now: now, arrivalIn: 12 * 60)
