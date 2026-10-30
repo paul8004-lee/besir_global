@@ -3,8 +3,6 @@ import Foundation
 /// SPEC-BUDGET-001: the pure helpers of the `get_budget_left` and `record_spend` tools and of the booking hook, so what decides
 /// and what is said is testable without the toolbox. Money is whole cents (`Int`) everywhere; dollars appear only in text.
 enum AgentBudget {
-    /// A table's spend is an estimate: this many cents for each person (no place price exists in the app).
-    static let estimatePerPersonCents = 3000
     /// The largest amount `record_spend` takes: $10,000.00.
     static let maxAmountCents = 1_000_000
 
@@ -17,8 +15,8 @@ enum AgentBudget {
 
     // MARK: Booking hook texts
 
-    static let bookingRecordedSentence = "Tell the user the estimated spend sent to the simulated budget app and the amount left or over, as facts and as estimates. Do not call record_spend for this table."
-    static let bookingUnavailableSentence = "The estimated spend could not be sent to the simulated budget app. Tell the user so, and do not call record_spend for this table."
+    static let bookingRecordedSentence = "Tell the user the estimated spend sent to the simulated budget app and the amount left or over, as facts and as estimates. Do not call record_spend for this request."
+    static let bookingUnavailableSentence = "The estimated spend could not be sent to the simulated budget app. Tell the user so, and do not call record_spend for this request."
     static let bookingFailureNotice = "The estimated spend could not be sent to \(partnerLabel)."
     static let spendFailureNotice = "The spend could not be recorded in \(partnerLabel)."
 

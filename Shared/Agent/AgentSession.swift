@@ -177,6 +177,10 @@ final class AgentSession: ObservableObject {
         self.toolbox = toolbox
         self.transport = transport
         self.connections = connections
+        // SPEC-BOOKCARD-001: the quote check reads the lines the chat shows as the user's, not the model's text.
+        toolbox.userLines = { [weak self] in
+            self?.entries.compactMap { if case .user(let text) = $0.kind { return text } else { return nil } } ?? []
+        }
     }
 
     /// Send and the text field are available only when nothing is in flight and no card waits.

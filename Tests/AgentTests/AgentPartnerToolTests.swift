@@ -1380,7 +1380,8 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(resolution.status, "applied")
         XCTAssertEqual(occurrences(resultText, in: resolution.result), 1)
         XCTAssertEqual(occurrences("\"\(resultText)\"", in: resolution.result), 1, "a result text is a JSON string value")
-        XCTAssertEqual(resolution.json?["message"] as? String, AgentPartner.appliedMessage, "the fixed message is unchanged")
+        XCTAssertEqual(resolution.json?["message"] as? String, AgentPartner.appliedMessage + " " + AgentBudget.bookingRecordedSentence,
+                       "the fixed message is unchanged")
         // Nothing the app wrote holds a partner string, and nothing was run on its account.
         XCTAssertFalse((resolution.notice ?? "").contains(resultText))
         XCTAssertEqual(rig.store.activities.count, 1, "only the time item became an entry")

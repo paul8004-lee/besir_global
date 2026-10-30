@@ -38,21 +38,39 @@ enum AgentPartner {
     /// `<partner>: <item>` followed by ` (Simulated)`, at most 80 characters. When the name part has to be cut it ends with
     /// `…` and the suffix stays.
     static func entryTitle(partner: String, item: String) -> String {
-        ""
+        let head = partner + ": " + item
+        let whole = head + simulatedSuffix
+        guard whole.count > maxTitle else { return whole }
+        let room = maxTitle - simulatedSuffix.count - 1
+        let cut = String(head.prefix(max(room, 0))).trimmingCharacters(in: .whitespacesAndNewlines)
+        return cut + "…" + simulatedSuffix
     }
 
     /// `<name> - Simulated`, the last line of the card.
-    static func partnerLine(_ name: String) -> String {
-        ""
-    }
+    static func partnerLine(_ name: String) -> String { "\(name) - Simulated" }
 
     /// The two rows of the app's own schedule choice: the switch (on, inferred) and, while it is on, the length of the entry.
     static func scheduleRow() -> AgentFieldRow {
-        .line("")
+        let length = AgentFieldSpec(key: cardLengthKey, kind: .number, label: cardLengthLabel, limit: lengthDigits, range: lengthRange)
+        let choice = AgentFieldSpec.onOff(key: cardSwitchKey, label: cardSwitchLabel, on: cardOnWord, off: cardOffWord)
+        return .switchField(choice, value: .flag(true), source: .inferred,
+                            dependents: [.field(length, value: .number(lengthInitial), source: .inferred)])
     }
 
     /// The `get_partners` answer for the partners that are held.
     static func listResult(_ specs: [PartnerSpec]) -> [String: Any] {
-        [:]
+        ["status": "ok", "simulated": true, "partners": specs.map(specListing), "message": listMessage]
+    }
+
+    private static func specListing(_ spec: PartnerSpec) -> [String: Any] {
+        ["id": spec.entry.id, "name": spec.entry.name, "title": spec.entry.title, "summary": spec.entry.summary,
+         "fields": spec.fields.map(fieldListing), "results": spec.results.map { ["name": $0.name, "kind": $0.kind.rawValue] }]
+    }
+
+    private static func fieldListing(_ field: PartnerField) -> [String: Any] {
+        var object: [String: Any] = ["key": field.key, "kind": field.kind.rawValue, "label": field.label]
+        if field.kind.hasOptions { object["options"] = field.options.map { ["id": $0.id, "label": $0.label] } }
+        if field.isOptional { object["optional"] = true }
+        return object
     }
 }
