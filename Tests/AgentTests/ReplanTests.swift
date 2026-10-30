@@ -2,7 +2,7 @@ import XCTest
 import CoreLocation
 @testable import besir
 
-/// SPEC-REPLAN-001: the pure rules (estimate, classification, texts, alert payload, navigation) and the draft client,
+/// SPEC-REPLAN-001: the pure rules (estimate, classification, texts, alert payload, navigation) and the fixed draft text,
 /// T07 to T33. Pure tests use the fixed clock `TestClock` (2026-10-27, America/Los_Angeles); nothing here uses the network.
 @MainActor
 final class ReplanTests: XCTestCase {
@@ -245,8 +245,10 @@ final class ReplanTests: XCTestCase {
         XCTAssertEqual(late.kind, .late)
         let checked = at("2026-10-27T20:20")
         let early = Replan.displayLines(for: late, event: lateEvent, now: checked.addingTimeInterval(14 * 60 + 59), timeZone: zone)
-        XCTAssertEqual(early?.headline, "Leave now to arrive about 8:51 PM, 11 min late")
-        XCTAssertEqual(early?.draft, "Hi, I'm running late.")
+        XCTAssertEqual(early?.headline, "Leave now to arrive about 9:05 PM, 26 min late")
+        XCTAssertEqual(early?.draft, Replan.templateDraft(lateBy: 26, title: "Dinner with Sam",
+                                                          estimate: checked.addingTimeInterval(14 * 60 + 59 + 31 * 60),
+                                                          timeZone: zone))
         XCTAssertEqual(early?.kind, .late)
         XCTAssertNil(Replan.displayLines(for: late, event: lateEvent, now: checked.addingTimeInterval(15 * 60), timeZone: zone))
     }
@@ -447,147 +449,73 @@ final class ReplanTests: XCTestCase {
         XCTAssertNotNil(classify(live: 31 * 60, now: "2026-10-27T20:20").arrivalEstimate)
     }
 
-    func testREPLAN_ValidationAccepts() {
-        XCTAssertTrue(Replan.accepts(draft: "Hi, I'm running about 21 minutes late and should be there around 8:51 PM. Sorry!",
-                                     lateBy: 21, estimateText: "8:51 PM"))
-        let padded = "8:51 PM " + String(repeating: "a", count: Replan.draftMaxLength - 8)
-        XCTAssertEqual(padded.count, 280)
-        XCTAssertTrue(Replan.accepts(draft: padded, lateBy: 21, estimateText: "8:51 PM"))
-        XCTAssertEqual(Replan.digitRuns(in: "21 min, 8:51 PM"), ["21", "8", "51"])
+    // MARK: SPEC-REPLAN-003 late numbers follow the clock
+
+    /// Fixture: arrival 8:40 PM, live 31 min, check 8:20 PM (stored 11 min late, arrival estimate 8:51 PM).
+    private func lateFixture() -> (event: ScheduledEvent, outcome: ReplanOutcome, checked: Date) {
+        let lateEvent = event(arrival: "2026-10-27T20:40")
+        let outcome = classify(live: 31 * 60, now: "2026-10-27T20:20", event: lateEvent)
+        return (lateEvent, outcome, at("2026-10-27T20:20"))
     }
 
-    func testREPLAN_ValidationRejectsInventedDigits() {
-        XCTAssertFalse(Replan.accepts(draft: "I will be about 5 minutes late, around 8:51 PM.", lateBy: 21, estimateText: "8:51 PM"))
-        XCTAssertFalse(Replan.accepts(draft: "Running 21 minutes late, arriving 8:51 PM, table 12.", lateBy: 21, estimateText: "8:51 PM"))
-        XCTAssertFalse(Replan.accepts(draft: "Running 210 minutes late, arriving 8:51 PM.", lateBy: 21, estimateText: "8:51 PM"))
-    }
-
-    func testREPLAN_ValidationRejectsLengthOrMissingEstimate() {
-        XCTAssertFalse(Replan.accepts(draft: "", lateBy: 21, estimateText: "8:51 PM"))
-        XCTAssertFalse(Replan.accepts(draft: "   \n", lateBy: 21, estimateText: "8:51 PM"))
-        let long = "8:51 PM " + String(repeating: "a", count: Replan.draftMaxLength - 7)
-        XCTAssertEqual(long.count, 281)
-        XCTAssertFalse(Replan.accepts(draft: long, lateBy: 21, estimateText: "8:51 PM"))
-        XCTAssertFalse(Replan.accepts(draft: "I am running late, see you soon.", lateBy: 21, estimateText: "8:51 PM"))
-        XCTAssertFalse(Replan.accepts(draft: "Running 21 minutes late, arriving 8:51 pm.", lateBy: 21, estimateText: "8:51 PM"))
-    }
-
-    private func okBody(_ text: String) -> Data {
-        Support.json(["output": [["type": "message", "content": [["type": "output_text", "text": text]]]]])
-    }
-
-    func testREPLAN_ClientRequestShape() async throws {
-        var seen: [URLRequest] = []
-        let log = tempLog()
-        let client = ReplanDraftClient(config: Support.config, send: { request in
-            seen.append(request)
-            return (self.okBody("Hi, I'm running about 21 minutes late and should be there around 8:51 PM."),
-                    Support.httpResponse(status: 200, for: request))
-        }, connections: log)
-        _ = await client.refine(lateBy: 21, estimateText: "8:51 PM")
-
-        let request = try XCTUnwrap(seen.first)
-        XCTAssertEqual(request.url?.path, "/ai")
-        XCTAssertEqual(request.httpMethod, "POST")
-        XCTAssertEqual(request.timeoutInterval, 8)
-        let body = try XCTUnwrap(Support.body(of: request))
-        XCTAssertEqual(Set(body.allKeys.compactMap { $0 as? String }), ["model", "instructions", "input", "reasoning"])
-        XCTAssertEqual(body["model"] as? String, "muse-spark-1.3")
-        XCTAssertNil(body["tools"])
-        let input = "Minutes late: 21. Expected arrival: 8:51 PM."
-        XCTAssertEqual(body["input"] as? String, input)
-        XCTAssertEqual(body["instructions"] as? String, ReplanDraftClient.instructions)
-        // Every string the body holds is the model name, the fixed instructions, the effort word or the two facts.
-        let effort = try XCTUnwrap((body["reasoning"] as? NSDictionary)?["effort"] as? String)
-        XCTAssertEqual(effort, reasoningEffort)
-        let text = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
-        for forbidden in ["Dinner", "Park", "Home", "37.79", "122.39", Support.token, Support.host, "address", "latitude"] {
-            XCTAssertFalse(text.contains(forbidden), forbidden)
-        }
-        XCTAssertFalse(ReplanDraftClient.instructions.contains(where: { $0.isNumber }))
-    }
-
-    func testREPLAN_ClientFailureFallsBack() async throws {
-        func run(_ handler: @escaping (URLRequest) throws -> (Data, URLResponse)) async -> (String?, [ConnectionPacket]) {
-            let log = tempLog()
-            let client = ReplanDraftClient(config: Support.config, send: { try handler($0) }, connections: log)
-            let text = await client.refine(lateBy: 21, estimateText: "8:51 PM")
-            await log.flush()
-            return (text, log.packets)
-        }
-        let failures: [(String, (URLRequest) throws -> (Data, URLResponse))] = [
-            ("offline", { _ in throw URLError(.notConnectedToInternet) }),
-            ("timed out", { _ in throw URLError(.timedOut) }),
-            ("http 500", { (Data("{}".utf8), Support.httpResponse(status: 500, for: $0)) }),
-            ("not json", { (Data("nope".utf8), Support.httpResponse(status: 200, for: $0)) }),
-            ("no output part", { (Support.json(["output": []]), Support.httpResponse(status: 200, for: $0)) })
+    func testREPLAN_LateNumbersFollowTheClock() throws {
+        let fixture = lateFixture()
+        XCTAssertEqual(fixture.outcome.kind, .late)
+        XCTAssertEqual(fixture.outcome.minutes, 11)
+        let rows: [(offset: TimeInterval, minutes: Int, arrival: String)] = [
+            (-30, 11, "8:51 PM"),          // computed 10.5 min and 8:50 PM, held at the stored values
+            (0, 11, "8:51 PM"),
+            (180, 14, "8:54 PM"),
+            (190, 15, "8:54 PM"),          // 14.17 min rounds up to 15 (to nearest would give 14)
+            (210, 15, "8:54 PM"),
+            (14 * 60 + 59, 26, "9:05 PM")
         ]
-        for (name, handler) in failures {
-            let (text, packets) = await run(handler)
-            XCTAssertNil(text, name)
-            XCTAssertEqual(packets.map(\.status), [.failed], name)
-            XCTAssertEqual(packets.first?.summary, "Delay message draft", name)
-            XCTAssertEqual(packets.first?.from, .besir, name)
-            XCTAssertEqual(packets.first?.to, .museSpark, name)
-            XCTAssertEqual(packets.first?.kind, .agentMessage, name)
+        for row in rows {
+            let now = fixture.checked.addingTimeInterval(row.offset)
+            let lines = try XCTUnwrap(Replan.displayLines(for: fixture.outcome, event: fixture.event, now: now, timeZone: zone),
+                                      "\(row.offset)")
+            XCTAssertEqual(lines.headline, "Leave now to arrive about \(row.arrival), \(row.minutes) min late", "\(row.offset)")
+            // The minutes are the ones the classification gives for the same clock and the same live time.
+            let again = Replan.classify(eventID: fixture.event.id, trigger: .appOpen, checkedAt: fixture.checked,
+                                        inputs: ReplanInputs(event: fixture.event),
+                                        referenceDeparture: at("2026-10-27T20:07"), referenceTravel: 18 * 60,
+                                        liveTravel: 31 * 60, noTrafficTravel: nil, now: now)
+            XCTAssertEqual(again.minutes, row.minutes, "\(row.offset)")
         }
-        // An answer with text that the check rejects: the template stays and the packet is ok.
-        let rejected = await run { (self.okBody("Sorry, I will be 5 minutes late."), Support.httpResponse(status: 200, for: $0)) }
-        XCTAssertNil(rejected.0)
-        XCTAssertEqual(rejected.1.map(\.status), [.ok])
-        // A cancelled request records no packet.
-        let cancelled = await run { _ in throw URLError(.cancelled) }
-        XCTAssertNil(cancelled.0)
-        XCTAssertTrue(cancelled.1.isEmpty)
+        XCTAssertNil(Replan.displayLines(for: fixture.outcome, event: fixture.event,
+                                         now: fixture.checked.addingTimeInterval(15 * 60), timeZone: zone))
     }
 
-    func testREPLAN_ClientSuccessUsesModelText() async throws {
-        let reply = "Hi, I'm running about 21 minutes late and should be there around 8:51 PM. Sorry for the wait."
-        let log = tempLog()
-        let client = ReplanDraftClient(config: Support.config, send: { request in
-            (self.okBody("  " + reply + "\n"), Support.httpResponse(status: 200, for: request))
-        }, connections: log)
-        let text = await client.refine(lateBy: 21, estimateText: "8:51 PM")
-        XCTAssertEqual(text, reply)
-        await log.flush()
-        XCTAssertEqual(log.packets.map(\.status), [.ok])
+    func testREPLAN_MessageCarriesTheHeadlineNumbers() throws {
+        var fixture = lateFixture()
+        fixture.outcome.draft = "stale"
+        let now = fixture.checked.addingTimeInterval(180)
+        let estimate = now.addingTimeInterval(31 * 60)
+        let lines = try XCTUnwrap(Replan.displayLines(for: fixture.outcome, event: fixture.event, now: now, timeZone: zone))
+        XCTAssertEqual(lines.headline, "Leave now to arrive about 8:54 PM, 14 min late")
+        XCTAssertEqual(lines.draft, Replan.templateDraft(lateBy: 14, title: "Dinner with Sam", estimate: estimate, timeZone: zone))
 
-        // In the store: a reply that arrives after the event's outcome was replaced is not applied.
-        let clock = MutableClock(now: Date())
-        let event = F.lateEvent(now: clock.now)
-        let store = F.store(ai: true)
-        store.replanNow = { clock.now }
-        store.events = [event]
-        var gate: CheckedContinuation<Void, Never>?
-        var calls = 0
-        store.replanDraftSend = { request in
-            calls += 1
-            let input = (Support.body(of: request)?["input"] as? String) ?? ""
-            let lateBy = input.split(separator: ".").first.flatMap { $0.split(separator: ":").last }
-                .map { $0.trimmingCharacters(in: .whitespaces) } ?? "0"
-            let estimate = input.components(separatedBy: "Expected arrival: ").last?.dropLast() ?? ""
-            let answer = "Hi, I'm running about \(lateBy) minutes late and should be there around \(estimate)."
-            if calls == 1 { await withCheckedContinuation { gate = $0 } }
-            return (self.okBody(answer), Support.httpResponse(status: 200, for: request))
+        var renamed = fixture.event
+        renamed.title = "Lunch"
+        let lunch = try XCTUnwrap(Replan.displayLines(for: fixture.outcome, event: renamed, now: now, timeZone: zone))
+        XCTAssertTrue(try XCTUnwrap(lunch.draft).contains("Lunch"))
+
+        func digitGroupsOf(_ text: String) -> [String] {
+            var runs: [String] = []
+            var current = ""
+            for ch in text {
+                if ch.isASCII, ch.isNumber { current.append(ch) } else if !current.isEmpty { runs.append(current); current = "" }
+            }
+            if !current.isEmpty { runs.append(current) }
+            return runs
         }
-        store.drvLiveLookupOverride = F.answering(30 * 60)
-        await store.replanAfterAlert(id: event.id, trigger: .alertTap)
-        await F.wait { gate != nil }
-        let firstStamp = try XCTUnwrap(store.replanOutcomes[event.id]).checkedAt
-        clock.now = clock.now.addingTimeInterval(1)
-        store.drvLiveLookupOverride = F.answering(31 * 60)
-        await store.replanAfterAlert(id: event.id, trigger: .alertTap)
-        await store.replanDraftTask?.value
-        let second = try XCTUnwrap(store.replanOutcomes[event.id])
-        XCTAssertNotEqual(second.checkedAt, firstStamp)
-        // The second check ran one second later, so its minutes late are rounded up to 20 (the first said 18).
-        XCTAssertTrue(try XCTUnwrap(second.draft).hasPrefix("Hi, I'm running about 20 minutes late"))
-        XCTAssertEqual(calls, 2)
-        gate?.resume()
-        for _ in 0..<50 { await Task.yield() }
-        // The first reply (18 minutes) arrived late: the outcome still holds the second one.
-        let after = try XCTUnwrap(store.replanOutcomes[event.id])
-        XCTAssertTrue(try XCTUnwrap(after.draft).hasPrefix("Hi, I'm running about 20 minutes late"))
-        XCTAssertEqual(after.checkedAt, second.checkedAt)
+        XCTAssertEqual(digitGroupsOf(try XCTUnwrap(lines.draft)), digitGroupsOf("14 8:54 PM"))
+
+        // A draft attached to a non-late outcome is never shown.
+        var earlier = classify(live: 31 * 60, free: 18 * 60, event: fixture.event)
+        earlier.draft = "x"
+        var shown = fixture.event
+        shown.departureDate = earlier.newDeparture
+        XCTAssertNil(Replan.displayLines(for: earlier, event: shown, now: at("2026-10-27T19:31"), timeZone: zone)?.draft)
     }
 }

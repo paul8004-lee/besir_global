@@ -94,13 +94,8 @@ struct BesirApp: App {
                         // A calendar permission changed in Settings takes effect: hand the list over again.
                         store.reconcileCalendar()
                         Task {
-                            // The legs of the repeats for the next days are made before the alarms are rescheduled.
-                            await store.fillSeriesLegs()
-                            // 출발이 임박한 일정은 실시간 교통상황으로 이동시간을 다시 계산.
-                            await store.refreshUpcomingEstimates()
-                            // iOS의 64건 제한 때문에 알림은 "가까운 것부터"만 실제로 예약해두고,
-                            // 앱을 열 때마다 지나간 만큼 뒤쪽 회차를 채워 넣는다.
-                            store.rescheduleNearestNotifications()
+                            // The one app-open sequence: legs, live check of imminent events, alert reschedule, after-alert checks.
+                            await store.runAppOpenPass()
                         }
                     } else if phase == .background {
                         location.setForeground(false)
