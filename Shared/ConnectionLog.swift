@@ -13,7 +13,7 @@ enum ConnectionParty: String, Codable, CaseIterable {
     case googlePlaces
     case googleRoutes
     case appleCalendar
-    case bookingPartner
+    case partner
     case budgetPartner
     case deliveryPartner
 
@@ -27,7 +27,7 @@ enum ConnectionParty: String, Codable, CaseIterable {
         case .googlePlaces: return "Google Places"
         case .googleRoutes: return "Google Routes"
         case .appleCalendar: return "Apple Calendar"
-        case .bookingPartner: return BookingClient.partnerName + " (Simulated)"
+        case .partner: return String()
         case .budgetPartner: return BudgetClient.partnerName + " (Simulated)"
         case .deliveryPartner: return DeliveryClient.partnerName + " (Simulated)"
         }
@@ -58,7 +58,7 @@ enum ConnectionKind: String, Codable, CaseIterable {
     case agentMessage
     case agentToolCall
     case calendarSave
-    case booking
+    case partner
     case budget
     case delivery
 
@@ -71,7 +71,7 @@ enum ConnectionKind: String, Codable, CaseIterable {
         case .agentMessage: return "Message"
         case .agentToolCall: return "Tool call"
         case .calendarSave: return "Calendar save"
-        case .booking: return "Booking"
+        case .partner: return String()
         case .budget: return "Budget"
         case .delivery: return "Delivery"
         }
@@ -87,7 +87,7 @@ enum ConnectionKind: String, Codable, CaseIterable {
         case .agentMessage: return "Message"
         case .agentToolCall: return "Tool call"
         case .calendarSave: return "Event saved"
-        case .booking: return "Reservation"
+        case .partner: return String()
         case .budget: return "Budget"
         case .delivery: return "Delivery"
         }

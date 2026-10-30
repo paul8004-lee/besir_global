@@ -732,13 +732,13 @@ final class BudgetClientTests: XCTestCase {
         // Every earlier case keeps its raw value and names.
         XCTAssertEqual(ConnectionParty.allCases.map(\.rawValue),
                        ["instagram", "shareSheet", "besir", "museSpark", "imageReader", "googlePlaces", "googleRoutes", "appleCalendar",
-                        "bookingPartner", "budgetPartner", "deliveryPartner"])
+                        "partner", "budgetPartner", "deliveryPartner"])
         XCTAssertEqual(ConnectionKind.allCases.map(\.rawValue),
-                       ["share", "imageRead", "placeSearch", "route", "agentMessage", "agentToolCall", "calendarSave", "booking", "budget", "delivery"])
-        XCTAssertEqual(ConnectionParty.bookingPartner.displayName, "Example Tables (Simulated)")
+                       ["share", "imageRead", "placeSearch", "route", "agentMessage", "agentToolCall", "calendarSave", "partner", "budget", "delivery"])
+        XCTAssertEqual(ConnectionParty.partner.displayName, "Partner (Simulated)")
         XCTAssertEqual(ConnectionParty.museSpark.displayName, "Muse Spark")
-        XCTAssertEqual(ConnectionKind.booking.displayName, "Booking")
-        XCTAssertEqual(ConnectionKind.booking.defaultSummary, "Reservation")
+        XCTAssertEqual(ConnectionKind.partner.displayName, "Partner")
+        XCTAssertEqual(ConnectionKind.partner.defaultSummary, "Partner request")
         XCTAssertEqual(ConnectionKind.calendarSave.defaultSummary, "Event saved")
         // A budget packet loads from the file, and an unknown case drops that packet alone.
         let file = makeLog().file

@@ -476,7 +476,7 @@ final class AgentBookingToolTests: XCTestCase {
         XCTAssertEqual(rig.partner.requests.count, 0)
         XCTAssertTrue(rig.store.activities.isEmpty)
         await rig.log.flush()
-        XCTAssertTrue(rig.log.packets.filter { $0.kind == .booking }.isEmpty)
+        XCTAssertTrue(rig.log.packets.filter { $0.kind == .partner }.isEmpty)
     }
 
     // MARK: G26-G28

@@ -695,7 +695,7 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertNotNil(packets.first?.flowID)
         let flows = ConnectionFlows.group(packets)
         XCTAssertEqual(flows.count, 1)
-        XCTAssertEqual(flows.first?.chain, [.besir, .bookingPartner, .besir, .budgetPartner, .besir])
+        XCTAssertEqual(flows.first?.chain, [.besir, .partner, .besir, .budgetPartner, .besir])
 
         // A table in the next week is counted there.
         let next = makeRig()
@@ -831,7 +831,7 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertTrue(packets.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: rig.ledgerFile.path))
         let lines = await rig.lines()
-        XCTAssertEqual(lines, ["besir>bookingPartner booking ok Table for 2 requested", "bookingPartner>besir booking ok Reservation confirmed"])
+        XCTAssertEqual(lines, ["besir>partner partner ok Table for 2 requested", "partner>besir partner ok Reservation confirmed"])
     }
 
     func testBUDGET_G27_APartyOfEightSendsTwentyFourThousandCents() async throws {
@@ -968,7 +968,7 @@ final class AgentBudgetToolTests: XCTestCase {
         let packets = await budgetPackets(rig)
         XCTAssertTrue(packets.isEmpty)
         let lines = await rig.lines()
-        XCTAssertEqual(lines, ["besir>bookingPartner booking ok Table for 2 requested", "bookingPartner>besir booking ok Reservation confirmed"])
+        XCTAssertEqual(lines, ["besir>partner partner ok Table for 2 requested", "partner>besir partner ok Reservation confirmed"])
     }
 
     func testBUDGET_G32_TheBookingBudgetBlockHoldsSimulatedAndExactlyTheKeysOfEachForm() async throws {

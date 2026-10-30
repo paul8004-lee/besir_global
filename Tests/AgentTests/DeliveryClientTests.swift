@@ -1101,7 +1101,7 @@ final class DeliveryClientTests: XCTestCase {
             (.instagram, "instagram", "Instagram"), (.shareSheet, "shareSheet", "Share sheet"), (.besir, "besir", "besir"),
             (.museSpark, "museSpark", "Muse Spark"), (.imageReader, "imageReader", "Image reader"),
             (.googlePlaces, "googlePlaces", "Google Places"), (.googleRoutes, "googleRoutes", "Google Routes"),
-            (.appleCalendar, "appleCalendar", "Apple Calendar"), (.bookingPartner, "bookingPartner", "Example Tables (Simulated)"),
+            (.appleCalendar, "appleCalendar", "Apple Calendar"), (.partner, "partner", "Partner (Simulated)"),
             (.budgetPartner, "budgetPartner", "Example Budget (Simulated)")]
         for (party, raw, name) in parties {
             XCTAssertEqual(party.rawValue, raw)
@@ -1111,7 +1111,7 @@ final class DeliveryClientTests: XCTestCase {
             (.share, "share", "Share", "Shared item"), (.imageRead, "imageRead", "Image read", "Image read"),
             (.placeSearch, "placeSearch", "Place search", "Place search"), (.route, "route", "Route", "Route lookup"),
             (.agentMessage, "agentMessage", "Message", "Message"), (.agentToolCall, "agentToolCall", "Tool call", "Tool call"),
-            (.calendarSave, "calendarSave", "Calendar save", "Event saved"), (.booking, "booking", "Booking", "Reservation"),
+            (.calendarSave, "calendarSave", "Calendar save", "Event saved"), (.partner, "partner", "Partner", "Partner request"),
             (.budget, "budget", "Budget", "Budget")]
         for (kind, raw, name, summary) in kinds {
             XCTAssertEqual(kind.rawValue, raw)

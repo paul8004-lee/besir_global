@@ -83,20 +83,20 @@ final class BookingClient {
     private func note(_ result: Result<BookingAnswer, BookingFailure>, sent: BookingRequest, flow: UUID) {
         switch result {
         case .success(let answer):
-            connections.record(from: .besir, to: .bookingPartner, kind: .booking,
+            connections.record(from: .besir, to: .partner, kind: .partner,
                                summary: "Table for \(sent.partySize) requested", status: .ok, flowID: flow)
             switch answer {
             case .confirmed:
-                connections.record(from: .bookingPartner, to: .besir, kind: .booking,
+                connections.record(from: .partner, to: .besir, kind: .partner,
                                    summary: "Reservation confirmed", status: .ok, flowID: flow)
             case .declined:
-                connections.record(from: .bookingPartner, to: .besir, kind: .booking,
+                connections.record(from: .partner, to: .besir, kind: .partner,
                                    summary: "No table available", status: .declined, flowID: flow)
             }
         case .failure(let failure):
             // A request that was never sent (no proxy) returned before this point.
             guard failure != .notSetUp else { return }
-            connections.record(from: .besir, to: .bookingPartner, kind: .booking,
+            connections.record(from: .besir, to: .partner, kind: .partner,
                                summary: "Request failed", status: .failed, flowID: flow)
         }
     }
