@@ -102,8 +102,6 @@ final class Store: ObservableObject {
     nonisolated static let legRetentionDays = 30
     /// How far ahead the app-open check reaches, in minutes. The tap of a pending alert uses the same number.
     nonisolated static let refreshWindowMinutes = 120
-    /// Where the Muse Spark draft request goes; a test replaces it.
-    var replanDraftSend: ReplanDraftClient.Send = { try await URLSession(configuration: .ephemeral).data(for: $0) }
     /// When the last successful live lookup of an event finished.
     private var lastLiveLookup: [UUID: Date] = [:]
     /// Events with a live lookup in flight.
@@ -3170,7 +3168,7 @@ final class Store: ObservableObject {
                              storedDeparture: storedDeparture, storedTravel: storedTravel)
     }
 
-    /// Keeps an outcome, or removes the event's outcome when the result is unchanged, and asks for the draft of a late one.
+    /// Keeps an outcome, or removes the event's outcome when the result is unchanged. A late one carries the fixed draft.
     private func keep(_ outcome: ReplanOutcome, title: String) {
         guard outcome.kind != .unchanged else {
             replanOutcomes[outcome.eventID] = nil
@@ -3181,27 +3179,6 @@ final class Store: ObservableObject {
             kept.draft = Replan.templateDraft(lateBy: kept.minutes, title: title, estimate: estimate)
         }
         replanOutcomes[kept.eventID] = kept
-        requestDraft(for: kept)
-    }
-
-    /// The Muse Spark replacement of a late outcome's draft (REQ-REPLAN-014). The reply is applied only while the event's
-    /// outcome is still the one the request was made for. A test awaits `replanDraftTask`.
-    private(set) var replanDraftTask: Task<Void, Never>?
-
-    private func requestDraft(for outcome: ReplanOutcome) {
-        guard outcome.kind == .late, outcome.trigger != .background, config.hasAI,
-              let estimate = outcome.arrivalEstimate else { return }
-        let client = ReplanDraftClient(config: config, send: replanDraftSend)
-        let estimateText = Replan.clockText(estimate)
-        let id = outcome.eventID
-        let stamp = outcome.checkedAt
-        let lateBy = outcome.minutes
-        replanDraftTask = Task { @MainActor in
-            guard let text = await client.refine(lateBy: lateBy, estimateText: estimateText),
-                  var current = self.replanOutcomes[id], current.checkedAt == stamp else { return }
-            current.draft = text
-            self.replanOutcomes[id] = current
-        }
     }
 
     /// The app-open path of an event whose alert has not fired: the baseline code has already stored the live pair, so this

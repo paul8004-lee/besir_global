@@ -451,7 +451,6 @@ final class ReplanStoreTests: XCTestCase {
         XCTAssertEqual(store.notifications.requestCount, requests)
         XCTAssertEqual(store.drvSaveCount, saves)
         XCTAssertEqual(store.drvRescheduleCount, reschedules)
-        XCTAssertNil(store.replanDraftTask)
 
         let lines = Replan.displayLines(for: outcome, event: stored, now: clock.now)
         XCTAssertEqual(lines?.afterAlert, true)
@@ -575,7 +574,6 @@ final class ReplanStoreTests: XCTestCase {
         XCTAssertEqual(store.drvLiveLookupCount, 0)
         XCTAssertEqual(store.drvNonLiveLookupCount, 1)
         XCTAssertTrue(store.replanOutcomes.isEmpty)
-        XCTAssertNil(store.replanDraftTask)
     }
 
     func testREPLAN_AnchoredEventNotLive() async throws {
