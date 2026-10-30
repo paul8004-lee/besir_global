@@ -228,7 +228,7 @@ enum PartnerForm {
     }
 
     /// A result item name: 1 to 40 printable ASCII characters.
-    private static func isItemName(_ text: String) -> Bool {
+    static func isItemName(_ text: String) -> Bool {
         (1...maxNameLength).contains(text.unicodeScalars.count) && text.unicodeScalars.allSatisfy { (0x20...0x7E).contains($0.value) }
     }
 }
