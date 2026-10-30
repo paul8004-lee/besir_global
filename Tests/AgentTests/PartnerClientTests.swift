@@ -818,43 +818,52 @@ final class PartnerClientTests: XCTestCase {
         }
     }
 
-    private func makeRig(config: AppConfig = PlaceSentinel.config, partner: EchoPartner = EchoPartner(),
-                         failingLog: Bool = false) -> BookingRig {
-        let rig = BookingRig(config: config, partner: partner, failingLog: failingLog)
+    private func makeRig(config: AppConfig = PlaceSentinel.config, partner: StubPartner = StubPartner(),
+                         failingLog: Bool = false) -> PartnerRig {
+        let rig = PartnerRig(config: config, partner: partner, failingLog: failingLog)
         let folder = rig.folder
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         return rig
     }
 
-    func testPARTNER_P04_CancelNoProxyAndACancelledTaskRecordNoPacket() async throws {
-        // Cancel.
+    func testPARTNER_P04_CancelNoProxyAndACancelledTaskRecordNoRequestPacket() async throws {
+        // Cancel: the lookup's four packets exist, the request has none.
         let cancelRig = makeRig()
-        _ = await cancelRig.card()?.resolve(.cancel)
+        let cancelCard = await cancelRig.card()
+        _ = await cancelCard?.resolve(.cancel)
         // No proxy: the gate refuses before any card exists.
         let blankRig = makeRig(config: PlaceSentinel.unconfigured)
-        XCTAssertNil(blankRig.card())
+        let blankCard = await blankRig.card()
+        XCTAssertNil(blankCard)
         // A task cancelled while the request is in flight.
         let flightRig = makeRig()
-        flightRig.partner.duringSend = { withUnsafeCurrentTask { $0?.cancel() } }
-        let card = try XCTUnwrap(flightRig.card())
+        let flightBuilt = await flightRig.card()
+        let card = try XCTUnwrap(flightBuilt)
+        flightRig.partner.mode = .cancel
         _ = await Task { await card.resolve(.confirm) }.value
-        XCTAssertEqual(flightRig.partner.requests.count, 1)
-        for rig in [cancelRig, blankRig, flightRig] {
+        XCTAssertEqual(flightRig.partner.bodies(op: "submit").count, 1)
+        for rig in [cancelRig, flightRig] {
             await rig.log.flush()
-            XCTAssertTrue(rig.log.packets.isEmpty)
-            XCTAssertEqual(rig.partner.requests.count, rig === flightRig ? 1 : 0)
+            XCTAssertEqual(rig.log.packets.count, 4, "the lookup only")
+            XCTAssertEqual(rig.partner.requests.count, rig === flightRig ? 3 : 2)
         }
-        // Positive counterpart: a confirmed booking does record.
+        await blankRig.log.flush()
+        XCTAssertTrue(blankRig.log.packets.isEmpty)
+        XCTAssertEqual(blankRig.partner.requests.count, 0)
+        // Positive counterpart: a confirmed request does record.
         let doneRig = makeRig()
-        _ = await doneRig.card()?.resolve(.confirm)
+        let doneCard = await doneRig.card()
+        _ = await doneCard?.resolve(.confirm)
         await doneRig.log.flush()
-        XCTAssertEqual(doneRig.log.packets.count, 2)
+        XCTAssertEqual(doneRig.log.packets.count, 6)
     }
 
     func testPARTNER_P07_ALogThatCannotWriteChangesNothingTheUserOrTheModelSees() async throws {
-        /// Everything a booking shows, except the random ids.
-        func shown(_ rig: BookingRig) async throws -> String {
-            let card = try XCTUnwrap(rig.card())
+        /// Everything a request shows, except the random ids. `failure` is set after the card is built.
+        func shown(_ rig: PartnerRig, failure: Error? = nil) async throws -> String {
+            let built = await rig.card()
+            let card = try XCTUnwrap(built)
+            if let failure { rig.partner.mode = .error(failure) }
             let resolved = await card.resolve(.confirm)
             let resolution = try XCTUnwrap(resolved)
             var json = resolution.json ?? [:]
@@ -868,35 +877,35 @@ final class PartnerClientTests: XCTestCase {
         XCTAssertEqual(healthy, broken)
         XCTAssertTrue(healthy.contains("applied"))
 
-        let offlineHealthy = EchoPartner()
-        offlineHealthy.mode = .error(URLError(.notConnectedToInternet))
-        let offlineBroken = EchoPartner()
-        offlineBroken.mode = .error(URLError(.notConnectedToInternet))
-        let failedHealthy = try await shown(makeRig(partner: offlineHealthy))
-        let failedBroken = try await shown(makeRig(partner: offlineBroken, failingLog: true))
+        let offline = URLError(.notConnectedToInternet)
+        let failedHealthy = try await shown(makeRig(), failure: offline)
+        let failedBroken = try await shown(makeRig(failingLog: true), failure: offline)
         XCTAssertEqual(failedHealthy, failedBroken)
         XCTAssertTrue(failedHealthy.contains("unavailable"))
     }
 
-    func testPARTNER_P09_ABookingDoesNotChangeTheFlowOfTheAgentMessagePackets() async throws {
+    func testPARTNER_P09_ARequestDoesNotChangeTheFlowOfTheAgentMessagePackets() async throws {
         let rig = makeRig()
-        let call = Turns.call("request_booking", PlaceTurns.arguments(BookingRig.arguments()), id: "c1")
-        let fake = FakeTransport([.turn(Turns.turn(call)), .turn(Turns.text("Booked, and it is simulated."))])
+        let first = Turns.call("get_partners", "{}", id: "c0")
+        let second = Turns.call("request_partner", PlaceTurns.arguments(PartnerRig.arguments()), id: "c1")
+        let fake = FakeTransport([.turn(Turns.turn(first)), .turn(Turns.turn(second)), .turn(Turns.text("Booked, and it is simulated."))])
         let session = AgentSession(toolbox: rig.tools, transport: fake, connections: rig.log)
-        session.send("Book a table for 2 tomorrow at 7 PM")
+        session.send(PartnerRig.parts(.init()).line)
         await session.settle()
         XCTAssertNotNil(session.pendingCard)
         await session.confirmCard()
         await session.settle()
         await rig.log.flush()
         let agentFlows = Set(rig.log.packets.filter { $0.kind == .agentMessage || $0.kind == .agentToolCall }.map(\.flowID))
-        let bookingFlows = Set(rig.log.packets.filter { $0.kind == .partner }.map(\.flowID))
+        let lookupFlows = Set(rig.log.packets.filter { $0.kind == .partner && !$0.summary.contains("Request") }.map(\.flowID))
+        let requestFlows = Set(rig.log.packets.filter { $0.kind == .partner && $0.summary.contains("Request") }.map(\.flowID))
         XCTAssertEqual(agentFlows.count, 1, "the agent's packets stay in one flow")
         XCTAssertNotNil(agentFlows.first ?? nil)
-        XCTAssertEqual(bookingFlows.count, 1)
-        XCTAssertNotNil(bookingFlows.first ?? nil)
-        XCTAssertTrue(agentFlows.isDisjoint(with: bookingFlows), "the booking is a flow of its own")
-        XCTAssertEqual(rig.log.packets.filter { $0.kind == .partner }.count, 2)
+        XCTAssertEqual(lookupFlows, agentFlows, "the lookup runs under the message's flow")
+        XCTAssertEqual(requestFlows.count, 1)
+        XCTAssertFalse(requestFlows.contains(nil))
+        XCTAssertTrue(agentFlows.isDisjoint(with: requestFlows), "a request is a flow of its own")
+        XCTAssertEqual(rig.log.packets.filter { $0.kind == .partner }.count, 6)
         XCTAssertFalse(rig.log.packets.filter { $0.kind == .agentMessage }.isEmpty)
     }
 

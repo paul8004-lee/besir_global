@@ -222,4 +222,76 @@ final class AgentFieldCardCardTests: XCTestCase {
             XCTAssertEqual(queries.list, [], "\(how): no search starts after the freeze")
         }
     }
+
+    // MARK: K04, K05 the lines of the user that the quote check reads (SPEC-BOOKCARD-001 REQ-011, REQ-013)
+
+    private func chatUserLines(_ session: AgentSession) -> [String] {
+        session.entries.compactMap { if case .user(let text) = $0.kind { return text } else { return nil } }
+    }
+
+    private func quoted(_ rig: PartnerRig, _ value: String, quote: String) throws -> AgentFieldCard {
+        let text = PartnerRig.fieldsText([["key": "restaurant", "value": value, "quote": quote]])
+        let card = try XCTUnwrap(rig.call("request_partner", ["partner": "booking", "fields": text]).card)
+        return try XCTUnwrap(card.fieldCard)
+    }
+
+    func testK04_TheUserLinesTheToolboxReadsAreTheLinesTheChatShowsAsTheUsersAndAQuoteFromAnEarlierTurnIsAccepted() async throws {
+        let rig = PartnerRig()
+        let folder = rig.folder
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let fake = FakeTransport([.turn(Turns.text("What time would you like?")), .turn(Turns.text("Noted."))])
+        let session = AgentSession(toolbox: rig.tools, transport: fake, connections: rig.log)
+        XCTAssertEqual(rig.tools.userLines(), [], "no message yet")
+        session.send("Book Pasta Palace for 2, name Sam")
+        await session.settle()
+        session.send("The long text the model gets for a share", shown: "Shared a photo")
+        await session.settle()
+        XCTAssertEqual(rig.tools.userLines(), ["Book Pasta Palace for 2, name Sam", "Shared a photo"], "a share line shows its short form")
+        XCTAssertEqual(rig.tools.userLines(), chatUserLines(session))
+        let all = rig.tools.userLines().joined(separator: "\n")
+        XCTAssertFalse(all.contains("What time would you like?"), "the model's text is not the user's")
+        XCTAssertFalse(all.contains("The long text"), "the text only the model gets is not the user's")
+
+        // A quote from the first turn is accepted in the second; the model's own words and the model-only text are not.
+        await rig.listed()
+        let earlier = try quoted(rig, "Pasta Palace", quote: "Pasta Palace")
+        XCTAssertEqual(earlier.values.text("restaurant"), "Pasta Palace")
+        XCTAssertEqual(earlier.source(of: "restaurant"), .stated)
+        let model = try quoted(rig, "What time", quote: "What time would you like?")
+        XCTAssertNil(model.values.entry("restaurant")?.value)
+        let hidden = try quoted(rig, "long text", quote: "The long text the model gets")
+        XCTAssertNil(hidden.values.entry("restaurant")?.value)
+    }
+
+    func testK05_ANewChatClearsTheUserLinesAndTheHeldPartnersAndThreeModelRequestsMakeTheWholeCall() async throws {
+        let rig = PartnerRig()
+        let folder = rig.folder
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let first = Turns.call("get_partners", "{}", id: "c0")
+        let second = Turns.call("request_partner", PlaceTurns.arguments(PartnerRig.arguments()), id: "c1")
+        let fake = FakeTransport([.turn(Turns.turn(first)), .turn(Turns.turn(second)), .turn(Turns.text("Booked, and it is simulated."))])
+        let session = AgentSession(toolbox: rig.tools, transport: fake, connections: rig.log)
+        session.send(PartnerRig.parts(.init()).line)
+        await session.settle()
+        XCTAssertNotNil(session.pendingCard)
+        await session.confirmCard()
+        await session.settle()
+        XCTAssertEqual(fake.requests.count, 3, "get_partners, request_partner and the final reply")
+        XCTAssertEqual(rig.partner.bodies(op: "submit").count, 1)
+        XCTAssertEqual(rig.store.activities.count, 1)
+        XCTAssertFalse(rig.tools.userLines().isEmpty, "premise: the chat holds the user's line")
+
+        await session.newChat()
+        XCTAssertEqual(rig.tools.userLines(), [], "a new chat forgets the user's lines")
+        XCTAssertEqual(rig.call("request_partner", PartnerRig.arguments()).message,
+                       "Call get_partners first, then call request_partner again with a partner id from its answer.")
+        // The partners are fetched again, and a quote from before the new chat is refused.
+        await rig.listed()
+        let card = try XCTUnwrap(rig.call("request_partner", PartnerRig.arguments()).card)
+        let fields = try XCTUnwrap(card.fieldCard)
+        for key in ["restaurant", "party_size", "start", "name"] {
+            XCTAssertNil(fields.values.entry(key)?.value, key)
+            XCTAssertEqual(fields.source(of: key), .blank, key)
+        }
+    }
 }

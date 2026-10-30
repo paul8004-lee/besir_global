@@ -275,6 +275,8 @@ private enum Tool: String {
     case spend = "record_spend"
     case deliveryOptions = "get_delivery_options"
     case delivery = "order_delivery"
+    case partners = "get_partners"
+    case partner = "request_partner"
 
     /// The declared parameters, in declaration order. Nothing else is ever read.
     var params: [String] {
@@ -292,6 +294,8 @@ private enum Tool: String {
         case .spend: return ["amount"]
         case .deliveryOptions: return []
         case .delivery: return ["place_id", "arrive_at", "items", "card_id", "deliver_to"]
+        case .partners: return []
+        case .partner: return ["partner", "fields"]
         }
     }
 }
@@ -461,6 +465,10 @@ final class AgentToolbox {
     let directionsProvider: (() -> DirectionsService)?
     /// SPEC-BOOKING-001: the booking client, built on use from the live configuration; tests inject a stubbed one.
     let bookingProvider: (() -> BookingClient)?
+    /// SPEC-BOOKCARD-001: the partner client, built on use from the live configuration; tests inject a stubbed one.
+    let partnersProvider: (() -> PartnerClient)?
+    /// The lines the user wrote in this chat, read when a card is built; the session sets it. Empty for a toolbox with no session.
+    var userLines: () -> [String] = { [] }
     /// SPEC-BUDGET-001: the budget client, built on use from the live configuration; tests inject a stubbed one.
     let budgetProvider: (() -> BudgetClient)?
     /// SPEC-DELIVERY-001: the delivery client and the order record, built on use; tests inject stubbed ones.
@@ -475,6 +483,7 @@ final class AgentToolbox {
          places: (() -> PlaceSearch)? = nil,
          directions: (() -> DirectionsService)? = nil,
          booking: (() -> BookingClient)? = nil,
+         partners: (() -> PartnerClient)? = nil,
          budget: (() -> BudgetClient)? = nil,
          delivery: (() -> DeliveryClient)? = nil,
          deliveryOrders: (() -> DeliveryOrderLog)? = nil) {
@@ -485,6 +494,7 @@ final class AgentToolbox {
         placeSearchProvider = places
         directionsProvider = directions
         bookingProvider = booking
+        partnersProvider = partners
         budgetProvider = budget
         deliveryProvider = delivery
         deliveryOrdersProvider = deliveryOrders
@@ -495,11 +505,12 @@ final class AgentToolbox {
                      places: (() -> PlaceSearch)? = nil,
                      directions: (() -> DirectionsService)? = nil,
                      booking: (() -> BookingClient)? = nil,
+                     partners: (() -> PartnerClient)? = nil,
                      budget: (() -> BudgetClient)? = nil,
                      delivery: (() -> DeliveryClient)? = nil,
                      deliveryOrders: (() -> DeliveryOrderLog)? = nil) {
         self.init(store: store, now: now, timeZone: { timeZone }, deviceOrigin: deviceOrigin,
-                  places: places, directions: directions, booking: booking, budget: budget,
+                  places: places, directions: directions, booking: booking, partners: partners, budget: budget,
                   delivery: delivery, deliveryOrders: deliveryOrders)
     }
 
@@ -592,6 +603,7 @@ final class AgentToolbox {
             case .spend: return try recordSpend(values, flow: flow)
             case .deliveryOptions: return deliveryOptionsLookup(flow: flow)
             case .delivery: return try orderDelivery(values)
+            case .partners, .partner: return reject(Say.unknownTool)
             }
         } catch {
             return reject((error as? Rejection)?.message ?? Say.notObject(tool))
@@ -1071,6 +1083,12 @@ final class AgentToolbox {
             object["message"] = AgentBooking.appliedMessage + " " + budget.sentence
         }
         return (AgentResolution(result: Self.encode(object), notice: budget?.notice), .confirmed)
+    }
+
+    /// The skeleton of the partner result: nothing is read back.
+    func partnerApplied(_ id: UUID?, partner: String, results: [PartnerResultItem], skipped: Bool,
+                        budget: AgentBudget.BookingSpend? = nil) -> (AgentResolution, AgentCardMark) {
+        (AgentResolution(result: "{}", notice: nil), .notApplied)
     }
 
     // MARK: - Budget (SPEC-BUDGET-001)

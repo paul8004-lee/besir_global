@@ -241,25 +241,31 @@
   },
   {
     "type": "function",
-    "name": "request_booking",
-    "description": "Ask a simulated table-booking partner for a table at a place found with search_places. The booking is simulated, not a real reservation: always call the result simulated. The user confirms before anything is sent.",
+    "name": "get_partners",
+    "description": "Look up the partners the app can ask, with the fields each one needs and what each answer will hold. Partners are simulated, not real ones: always call them simulated. Call it before request_partner. Takes no arguments.",
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "request_partner",
+    "description": "Ask one simulated partner from get_partners to act for the user. The partner is simulated, not a real one: always call the result simulated. The user checks and fills the card and confirms before anything is sent. Pass only what the user said in the chat: for each field the user mentioned, its key, the value, and the exact words of the user that give the value as the quote. Leave out every field the user did not mention, and do not ask the user for it in the chat: the user fills it on the card.",
     "parameters": {
       "type": "object",
       "properties": {
-        "place_id": {
+        "partner": {
           "type": "string",
-          "description": "The restaurant: a place_id returned by search_places."
+          "description": "The id of a partner returned by get_partners."
         },
-        "start": {
+        "fields": {
           "type": "string",
-          "description": "The time of the table as a local date-time, YYYY-MM-DDTHH:MM. Ask the user if they have not said."
-        },
-        "party_size": {
-          "type": "string",
-          "description": "How many people the table is for, 1 to 12. Ask the user if they have not said."
+          "description": "A JSON array text of objects with the members key, value and quote, all strings, one object for each field the user mentioned. key is a field key from get_partners. value is written as the field needs it: a time as a local date-time YYYY-MM-DDTHH:MM, a number as digits only (2, not two), a text as the user said it; never fill a field that has options. The quote is the user's exact words. Leave the field out when the user did not say it. Never guess."
         }
       },
-      "required": ["place_id", "start", "party_size"],
+      "required": ["partner"],
       "additionalProperties": false
     }
   }

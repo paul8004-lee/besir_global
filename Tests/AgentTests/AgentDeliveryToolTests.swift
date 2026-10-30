@@ -365,20 +365,20 @@ final class AgentDeliveryToolTests: XCTestCase {
 
     // MARK: O01 the declarations
 
-    func testO01_ThirteenDeclarationsTheNewTwoSitBeforeRequestBookingAndAreStrict() throws {
+    func testO01_FourteenDeclarationsTheDeliveryTwoSitBeforeTheLastTwoAndAreStrict() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(decls.count, 14)
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places",
                         "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend",
-                        "get_delivery_options", "order_delivery", "request_booking"])
+                        "get_delivery_options", "order_delivery", "get_partners", "request_partner"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 13)
+        XCTAssertEqual(recorded.count, 14)
         for index in decls.indices {
             XCTAssertTrue((decls[index] as AnyObject).isEqual(recorded[index]), "declaration \(index) differs from the fixture")
         }
-        XCTAssertEqual(decls.last?["name"] as? String, "request_booking")
+        XCTAssertEqual(decls.last?["name"] as? String, "request_partner")
 
         let options = decls[10]
         XCTAssertEqual(options["type"] as? String, "function")
@@ -841,14 +841,14 @@ final class AgentDeliveryToolTests: XCTestCase {
                 XCTAssertTrue(declared.contains(word) || toolNames.contains(word), "\(message) names \(word)")
             }
             for other in ["list_activities", "create_activity", "update_activity", "delete_activity", "get_travel_time", "check_day_plan",
-                          "show_day_plan", "request_booking", "get_budget_left", "record_spend", "address", "meal"] {
+                          "show_day_plan", "request_partner", "get_budget_left", "record_spend", "address", "meal"] {
                 XCTAssertFalse(message.contains(other), "\(message) names \(other)")
             }
         }
         // The strings of the older tools are unchanged.
         let booking = DeliveryToolRig()
-        XCTAssertEqual(booking.call("request_booking", ["place_id": "p99", "start": "x", "party_size": "2"]).message,
-                       "Call search_places to find the place, then call request_booking again with the place_id it returns.")
+        XCTAssertEqual(booking.call("request_partner", ["partner": "p99"]).message,
+                       "Call get_partners first, then call request_partner again with a partner id from its answer.")
         XCTAssertEqual(booking.call("record_spend", ["amount": 5]).message,
                        "Tell the user the budget is not available right now. Do not call get_budget_left or record_spend again.")
         XCTAssertEqual(booking.call("list_activities", ["from": 5]).message, ToolText.wrongType("list_activities", "from"))
