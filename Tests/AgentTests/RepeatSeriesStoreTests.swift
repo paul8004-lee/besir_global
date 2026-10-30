@@ -3742,4 +3742,176 @@ final class RepeatSeriesStoreTests: XCTestCase {
         XCTAssertEqual(edited.startDate, at(2026, 11, 24, 9))
         XCTAssertNil(edited.recurrenceId)
     }
+
+    // MARK: SPEC-LEGDRAG-001 (card t92) - a drag of the outbound leg that changes the owner's start date is cancelled
+
+    /// A leg the way the drag holds it: arriving at `arrival`, leaving `departure` (15 minutes before by default).
+    private func driveLeg(_ anchor: ScheduleAnchor?, arrival: Date, departure: Date? = nil,
+                          ownRecurrenceId: UUID? = nil) -> ScheduledEvent {
+        var leg = ScheduledEvent(title: "Drive", origin: home, destination: office, arrivalDate: arrival,
+                                 mode: .car, bufferMinutes: 0, notifyLeadMinutes: 10)
+        leg.departureDate = departure ?? arrival.addingTimeInterval(-900)
+        leg.anchor = anchor
+        leg.recurrenceId = ownRecurrenceId
+        return leg
+    }
+
+    private func outboundLeg(of owner: ActivityBlock) -> ScheduledEvent {
+        driveLeg(.arrival, arrival: owner.startDate, ownRecurrenceId: owner.recurrenceId)
+    }
+
+    private func legOutcome(_ leg: ScheduledEvent, _ owner: ActivityBlock?, _ minutes: Int, _ calendar: Calendar? = nil)
+        -> Store.SeriesDragOutcome {
+        Store.legDragOutcome(leg: leg, owner: owner, deltaMinutes: minutes, calendar: calendar ?? cal)
+    }
+
+    /// AC-001: each drag of an outbound leg below puts the owner's own start on another day.
+    func testLEGDRAG_OutboundStartDateChangeCancels() {
+        // 1. Lands exactly at 00:00 of the next day.
+        let late = repeating(at(2026, 11, 2, 23))
+        XCTAssertEqual(legOutcome(outboundLeg(of: late), late, 60), .cancel)
+        // 2. A request of 23:55 is rounded up to 00:00 of the next day by the grid (a tie rounds up).
+        let snapped = Store.gridSnappedDelta(from: late.startDate, requestedMinutes: 55, calendar: cal)
+        XCTAssertEqual(snapped, 60)
+        XCTAssertEqual(legOutcome(outboundLeg(of: late), late, snapped), .cancel)
+        // 3. Earlier day: 00:30 moved up to 23:50 of the day before, and the request -36 snaps to -40.
+        let early = repeating(at(2026, 11, 2, 0, 30))
+        XCTAssertEqual(legOutcome(outboundLeg(of: early), early, -40), .cancel)
+        let snappedUp = Store.gridSnappedDelta(from: early.startDate, requestedMinutes: -36, calendar: cal)
+        XCTAssertEqual(snappedUp, -40)
+        XCTAssertEqual(legOutcome(outboundLeg(of: early), early, snappedUp), .cancel)
+        // 4. Whole days: the function has no limit of its own.
+        let noon = repeating(at(2026, 11, 2, 9))
+        for minutes in [1440, -1440, 3000] {
+            XCTAssertEqual(legOutcome(outboundLeg(of: noon), noon, minutes), .cancel, "\(minutes)")
+        }
+        // 5. An overnight owner is decided by its start: 23:00 to 01:00 moved by +60 starts on the next day.
+        let overnight = repeating(at(2026, 11, 2, 23), end: at(2026, 11, 3, 1))
+        XCTAssertEqual(legOutcome(outboundLeg(of: overnight), overnight, 60), .cancel)
+        // 6. The 12:30 AM owner whose leg leaves at 23:50 the day before, moved to 23:50 the day before.
+        let halfPastMidnight = repeating(at(2026, 11, 3, 0, 30))
+        let nightLeg = driveLeg(.arrival, arrival: halfPastMidnight.startDate, departure: at(2026, 11, 2, 23, 50),
+                                ownRecurrenceId: halfPastMidnight.recurrenceId)
+        XCTAssertEqual(legOutcome(nightLeg, halfPastMidnight, -40), .cancel)
+    }
+
+    /// AC-002: each drag of an outbound leg below keeps the owner's own start on its day, so today's dialog stays.
+    func testLEGDRAG_SameDayKeepsAndReadsTheOwnersStartNotTheLegs() {
+        // 1. The 12:30 AM case: the leg already is on the day before and stays there; the owner lands at 00:10.
+        let early = repeating(at(2026, 11, 3, 0, 30))
+        let nightLeg = driveLeg(.arrival, arrival: early.startDate, departure: at(2026, 11, 2, 23, 50),
+                                ownRecurrenceId: early.recurrenceId)
+        XCTAssertEqual(legOutcome(nightLeg, early, -20), .askThisOrSeries)
+        // 2. Lands exactly at 00:00 of the same day; the request -35 snaps to -30 (the tie rounds up).
+        XCTAssertEqual(legOutcome(nightLeg, early, -30), .askThisOrSeries)
+        let snappedUp = Store.gridSnappedDelta(from: early.startDate, requestedMinutes: -35, calendar: cal)
+        XCTAssertEqual(snappedUp, -30)
+        XCTAssertEqual(legOutcome(nightLeg, early, snappedUp), .askThisOrSeries)
+        // 3. Late evening: the request +54 snaps to 50 (23:50) and +59 is 23:59, both on the day.
+        let late = repeating(at(2026, 11, 3, 23))
+        let snappedDown = Store.gridSnappedDelta(from: late.startDate, requestedMinutes: 54, calendar: cal)
+        XCTAssertEqual(snappedDown, 50)
+        XCTAssertEqual(legOutcome(outboundLeg(of: late), late, snappedDown), .askThisOrSeries)
+        XCTAssertEqual(legOutcome(outboundLeg(of: late), late, 50), .askThisOrSeries)
+        XCTAssertEqual(legOutcome(outboundLeg(of: late), late, 59), .askThisOrSeries)
+        // 4. An overnight owner keeps its start day for +30 and -60.
+        let overnight = repeating(at(2026, 11, 3, 23), end: at(2026, 11, 4, 1))
+        XCTAssertEqual(legOutcome(outboundLeg(of: overnight), overnight, 30), .askThisOrSeries)
+        XCTAssertEqual(legOutcome(outboundLeg(of: overnight), overnight, -60), .askThisOrSeries)
+        // 5. Offset 0 is a definition (the drag end filters it before the decision).
+        XCTAssertEqual(legOutcome(outboundLeg(of: early), early, 0), .askThisOrSeries)
+    }
+
+    /// AC-003: only an outbound leg of a repeating owner is decided; nothing else of the leg matters.
+    func testLEGDRAG_OnlyAnOutboundLegOfARepeatingOwnerIsDecided() {
+        let owner = repeating(at(2026, 11, 2, 23))
+        // 1. A return leg is not decided, even for a delta that would change the day of an outbound one.
+        let returnLeg = driveLeg(.departure, arrival: owner.endDate.addingTimeInterval(900), departure: owner.endDate,
+                                 ownRecurrenceId: owner.recurrenceId)
+        XCTAssertEqual(legOutcome(returnLeg, owner, 60), .askThisOrSeries)
+        XCTAssertEqual(legOutcome(returnLeg, owner, -1500), .askThisOrSeries)
+        // 2. A nil anchor counts as outbound, as the Store reads it (isReturnLeg is anchor == .departure and
+        //    legs(of:) reads anchor ?? .arrival).
+        let noAnchor = driveLeg(nil, arrival: owner.startDate, ownRecurrenceId: owner.recurrenceId)
+        XCTAssertEqual(legOutcome(noAnchor, owner, 60), .cancel)
+        // 3. No owner (no linked activity, or a dangling link).
+        let outbound = outboundLeg(of: owner)
+        XCTAssertEqual(legOutcome(outbound, nil, 60), .askThisOrSeries)
+        XCTAssertEqual(legOutcome(outbound, nil, -1500), .askThisOrSeries)
+        // 4. An owner that does not repeat still crosses days.
+        var plain = owner
+        plain.recurrenceId = nil
+        XCTAssertEqual(legOutcome(outbound, plain, 60), .askThisOrSeries)
+        XCTAssertEqual(legOutcome(outbound, plain, -1500), .askThisOrSeries)
+        // 5. Nothing else of the outbound leg matters: title, place, times, travel time, link, own series id.
+        var retitled = outboundLeg(of: owner)
+        retitled.title = "Something else"
+        var elsewhere = outboundLeg(of: owner)
+        elsewhere.origin = office
+        elsewhere.destination = home
+        var longer = driveLeg(.arrival, arrival: owner.startDate, departure: owner.startDate.addingTimeInterval(-7200),
+                              ownRecurrenceId: owner.recurrenceId)
+        longer.travelSeconds = 7200
+        var linked = outboundLeg(of: owner)
+        linked.linkedActivityId = UUID()
+        let variants = [outbound, retitled, elsewhere, longer, linked,
+                        driveLeg(.arrival, arrival: owner.startDate, ownRecurrenceId: nil),
+                        driveLeg(.arrival, arrival: owner.startDate, ownRecurrenceId: UUID())]
+        for (index, leg) in variants.enumerated() {
+            XCTAssertEqual(legOutcome(leg, owner, 60), .cancel, "variant \(index) +60")
+            XCTAssertEqual(legOutcome(leg, owner, -20), .askThisOrSeries, "variant \(index) -20")
+        }
+    }
+
+    /// AC-004: the leg function answers what the activity drag answers, and the calendar decides.
+    func testLEGDRAG_SameAnswerAsTheActivityDragAndTheCalendarDecides() {
+        // 1. Table equality with the day function, with both results present.
+        let table: [(ActivityBlock, Int)] = [
+            (repeating(at(2026, 11, 2, 23)), 60), (repeating(at(2026, 11, 2, 23)), 50),
+            (repeating(at(2026, 11, 2, 0, 30)), -40), (repeating(at(2026, 11, 2, 0, 30)), -30),
+            (repeating(at(2026, 11, 2, 9)), 1440), (repeating(at(2026, 11, 2, 9)), -1440),
+            (repeating(at(2026, 11, 2, 23), end: at(2026, 11, 3, 1)), 60)]
+        var seen = Set<String>()
+        for (index, pair) in table.enumerated() {
+            let expected = outcome(pair.0, pair.1)
+            XCTAssertEqual(legOutcome(outboundLeg(of: pair.0), pair.0, pair.1), expected, "row \(index)")
+            seen.insert("\(expected)")
+        }
+        XCTAssertEqual(seen, ["cancel", "askThisOrSeries"])
+        // 2. The calendar is passed through: 2026-06-10 23:30 UTC is 00:30 on June 11 in UTC and 08:30 in Seoul.
+        let utc = zoneCalendar("UTC")
+        let seoul = zoneCalendar("Asia/Seoul")
+        let instant = utc.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 23, minute: 30))!
+        let block = repeating(instant)
+        XCTAssertEqual(legOutcome(outboundLeg(of: block), block, 60, utc), .cancel)
+        XCTAssertEqual(legOutcome(outboundLeg(of: block), block, 60, seoul), .askThisOrSeries)
+        // The fall-back day 2026-11-01 of Los Angeles is 25 hours long; the offset is elapsed minutes.
+        let la = zoneCalendar("America/Los_Angeles")
+        func local(_ y: Int, _ m: Int, _ d: Int, _ h: Int, _ min: Int = 0) -> Date {
+            la.date(from: DateComponents(year: y, month: m, day: d, hour: h, minute: min))!
+        }
+        let fallLate = repeating(local(2026, 11, 1, 23))
+        XCTAssertEqual(legOutcome(outboundLeg(of: fallLate), fallLate, 60, la), .cancel)
+        XCTAssertEqual(legOutcome(outboundLeg(of: fallLate), fallLate, 50, la), .askThisOrSeries)
+        let fallEarly = repeating(local(2026, 11, 1, 0, 30))
+        XCTAssertEqual(legOutcome(outboundLeg(of: fallEarly), fallEarly, 1450, la), .askThisOrSeries, "lands 23:40 on Nov 1")
+        XCTAssertEqual(legOutcome(outboundLeg(of: fallEarly), fallEarly, 1470, la), .cancel, "lands 00:00 on Nov 2")
+    }
+
+    /// AC-005: the Store still moves the owner across days, so the rule belongs to the drag end and not to the Store.
+    func testLEGDRAG_StoreStillMovesTheOwnerAcrossDays() throws {
+        let store = fixtureStore()
+        let series = standup()
+        XCTAssertTrue(store.addSeries(series))
+        let monday = series.occurrenceID(dayKey: 20261109)
+        let outbound = seriesLeg(series, 20261109, .arrival)
+        store.events.append(outbound)
+        store.adjustTravelLeg(outbound, byMinutes: -600, wholeSeries: false)
+        let moved = try XCTUnwrap(store.activity(id: monday))
+        XCTAssertEqual(moved.startDate, at(2026, 11, 8, 23))
+        XCTAssertEqual(moved.endDate, at(2026, 11, 9, 9, 30))
+        XCTAssertNil(moved.recurrenceId)
+        XCTAssertEqual(store.events.first { $0.id == outbound.id }?.arrivalDate, at(2026, 11, 8, 23))
+        XCTAssertEqual(store.series[0].skippedDayKeys, [20261109])
+    }
 }
