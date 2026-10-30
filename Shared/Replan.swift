@@ -156,10 +156,14 @@ enum Replan {
             return "Leave by \(clockText(outcome.newDeparture, timeZone: timeZone)), \(outcome.minutes) min later"
         case .late:
             let arrival = outcome.arrivalEstimate ?? outcome.newDeparture
-            return "Leave now to arrive about \(clockText(arrival, timeZone: timeZone)), \(outcome.minutes) min late"
+            return lateHeadline(minutes: outcome.minutes, arrival: arrival, timeZone: timeZone)
         case .unchanged:
             return nil
         }
+    }
+
+    private static func lateHeadline(minutes: Int, arrival: Date, timeZone: TimeZone) -> String {
+        "Leave now to arrive about \(clockText(arrival, timeZone: timeZone)), \(minutes) min late"
     }
 
     /// The reason in facts the lookup returned: it names traffic only for a car lookup that shows it, and no other cause.
@@ -196,7 +200,15 @@ enum Replan {
         case .late:
             let age = now.timeIntervalSince(outcome.checkedAt)
             guard age < lateLinesLifetime else { return nil }
-            return (headline, reason(for: outcome), outcome.draft, .late, false)
+            // @MX:NOTE the late numbers follow the clock (REQ-REPLAN-308, 309): minutes and arrival are computed from the stored
+            // live travel time at draw time, never lower than the stored ones, and the headline and the message are built from
+            // the same two values, so they cannot disagree. Nothing is looked up.
+            let reached = now.addingTimeInterval(outcome.liveTravel)
+            let minutes = max(outcome.minutes, lateMinutes(now: now, liveTravel: outcome.liveTravel,
+                                                           arrival: outcome.inputs.arrivalDate))
+            let estimate = max(outcome.arrivalEstimate ?? reached, reached)
+            let message = templateDraft(lateBy: minutes, title: event.title, estimate: estimate, timeZone: timeZone)
+            return (lateHeadline(minutes: minutes, arrival: estimate, timeZone: timeZone), reason(for: outcome), message, .late, false)
         case .unchanged:
             return nil
         }

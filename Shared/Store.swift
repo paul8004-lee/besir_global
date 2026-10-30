@@ -2990,16 +2990,22 @@ final class Store: ObservableObject {
 
     /// The alert of an event is pending: it wants one and its alarm time is ahead. The complement of the fired test of
     /// `selectRefreshTargets`.
+    /// @MX:NOTE the alarm time is read through `alarmTime` only (contract 5): one rule for the selection, the refresh
+    /// decision, the drain and the tap.
     static func alertIsPending(wants: Bool, departure: Date, leadMinutes: Int, now: Date) -> Bool {
-        false
+        wants && NotificationManager.alarmTime(departure: departure, leadMinutes: leadMinutes) > now
     }
 
     enum TapRoute: Equatable { case baseline, nothing, fired }
 
     /// Where the tap of an alert goes: a pending alert is a baseline check when the app-open selection would select the
     /// event, and nothing otherwise; everything else keeps the fired-alert path.
+    /// @MX:NOTE the window is the app-open selection's own: the same function and the same number, not a copy of the rule.
     static func tapRoute(for event: ScheduledEvent, now: Date, withinMinutes: Int) -> TapRoute {
-        .fired
+        guard let departure = event.departureDate,
+              alertIsPending(wants: event.wantsNotification, departure: departure,
+                             leadMinutes: event.notifyLeadMinutes, now: now) else { return .fired }
+        return selectRefreshTargets(events: [event], now: now, withinMinutes: withinMinutes).isEmpty ? .nothing : .baseline
     }
 
     /// @MX:NOTE 계약 5 — 알림 시각은 alarmTime 호출로만 계산한다(본문 2줄). 옛 출발은 await 뒤
@@ -3041,11 +3047,15 @@ final class Store: ObservableObject {
 
     /// The foreground sequence (SPEC-REPLAN-003): the legs of the repeats, the baseline check, the alert reschedule, then the
     /// after-alert checks.
+    /// @MX:NOTE the reschedule runs before the after-alert lookups (REQ-REPLAN-310): that pass stores only earlier departures
+    /// of events whose alert is not pending, never touches a notification and queues no catch-up alert, so it changes neither
+    /// the alerts the reschedule adds nor the catch-up alerts it delivers, and opening the app does not wait for it.
     func runAppOpenPass() async {
         // The legs of the repeats for the next days are made before the alarms are rescheduled.
         await fillSeriesLegs()
-        await refreshUpcomingEstimates()
+        let postAlertIDs = await refreshBaselineEstimates()
         rescheduleNearestNotifications()
+        await replanPostAlertEvents(postAlertIDs)
     }
 
     /// The baseline pass of `refreshUpcomingEstimates`: the events whose alert has not fired. Returns the ids of the events
@@ -3188,6 +3198,8 @@ final class Store: ObservableObject {
         let id = before.id
         guard let current = events.first(where: { $0.id == id }) else { return }
         // A lookup that started earlier writes no outcome when a later-started one of the event has finished.
+        // @MX:NOTE unreachable behind the lookup guards while the clock does not move back by 300 s or more during a lookup;
+        // kept as defensive code (SPEC-REPLAN-003, plan.md 6.2).
         if let done = finishedLookupStart[id], done >= started { return }
         finishedLookupStart[id] = started
         let finished = replanNow()
@@ -3213,7 +3225,26 @@ final class Store: ObservableObject {
         // No lookup and no draft for a past arrival or an event anchored on departure (REQ-REPLAN-006).
         guard copy.arrivalDate > started, (copy.anchor ?? .arrival) == .arrival,
               let origin = copy.origin, copy.departureDate != nil, copy.travelSeconds != nil else { return }
-        if trigger == .appOpen, isLookupInFlight(id) || recentLiveLookup(of: id, at: started) { return }
+        // @MX:NOTE the tap of an old banner of an event whose new alert is pending is the app-open check of that event
+        // (SPEC-REPLAN-003): without the alert move, the pending alert could ring after the new departure.
+        if trigger == .alertTap {
+            switch Store.tapRoute(for: copy, now: started, withinMinutes: Store.refreshWindowMinutes) {
+            case .nothing:
+                return   // pending but beyond the app-open window: no lookup, nothing stored, the outcome stays
+            case .baseline:
+                // Skipped, failed or discarded: nothing is written.
+                guard await refreshOneEstimate(id: id, trigger: .alertTap) else { return }
+                save()
+                // The reschedule delivers a queued catch-up or late alert; otherwise the check has already moved the alert.
+                if pendingCatchUpIDs.contains(id) { rescheduleNearestNotifications() }
+                return
+            case .fired:
+                break
+            }
+        }
+        // @MX:NOTE every tap obeys the guards of the app open: no live lookup while one of the event is in flight or within
+        // 300 seconds of its last successful one. A skipped tap writes nothing and still opens the event screen.
+        if isLookupInFlight(id) || recentLiveLookup(of: id, at: started) { return }
         beginLookup(id)
         let found = await lookupTravelSeconds(copy.mode, origin: origin, destination: copy.destination, live: true)
         endLookup(id)
@@ -3225,6 +3256,11 @@ final class Store: ObservableObject {
               events[current].arrivalDate > finished,
               let storedDeparture = events[current].departureDate,
               let storedTravel = events[current].travelSeconds else { return }
+        // An alert that became pending during the lookup (the departure was retimed) is not a fired-alert case any more.
+        if Store.alertIsPending(wants: events[current].wantsNotification, departure: storedDeparture,
+                                leadMinutes: events[current].notifyLeadMinutes, now: finished) { return }
+        // @MX:NOTE unreachable behind the lookup guards while the clock does not move back by 300 s or more during a lookup;
+        // kept as defensive code (SPEC-REPLAN-003, plan.md 6.2).
         if let done = finishedLookupStart[id], done >= started { return }
         finishedLookupStart[id] = started
         lastLiveLookup[id] = finished
