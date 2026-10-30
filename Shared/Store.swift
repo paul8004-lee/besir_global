@@ -2560,6 +2560,14 @@ final class Store: ObservableObject {
         let landed = activity.startDate.addingTimeInterval(Double(deltaMinutes) * 60)
         return calendar.startOfDay(for: landed) == calendar.startOfDay(for: activity.startDate) ? .askThisOrSeries : .cancel
     }
+    /// Answer for the drag of a travel leg (card t92): cancel only when the leg is an outbound leg whose owner is an
+    /// occurrence of a repeating activity and the offset puts that owner's own start on another calendar day, decided by
+    /// the day function above. Every other case is not cancelled: the existing code runs unchanged.
+    nonisolated static func legDragOutcome(leg: ScheduledEvent, owner: ActivityBlock?, deltaMinutes: Int,
+                                           calendar: Calendar = .current) -> SeriesDragOutcome {
+        guard let owner, owner.recurrenceId != nil, leg.anchor != .departure else { return .askThisOrSeries }
+        return seriesDragOutcome(for: owner, deltaMinutes: deltaMinutes, calendar: calendar)
+    }
 
     /// 가장자리 넘김 문턱이자 붙는 구간의 최소 폭(분, REQ-015 (1) — D-14 (가), 운영자 Q-24
     /// "30분"). 앞쪽 끝이 가장자리를 넘은 뒤 이만큼 더 끌어야 다음 날로 넘어간다. 드래그 상수
