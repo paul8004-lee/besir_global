@@ -1454,8 +1454,10 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(AgentDelivery.appliedMessage, "Tell the user the delivery is ordered with a simulated delivery app. Give the order id, the items, the delivery place (the address field) and each result item, and say any amount is an estimate. Give no advice.")
         XCTAssertEqual(AgentBudget.leftMessage, "State the amount left or over and say it comes from a simulated budget app. If includes_estimate is true, say it includes estimated spending. Give no advice.")
         XCTAssertEqual(AgentBudget.spendMessage, "State the amount recorded and the amount left or over in one line and say it comes from a simulated budget app. If includes_estimate is true, say it includes estimated spending. Give no advice.")
-        for text in [AgentPartner.appliedMessage, AgentDelivery.appliedMessage, AgentBudget.leftMessage, AgentBudget.spendMessage,
-                     AgentBudget.bookingRecordedSentence] {
+        XCTAssertEqual(AgentDelivery.optionsMessage, "State the items with their estimated prices, the estimated delivery fee and the cards, and say the delivery app is simulated and every price an estimate. Ask the user what to order and when it is to arrive. Do not ask which card or where to deliver: the user chooses them on the order card. Give no advice.")
+        XCTAssertEqual(AgentDelivery.budgetRecordedSentence, "Tell the user the estimated total was sent to the simulated budget app, and that the amount left or over comes from the simulated budget app, not from the delivery app. Do not call record_spend for this order.")
+        for text in [AgentPartner.appliedMessage, AgentDelivery.appliedMessage, AgentDelivery.optionsMessage, AgentDelivery.budgetRecordedSentence,
+                     AgentBudget.leftMessage, AgentBudget.spendMessage, AgentBudget.bookingRecordedSentence] {
             for phrase in ["as a fact", "as facts", "as estimates"] {
                 XCTAssertFalse(text.contains(phrase), "\(phrase) in \(text)")
             }

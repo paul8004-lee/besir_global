@@ -1412,7 +1412,7 @@ final class AgentDeliveryToolTests: XCTestCase {
         XCTAssertEqual([AgentDelivery.mealSwitchLabel, AgentDelivery.mealTitleLabel, AgentDelivery.mealStartLabel],
                        ["Add to schedule", "Meal title", "Start"])
         // The model-facing texts that the field card changed, word for word.
-        XCTAssertEqual(AgentDelivery.optionsMessage, "State the items with their estimated prices, the estimated delivery fee and the cards as facts, and say the delivery app is simulated and every price an estimate. Ask the user what to order and when it is to arrive. Do not ask which card or where to deliver: the user chooses them on the order card. Give no advice.")
+        XCTAssertEqual(AgentDelivery.optionsMessage, "State the items with their estimated prices, the estimated delivery fee and the cards, and say the delivery app is simulated and every price an estimate. Ask the user what to order and when it is to arrive. Do not ask which card or where to deliver: the user chooses them on the order card. Give no advice.")
         XCTAssertEqual(AgentDelivery.appliedMessage, "Tell the user the delivery is ordered with a simulated delivery app. Give the order id, the items, the delivery place (the address field) and each result item, and say any amount is an estimate. Give no advice.")
         XCTAssertEqual(AgentDelivery.editRejectedMessage, "A required value of the order card was empty. Tell the user nothing was ordered.")
 
