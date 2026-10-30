@@ -84,7 +84,8 @@ struct AgentFieldSpec: Equatable {
         case .onOff: guard field.options.count == 2 else { return nil }
         case .text, .place, .time, .number: break
         }
-        self.init(key: field.key, kind: kind, label: field.label, options: field.options.map { AgentFieldOption(id: $0.id, label: $0.label) })
+        self.init(key: field.key, kind: kind, label: field.label, options: field.options.map { AgentFieldOption(id: $0.id, label: $0.label) },
+                  isOptional: field.isOptional)
     }
 
     /// The two sides of an `on_off` field are the values the edit card's own toggles hold, whatever the chip words.
@@ -148,8 +149,11 @@ indirect enum AgentFieldRow {
             return nil
         }
 
-        /// Skeleton: no number is read yet.
-        func int(_ key: String) -> Int? { nil }
+        /// The whole number of a number field.
+        func int(_ key: String) -> Int? {
+            if case .number(let number)? = entry(key)?.value { return number }
+            return nil
+        }
     }
 
     private struct Slot {
@@ -193,7 +197,15 @@ indirect enum AgentFieldRow {
 
     // MARK: Reading
 
-    var isReady: Bool { card.isReady }
+    /// Every row on the card is chosen except the optional ones, and no number lies outside its range. A row that is off the card
+    /// (the dependents of a switch that is off) is not looked at. A number outside its range is never ready, optional or not.
+    var isReady: Bool {
+        card.fields.allSatisfy { field in
+            guard let slot = slots[field.key] else { return field.chosen != nil }
+            if case .number(let number)? = slot.value, let range = slot.spec.range, !range.contains(number) { return false }
+            return slot.spec.isOptional || field.chosen != nil
+        }
+    }
 
     var values: Snapshot {
         Snapshot(entries: card.fields.compactMap { field in
@@ -283,17 +295,37 @@ indirect enum AgentFieldRow {
     }
 
     /// Types text: hidden characters go, the text is cut at the field's limit, nothing is trimmed, and a blank text clears the
-    /// value. The view passes the whole draft each time.
+    /// value. The view passes the whole draft each time. A number field keeps only ASCII digits, cut at its limit (at most
+    /// `maxNumberDigits`), holds the whole number they make (so leading zeros go) and reads empty as blank.
     @discardableResult
     func setText(_ key: String, _ text: String) -> Bool {
-        guard !isFrozen, let index = index(of: key), var slot = slots[key], slot.spec.kind == .text else { return false }
-        let cleaned = AgentDelivery.cleanedTyped(text, limit: slot.spec.limit ?? AgentDelivery.maxDeliveryText)
-        card.setTitleText(field: card.fields[index].id, text: cleaned)
-        let blank = cleaned.trimmingCharacters(in: .whitespaces).isEmpty
-        slot.value = blank ? nil : .text(cleaned)
-        slot.source = blank ? .blank : .entered
+        guard !isFrozen, let index = index(of: key), var slot = slots[key] else { return false }
+        switch slot.spec.kind {
+        case .text:
+            let cleaned = AgentDelivery.cleanedTyped(text, limit: slot.spec.limit ?? AgentDelivery.maxDeliveryText)
+            card.setTitleText(field: card.fields[index].id, text: cleaned)
+            let blank = cleaned.trimmingCharacters(in: .whitespaces).isEmpty
+            slot.value = blank ? nil : .text(cleaned)
+            slot.source = blank ? .blank : .entered
+        case .number:
+            let number = Self.number(from: text, upTo: slot.spec.limit)
+            card.setTitleText(field: card.fields[index].id, text: number.map { String($0) } ?? String())
+            slot.value = number.map { AgentFieldValue.number($0) }
+            slot.source = number == nil ? .blank : .entered
+        default:
+            return false
+        }
         slots[key] = slot
         return true
+    }
+
+    static let maxNumberDigits = 9
+
+    /// The ASCII digits of `text`, the first `limit` of them (never more than `maxNumberDigits`), as one whole number; nil
+    /// when there is none.
+    private static func number(from text: String, upTo limit: Int?) -> Int? {
+        let digits = text.unicodeScalars.filter { (0x30...0x39).contains($0.value) }.prefix(min(limit ?? maxNumberDigits, maxNumberDigits))
+        return Int(String(String.UnicodeScalarView(digits)))
     }
 
     /// Chooses a time. The `Date` is kept as picked; the edit card's text is written from it and never read back.
@@ -387,6 +419,8 @@ indirect enum AgentFieldRow {
             kept = spec.options.contains { $0.id == id } ? value : nil
         case (.onOff, .flag?):
             kept = value
+        case (.number, .number(let number)?):
+            kept = number >= 0 && String(number).count <= min(spec.limit ?? Self.maxNumberDigits, Self.maxNumberDigits) ? value : nil
         default:
             kept = nil
         }
@@ -440,7 +474,7 @@ indirect enum AgentFieldRow {
         case .time(let date)?: return BesirTime.isoFormatter.string(from: date)
         case .option(let id)?: return id
         case .flag(let on)?: return on ? AgentFieldSpec.onValue : AgentFieldSpec.offValue
-        case .number?: return nil
+        case .number(let number)?: return String(number)
         case nil: return nil
         }
     }
