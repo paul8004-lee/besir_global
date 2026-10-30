@@ -369,7 +369,9 @@ private enum Say {
     // SPEC-DELIVERY-001: each string names only get_delivery_options, order_delivery, search_places and the declared parameters.
     static let deliveryPlace = "Call search_places to find the restaurant, then call order_delivery again with the place_id it returns."
     static let deliveryTime = "Ask the user when the food is to arrive, then call order_delivery again. Do not guess it."
-    static let deliveryWindow = "Ask the user to confirm the date, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
+    static let deliveryWindow = "Nothing was ordered. Tell the user the arrival time is out of range and ask for a new time, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
+    // Said when the card was already confirmed: the value is in the arrive_at key of the same result, never in this text.
+    static let deliveryWindowAtConfirm = "Nothing was ordered. Tell the user nothing was ordered because the arrival time given in the arrive_at key of this result is out of range, and ask for a new time, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
     static let deliveryOptionsFirst = "Call get_delivery_options first, then call order_delivery again with items taken from its answer."
     static let deliveryItems = "Ask the user what to order, then call order_delivery again with items as comma-separated pairs of an item id from the get_delivery_options answer and a quantity from 1 to 9, 1 to 6 pairs, no spaces, no id repeated. Do not guess it."
     static let deliveryItemUnknown = "Call order_delivery again with items that use only item ids from the get_delivery_options answer, or ask the user what to order."
@@ -1259,7 +1261,7 @@ final class AgentToolbox {
             // The card may have waited a long time, and the user may have dialled another time: it must still be a time that
             // has not passed and that is inside the window.
             if let when, !withinBookingWindow(when) {
-                let result = Self.encode(["status": "rejected", "message": Say.deliveryWindow])
+                let result = Self.encode(["status": "rejected", "message": Say.deliveryWindowAtConfirm, "arrive_at": f.local.string(from: when)])
                 return (AgentResolution(result: result, notice: Say.startPassed), .notApplied)
             }
             // The one trim, here: the delivery text and the title.
