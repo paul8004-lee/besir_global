@@ -500,7 +500,7 @@ final class ReplanTests: XCTestCase {
         let lunch = try XCTUnwrap(Replan.displayLines(for: fixture.outcome, event: renamed, now: now, timeZone: zone))
         XCTAssertTrue(try XCTUnwrap(lunch.draft).contains("Lunch"))
 
-        func digitRunsOf(_ text: String) -> [String] {
+        func digitGroupsOf(_ text: String) -> [String] {
             var runs: [String] = []
             var current = ""
             for ch in text {
@@ -509,7 +509,7 @@ final class ReplanTests: XCTestCase {
             if !current.isEmpty { runs.append(current) }
             return runs
         }
-        XCTAssertEqual(digitRunsOf(try XCTUnwrap(lines.draft)), digitRunsOf("14 8:54 PM"))
+        XCTAssertEqual(digitGroupsOf(try XCTUnwrap(lines.draft)), digitGroupsOf("14 8:54 PM"))
 
         // A draft attached to a non-late outcome is never shown.
         var earlier = classify(live: 31 * 60, free: 18 * 60, event: fixture.event)
