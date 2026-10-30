@@ -1563,6 +1563,8 @@ struct ContentView: View {
         switch drag.kind {
         case .activity(let a):
             if a.recurrenceId != nil {
+                // Card t83: a drag that moves the activity's own start to another day is cancelled; nothing is saved.
+                if Store.seriesDragOutcome(for: a, deltaMinutes: drag.deltaMinutes, calendar: calendar) == .cancel { return }
                 pendingMove = PendingMove(message: "'\(a.title)' is a repeating event. How do you want to move it?") { whole in
                     store.moveActivity(a, byMinutes: drag.deltaMinutes, wholeSeries: whole)
                 }

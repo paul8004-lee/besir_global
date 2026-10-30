@@ -2551,6 +2551,16 @@ final class Store: ObservableObject {
         return start.addingTimeInterval(Double(delta) * 60)
     }
 
+    /// Answer for the drag of an occurrence of a repeating activity (card t83): ask this event or the series, or cancel.
+    enum SeriesDragOutcome: Equatable { case askThisOrSeries, cancel }
+    /// Cancel when the offset (elapsed minutes, like the preview target) puts the activity's own start on another
+    /// calendar day of `calendar`. Reads the start date only: never the end, the place or a travel leg.
+    nonisolated static func seriesDragOutcome(for activity: ActivityBlock, deltaMinutes: Int,
+                                              calendar: Calendar = .current) -> SeriesDragOutcome {
+        let landed = activity.startDate.addingTimeInterval(Double(deltaMinutes) * 60)
+        return calendar.startOfDay(for: landed) == calendar.startOfDay(for: activity.startDate) ? .askThisOrSeries : .cancel
+    }
+
     /// 가장자리 넘김 문턱이자 붙는 구간의 최소 폭(분, REQ-015 (1) — D-14 (가), 운영자 Q-24
     /// "30분"). 앞쪽 끝이 가장자리를 넘은 뒤 이만큼 더 끌어야 다음 날로 넘어간다. 드래그 상수
     /// 곁에 두지만 그리기가 아니라 Store 판정만 읽는다(화면 상수가 Store 격리를 끌어당기는 일,
