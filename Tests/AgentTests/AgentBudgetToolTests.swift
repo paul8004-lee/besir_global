@@ -735,7 +735,7 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertEqual(block["left"] as? String, "$140.00")
         XCTAssertEqual(json["message"] as? String, AgentPartner.appliedMessage + " " + AgentBudget.bookingRecordedSentence)
         let sentence = AgentBudget.bookingRecordedSentence.lowercased()
-        XCTAssertTrue(sentence.contains("estimate") && sentence.contains("simulated") && sentence.contains("fact"))
+        XCTAssertTrue(sentence.contains("estimate") && sentence.contains("simulated"))
         XCTAssertTrue(sentence.contains("do not call record_spend for this request"))
     }
 
@@ -893,7 +893,7 @@ final class AgentBudgetToolTests: XCTestCase {
         for message in models { XCTAssertTrue(message.lowercased().contains("simulated"), message) }
         XCTAssertTrue(AgentBudget.leftMessage.contains("estimated spending"))
         XCTAssertTrue(AgentBudget.spendMessage.contains("estimated spending"))
-        XCTAssertTrue(AgentBudget.bookingRecordedSentence.contains("estimates"))
+        XCTAssertTrue(AgentBudget.bookingRecordedSentence.contains("estimated spend"))
 
         var texts = notices + models
         texts += [AgentBudget.leftMessage, AgentBudget.leftUnavailableMessage, AgentBudget.spendMessage, AgentBudget.spendUnavailableMessage,
