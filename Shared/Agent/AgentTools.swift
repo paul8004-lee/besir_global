@@ -209,6 +209,8 @@ final class AgentCard {
     let actions = ["Confirm", "Cancel"]
     /// Nil while the card is pending.
     private(set) var mark: AgentCardMark?
+    /// What the model reads after Cancel or a closed sheet; nil means the generic declined answer.
+    fileprivate(set) var cancelResult: String?
     /// True when the card carries Google place or route data, so the chat draws the Google Maps mark inside it
     /// (SPEC-AGENTPLACE-001).
     let showsGoogleMark: Bool
@@ -248,7 +250,7 @@ final class AgentCard {
         case .cancel, .dismiss:
             fieldCard?.freeze()
             mark = .cancelled
-            return AgentResolution(result: AgentToolbox.declinedResult, notice: nil)
+            return AgentResolution(result: cancelResult ?? AgentToolbox.declinedResult, notice: nil)
         }
     }
 }
@@ -916,9 +918,11 @@ final class AgentToolbox {
         }
         // The baseline of "what changed" is the first check of the turn.
         let lines = AgentDayPlan.cardLines(check, first: checks.first, mode: context.mode, zone: zone())
-        return .card(AgentCard(lines: lines, showsGoogleMark: AgentDayPlan.showsGoogleMark(check)) { [self] in
+        let card = AgentCard(lines: lines, showsGoogleMark: AgentDayPlan.showsGoogleMark(check)) { [self] in
             await confirmDayPlan(check, context)
-        })
+        }
+        card.cancelResult = Self.encode(["status": "declined", "message": AgentDayPlan.Say.cancelled])
+        return .card(card)
     }
 
     /// One answer for a Confirm that writes nothing: the status and message for the model and the notice for the user.
