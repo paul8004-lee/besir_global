@@ -254,9 +254,8 @@ struct ActivityDetailView: View {
         guard let f = form, let row = f.card.fields.first(where: { $0.id == field }) else { return }
         let key = row.key
         let previous = row.chosen
-        if place == nil, value == PlaceTokens.currentLocation,
-           key == LegRowKeys.originQuery || key == "location_query" {
-            pickCurrentLocationRow(field, isOrigin: key == LegRowKeys.originQuery)
+        if place == nil, value == PlaceTokens.currentLocation, row.offersCurrentLocation {
+            pickCurrentLocationRow(field, permissionNote: PlaceLineResolve.permissionNote(for: row))
             return
         }
         form?.choose(field: field, value: value, place: place)
@@ -282,9 +281,7 @@ struct ActivityDetailView: View {
     /// 그 자리에서 확정하고, 없으면 측위를 기다리는 동안 줄의 busy가 알린다. 문구만 줄에 맞게
     /// 갈린다(O-S1-4). 생성 카드(AddActivityView)와 같은 몸통이다 — 이 화면만의 규칙이 없어
     /// 어느 쪽을 고쳐도 같게 움직인다.
-    private func pickCurrentLocationRow(_ field: UUID, isOrigin: Bool) {
-        let permissionNote = isOrigin ? PlaceLineResolve.locationPermissionNote
-                                      : PlaceLineResolve.locationPermissionNoteForPlace
+    private func pickCurrentLocationRow(_ field: UUID, permissionNote: String) {
         if PlaceLineResolve.isLocationBlocked(location) {
             setRowNote(field, permissionNote)
             return
