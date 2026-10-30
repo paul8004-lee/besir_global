@@ -100,8 +100,8 @@ final class Store: ObservableObject {
     /// unstored occurrence is kept.
     nonisolated static let legWindowDays = 14
     nonisolated static let legRetentionDays = 30
-    /// Where the Muse Spark draft request goes; a test replaces it.
-    var replanDraftSend: ReplanDraftClient.Send = { try await URLSession(configuration: .ephemeral).data(for: $0) }
+    /// How far ahead the app-open check reaches, in minutes. The tap of a pending alert uses the same number.
+    nonisolated static let refreshWindowMinutes = 120
     /// When the last successful live lookup of an event finished.
     private var lastLiveLookup: [UUID: Date] = [:]
     /// Events with a live lookup in flight.
@@ -804,9 +804,11 @@ final class Store: ObservableObject {
         repairSkippedDaysOfStoredOccurrences()
     }
 
-    /// A materialized occurrence is saved as a stored activity first and as a skipped day second. If the app died between
-    /// the two saves, a stored activity has the id of an occurrence that is not skipped, and deleting the copy would let
-    /// the computed occurrence come back. Add the day here and save once.
+    /// A materialized occurrence is saved as a stored activity first, as a skipped day second and as the legs' cleared
+    /// series id third. If the app died between the first two saves, a stored activity has the id of an occurrence that is
+    /// not skipped, and deleting the copy would let the computed occurrence come back: add the day here and save once.
+    /// If it died before the third, the copy's legs still carry the series id, whether or not the day is skipped: clear it
+    /// here and save `events` once, only when something was cleared.
     private func repairSkippedDaysOfStoredOccurrences() {
         var repaired = series
         var changed = false
@@ -817,9 +819,28 @@ final class Store: ObservableObject {
             repaired[index].skippedDayKeys.append(dayKey)
             changed = true
         }
-        guard changed else { return }
-        series = repaired
-        saveSeries()
+        if changed {
+            series = repaired
+            saveSeries()
+        }
+        healLegsOfStoredOccurrences()
+    }
+
+    /// Clears the series id of the legs linked to a stored copy of an occurrence when it is the id of the series that owns
+    /// the occurrence. A leg that carries another id is not touched. One assignment, one save, and none when nothing changed.
+    private func healLegsOfStoredOccurrences() {
+        var healed = events
+        var cleared = false
+        for stored in activities {
+            guard let (owner, _) = series(forOccurrence: stored.id) else { continue }
+            for i in healed.indices where healed[i].linkedActivityId == stored.id && healed[i].recurrenceId == owner.id {
+                healed[i].recurrenceId = nil
+                cleared = true
+            }
+        }
+        guard cleared else { return }
+        events = healed
+        save()
     }
 
     /// Writes `series.json`. When the file was unreadable at load, its bytes are first copied to `series.unreadable.json`
@@ -894,7 +915,8 @@ final class Store: ObservableObject {
     // `events.json`.
     // @MX:REASON: the copy, the skipped day and the legs' cleared `recurrenceId` must all reach the disk. Without the first
     // two a relaunch draws the occurrence twice; without the third `deleteRecurringSeries(series.id)` would find the copy's
-    // legs still carrying the series id and remove them. A crash between the first two saves is repaired on load.
+    // legs still carrying the series id and remove them. A crash between any two of the saves is repaired on load: the
+    // skipped day after the first, the legs' cleared series id after the first or the second.
     private func materialize(_ id: UUID) -> ActivityBlock? {
         guard !activities.contains(where: { $0.id == id }),
               let (owner, dayKey) = series(forOccurrence: id),
@@ -1328,18 +1350,23 @@ final class Store: ObservableObject {
         let result: (seconds: TimeInterval, source: String)?
     }
 
-    /// What one series still needs for the window at a clock: the occurrences and roles that have no leg yet.
+    /// What one series still needs for the window at a clock: the occurrences and roles that have no leg yet, and the
+    /// legs it made earlier that still have no travel time (a lookup failed, for example because the phone was offline).
     private struct LegFillWork {
         let series: RepeatSeries
         let plan: LegPlan
         let place: Place
         let endKey: Int
         let legs: [(occurrence: ActivityBlock, role: ScheduleAnchor)]
+        let untimed: [(id: UUID, role: ScheduleAnchor)]
     }
 
     /// Makes the legs of every series with a leg plan for the occurrences from today through `legWindowDays` that the
     /// series' high-water mark has not passed, removes the legs of unstored occurrences older than `legRetentionDays`,
-    /// and saves `events` once and reschedules the alarms once per pass. Idempotent. One fill runs at a time: a call
+    /// moves the legs of unstored occurrences that are off their occurrence's anchor (a time zone change) onto it, gives a
+    /// travel time to the legs of unstored occurrences from today on that an earlier fill left without one (a lookup
+    /// failed; the high-water mark does not stop this retry), and saves `events` once and reschedules the alarms once per
+    /// pass. Idempotent. One fill runs at a time: a call
     /// during a running fill sets `fillAgain` and returns, and the running fill makes another pass, so a series saved
     /// meanwhile is not lost and no leg is made twice. The days are chosen before the awaits (the gate and the travel-time
     /// lookups) and chosen again after them, per chosen series, so a skip, a series delete, a leg add or a mark that
@@ -1374,7 +1401,9 @@ final class Store: ObservableObject {
 
     /// The days to fill for one series at `now`: `key >= today`, `key <= today + legWindowDays`, `key` above the series'
     /// mark, started after `now` (the per-occurrence gate of the removed writer), not skipped, not stored, and without a
-    /// stored leg of the role. Nil when the series is gone or cannot have legs (no place, or no direction in its plan).
+    /// stored leg of the role. The untimed legs are the legs of the same days (the high-water mark does not apply to
+    /// them) that are on the plan's route and mode and have no travel time. Nil when the series is gone or cannot have
+    /// legs (no place, or no direction in its plan).
     private func legFillWork(for seriesID: UUID, now: Date, calendar: Calendar) -> LegFillWork? {
         guard let s = series.first(where: { $0.id == seriesID }), let plan = s.legPlan, let place = s.location,
               plan.outboundFrom != nil || plan.returnTo != nil else { return nil }
@@ -1384,12 +1413,20 @@ final class Store: ObservableObject {
         let todayKey = Self.dayKey(today, calendar: calendar), endKey = Self.dayKey(windowEnd, calendar: calendar)
         let storedIDs = Set(activities.map { $0.id })
         var legs: [(occurrence: ActivityBlock, role: ScheduleAnchor)] = []
+        var untimed: [(id: UUID, role: ScheduleAnchor)] = []
         for occurrence in s.occurrences(in: DateInterval(start: today, end: after), calendar: calendar) {
             guard let dayKey = RepeatSeries.decode(occurrence.id)?.dayKey,
                   dayKey >= todayKey, dayKey <= endKey,
-                  s.legsFilledThroughDayKey.map({ dayKey > $0 }) ?? true,
                   occurrence.startDate > now, !storedIDs.contains(occurrence.id) else { continue }
             let present = explicitLegs(of: occurrence.id)
+            for leg in present where leg.travelSeconds == nil {
+                let role: ScheduleAnchor = leg.anchor == .departure ? .departure : .arrival
+                guard let route = legFillRoute(plan, place: place, role: role), leg.origin == route.origin,
+                      leg.destination == route.destination, leg.mode == route.mode else { continue }
+                untimed.append((leg.id, role))
+            }
+            // The mark applies to the legs to make only: a failed lookup leaves the mark at the window end.
+            guard s.legsFilledThroughDayKey.map({ dayKey > $0 }) ?? true else { continue }
             if plan.outboundFrom != nil, !present.contains(where: { ($0.anchor ?? .arrival) == .arrival }) {
                 legs.append((occurrence, .arrival))
             }
@@ -1397,32 +1434,57 @@ final class Store: ObservableObject {
                 legs.append((occurrence, .departure))
             }
         }
-        return LegFillWork(series: s, plan: plan, place: place, endKey: endKey, legs: legs)
+        return LegFillWork(series: s, plan: plan, place: place, endKey: endKey, legs: legs, untimed: untimed)
     }
 
-    /// The travel time of a stored leg of the series in the direction of `role`, on the same route and by the same mode,
-    /// so a changed plan is not given the time of an old route. Legs of a stored copy count (they link to an occurrence).
+    /// The travel time new legs of the series copy in the direction of `role`: the one the most legs carry, among the legs
+    /// of the series on the same route and by the same mode (so a changed plan is not given the time of an old route).
+    /// The legs of unstored occurrences count first; only when none of them has a time do the legs of stored copies
+    /// (they link to an occurrence) count. A tie goes to the time of the leg with the latest arrival, then to the smaller
+    /// time, so the choice does not depend on the order of `events`.
+    // @MX:NOTE: the first leg found used to be copied (F7 of the t60 review): a leg the live re-estimate had adjusted, or
+    // one the user edited, spread its time to every leg made after it. A stored copy is where an edit lands, so its legs
+    // are the second tier, and within a tier the most common time wins over any single leg.
     private func storedLegSeconds(for work: LegFillWork, role: ScheduleAnchor) -> TimeInterval? {
         guard let route = legFillRoute(work.plan, place: work.place, role: role) else { return nil }
-        return events.first { e in
-            guard e.travelSeconds != nil, (e.anchor ?? .arrival) == role, e.mode == route.mode,
-                  e.origin == route.origin, e.destination == route.destination else { return false }
-            return e.recurrenceId == work.series.id
-                || e.linkedActivityId.flatMap { series(forOccurrence: $0)?.0.id } == work.series.id
-        }?.travelSeconds
+        let storedIDs = Set(activities.map { $0.id })
+        var unstored: [(seconds: TimeInterval, arrival: Date)] = []
+        var all: [(seconds: TimeInterval, arrival: Date)] = []
+        for e in events {
+            guard let seconds = e.travelSeconds, (e.anchor ?? .arrival) == role, e.mode == route.mode,
+                  e.origin == route.origin, e.destination == route.destination else { continue }
+            let owner = e.linkedActivityId.flatMap { series(forOccurrence: $0)?.0.id }
+            guard e.recurrenceId == work.series.id || owner == work.series.id else { continue }
+            all.append((seconds, e.arrivalDate))
+            if let link = e.linkedActivityId, !storedIDs.contains(link), owner == work.series.id {
+                unstored.append((seconds, e.arrivalDate))
+            }
+        }
+        var tally: [TimeInterval: (count: Int, latest: Date)] = [:]
+        for leg in unstored.isEmpty ? all : unstored {
+            let seen = tally[leg.seconds]
+            tally[leg.seconds] = ((seen?.count ?? 0) + 1, max(seen?.latest ?? .distantPast, leg.arrival))
+        }
+        return tally.max { a, b in
+            if a.value.count != b.value.count { return a.value.count < b.value.count }
+            if a.value.latest != b.value.latest { return a.value.latest < b.value.latest }
+            return a.key > b.key
+        }?.key
     }
 
     private func fillPass(now: Date) async {
         let calendar = Calendar.current
         // Choose: the series that can have legs, and the directions that need one lookup because no stored leg of the
-        // series and direction carries a travel time.
+        // series and direction carries a travel time. A direction needs one for the legs to make and for the untimed
+        // legs together, so a retry costs the lookup of the fill and no more.
         var chosen: [UUID] = []
         var lookups: [(key: LegFillKey, route: LegFillRoute)] = []
         for s in series {
             guard let work = legFillWork(for: s.id, now: now, calendar: calendar) else { continue }
             chosen.append(s.id)
             for role in [ScheduleAnchor.arrival, ScheduleAnchor.departure]
-            where work.legs.contains(where: { $0.role == role }) && storedLegSeconds(for: work, role: role) == nil {
+            where (work.legs.contains(where: { $0.role == role }) || work.untimed.contains(where: { $0.role == role }))
+                && storedLegSeconds(for: work, role: role) == nil {
                 if let route = legFillRoute(work.plan, place: work.place, role: role) {
                     lookups.append((LegFillKey(seriesID: s.id, role: role), route))
                 }
@@ -1439,6 +1501,7 @@ final class Store: ObservableObject {
 
         // Write, with no await from here on. Each chosen series is read again, so what changed meanwhile is respected.
         var made: [ScheduledEvent] = []
+        var retimed: [(id: UUID, role: ScheduleAnchor, seconds: TimeInterval, source: String?)] = []
         var updatedSeries = series
         var seriesChanged = false
         for id in chosen {
@@ -1462,6 +1525,18 @@ final class Store: ObservableObject {
                 made.append(makeSeriesLeg(for: work, route: route, occurrence: item.occurrence, role: item.role,
                                           seconds: seconds, source: source))
             }
+            // The legs an earlier fill left untimed get the time a stored leg carries, or else the lookup's. A failed
+            // lookup changes nothing, and the mark (about the legs to make) is not touched either way.
+            for item in work.untimed {
+                var seconds = storedLegSeconds(for: work, role: item.role)
+                var source: String?
+                if seconds == nil {
+                    guard let found = attempts[LegFillKey(seriesID: id, role: item.role)]?.result else { continue }
+                    seconds = found.seconds
+                    if lookupSourceUsed.insert(item.role).inserted { source = found.source }
+                }
+                if let seconds { retimed.append((item.id, item.role, seconds, source)) }
+            }
             if complete {
                 let mark = max(work.series.legsFilledThroughDayKey ?? 0, work.endKey)
                 if mark != work.series.legsFilledThroughDayKey {
@@ -1475,12 +1550,34 @@ final class Store: ObservableObject {
         if let cutoff = calendar.date(byAdding: .day, value: -Self.legRetentionDays, to: now) {
             for s in series { pruned += unstoredOccurrenceLegs(of: s.id).filter { $0.arrivalDate < cutoff } }
         }
-        if !made.isEmpty || !pruned.isEmpty {
+        let realigned = realignedSeriesLegs(calendar: calendar)
+        if !made.isEmpty || !pruned.isEmpty || realigned != nil || !retimed.isEmpty {
             for e in pruned { if let nid = e.notificationId { notifications.cancel(id: nid) } }
             let prunedIDs = Set(pruned.map { $0.id })
-            var updated = events
+            var updated = realigned ?? events
             updated.removeAll { prunedIDs.contains($0.id) }
             updated.append(contentsOf: made)
+            // The retime follows the realignment, so a leg is timed from the date it now stands on. The alarm each helper
+            // hands over is cancelled and set again by the reschedule below, the way the legs to make are.
+            for item in retimed {
+                guard let i = updated.firstIndex(where: { $0.id == item.id }), updated[i].travelSeconds == nil else { continue }
+                var leg = updated[i]
+                if item.role == .arrival {
+                    if let source = item.source {
+                        applyCachedArrivalEstimate(to: &leg, travelSeconds: item.seconds, source: source)
+                    } else {
+                        applyCachedArrivalEstimate(to: &leg, travelSeconds: item.seconds)
+                    }
+                } else {
+                    let departure = leg.departureDate ?? leg.arrivalDate
+                    if let source = item.source {
+                        applyCachedDepartureEstimate(to: &leg, departureDate: departure, travelSeconds: item.seconds, source: source)
+                    } else {
+                        applyCachedDepartureEstimate(to: &leg, departureDate: departure, travelSeconds: item.seconds)
+                    }
+                }
+                updated[i] = leg
+            }
             updated.sort { $0.arrivalDate < $1.arrivalDate }
             events = updated
             // The save of the reschedule writes `events` once. The legs reach the disk before the mark: a crash between
@@ -1493,9 +1590,42 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The events with the legs of live computed occurrences moved onto their occurrence's anchor, or nil when none is off
+    /// it. A leg of a stored copy, an event with no link and a link that is no live occurrence (a skipped day, no series) are
+    /// left alone. The anchor side (the one `anchorDate` reads) is set to the occurrence's time exactly and the other side
+    /// moves by the same difference, so the travel time, buffer, lead, ids and `recurrenceId` stay. No clock, no await.
+    // @MX:NOTE: every leg of an unstored occurrence sits on its occurrence's anchor (the start for an outbound leg, the end
+    // for a return leg): each writer builds it there and each path that moves one leg off it materializes the occurrence.
+    // A computed occurrence follows `Calendar.current`, a leg is an absolute date, so after a time zone change the two
+    // part; the fill pass checks the invariant and moves the legs, whether or not the zone changed.
+    private func realignedSeriesLegs(calendar: Calendar) -> [ScheduledEvent]? {
+        guard !series.isEmpty else { return nil }
+        let stored = Set(activities.map { $0.id })
+        var shifted = events
+        var moved = false
+        for i in shifted.indices {
+            guard let link = shifted[i].linkedActivityId, !stored.contains(link),
+                  let occurrence = activity(id: link, calendar: calendar) else { continue }
+            let event = shifted[i]
+            let departureAnchored = event.anchor == .departure
+            let delta = (departureAnchored ? occurrence.endDate : occurrence.startDate).timeIntervalSince(event.anchorDate)
+            guard delta != 0 else { continue }
+            if departureAnchored, event.departureDate != nil {
+                shifted[i].departureDate = occurrence.endDate
+                shifted[i].arrivalDate = event.arrivalDate.addingTimeInterval(delta)
+            } else {
+                shifted[i].arrivalDate = departureAnchored ? occurrence.endDate : occurrence.startDate
+                shifted[i].departureDate = event.departureDate?.addingTimeInterval(delta)
+            }
+            moved = true
+        }
+        return moved ? shifted : nil
+    }
+
     /// One leg of the fill, built the way the removed writer built it: linked to the occurrence id, carrying the series
-    /// id, anchored on the start (outbound) or the end (return) of the occurrence. The travel time is copied (`seconds`);
-    /// a nil `seconds` (a failed lookup) leaves the leg with its direction and its fixed time, for a later re-estimate.
+    /// id, anchored on the start (outbound) or the end (return) of the occurrence. The travel time is copied (`seconds`,
+    /// the most common time of the series' legs, see `storedLegSeconds`); a nil `seconds` (a failed lookup) leaves the leg
+    /// with its direction and its fixed time, which a later fill gives a time to (the retry in `fillPass`).
     private func makeSeriesLeg(for work: LegFillWork, route: LegFillRoute, occurrence: ActivityBlock,
                                role: ScheduleAnchor, seconds: TimeInterval?, source: String?) -> ScheduledEvent {
         let outbound = role == .arrival
@@ -1760,16 +1890,24 @@ final class Store: ObservableObject {
 
     /// `Delete Entire Series` on a computed series: the series, the events that carry its id, and the legs of its
     /// unstored occurrences go, with their pending alarms and the upcoming meals logged against them. A materialized
-    /// copy and its legs (which no longer carry the series id) stay.
+    /// copy and its legs stay, even when a leg still carries the series id (the state a crash while saving the copy
+    /// leaves); that id is cleared, so no event keeps the id of a series that no longer exists.
     private func deleteComputedSeries(_ seriesID: UUID) {
+        let stored = Set(activities.map { $0.id })
         let unstored = unstoredOccurrenceLegs(of: seriesID)
         let unstoredIDs = Set(unstored.map { $0.id })
-        let group = events.filter { $0.recurrenceId == seriesID || unstoredIDs.contains($0.id) }
+        let group = events.filter { e in
+            if unstoredIDs.contains(e.id) { return true }
+            guard e.recurrenceId == seriesID else { return false }
+            return !(e.linkedActivityId.map { stored.contains($0) } ?? false)
+        }
         for e in group {
             if let nid = e.notificationId { notifications.cancel(id: nid) }
         }
         let groupIDs = Set(group.map { $0.id })
-        events.removeAll { groupIDs.contains($0.id) }
+        var kept = events.filter { !groupIDs.contains($0.id) }
+        for i in kept.indices where kept[i].recurrenceId == seriesID { kept[i].recurrenceId = nil }
+        events = kept
         save()
         series.removeAll { $0.id == seriesID }
         saveSeries()
@@ -2413,6 +2551,24 @@ final class Store: ObservableObject {
         return start.addingTimeInterval(Double(delta) * 60)
     }
 
+    /// Answer for the drag of an occurrence of a repeating activity (card t83): ask this event or the series, or cancel.
+    enum SeriesDragOutcome: Equatable { case askThisOrSeries, cancel }
+    /// Cancel when the offset (elapsed minutes, like the preview target) puts the activity's own start on another
+    /// calendar day of `calendar`. Reads the start date only: never the end, the place or a travel leg.
+    nonisolated static func seriesDragOutcome(for activity: ActivityBlock, deltaMinutes: Int,
+                                              calendar: Calendar = .current) -> SeriesDragOutcome {
+        let landed = activity.startDate.addingTimeInterval(Double(deltaMinutes) * 60)
+        return calendar.startOfDay(for: landed) == calendar.startOfDay(for: activity.startDate) ? .askThisOrSeries : .cancel
+    }
+    /// Answer for the drag of a travel leg (card t92): cancel only when the leg is an outbound leg whose owner is an
+    /// occurrence of a repeating activity and the offset puts that owner's own start on another calendar day, decided by
+    /// the day function above. Every other case is not cancelled: the existing code runs unchanged.
+    nonisolated static func legDragOutcome(leg: ScheduledEvent, owner: ActivityBlock?, deltaMinutes: Int,
+                                           calendar: Calendar = .current) -> SeriesDragOutcome {
+        guard let owner, owner.recurrenceId != nil, leg.anchor != .departure else { return .askThisOrSeries }
+        return seriesDragOutcome(for: owner, deltaMinutes: deltaMinutes, calendar: calendar)
+    }
+
     /// 가장자리 넘김 문턱이자 붙는 구간의 최소 폭(분, REQ-015 (1) — D-14 (가), 운영자 Q-24
     /// "30분"). 앞쪽 끝이 가장자리를 넘은 뒤 이만큼 더 끌어야 다음 날로 넘어간다. 드래그 상수
     /// 곁에 두지만 그리기가 아니라 Store 판정만 읽는다(화면 상수가 Store 격리를 끌어당기는 일,
@@ -2832,6 +2988,26 @@ final class Store: ObservableObject {
         }
     }
 
+    /// The alert of an event is pending: it wants one and its alarm time is ahead. The complement of the fired test of
+    /// `selectRefreshTargets`.
+    /// @MX:NOTE the alarm time is read through `alarmTime` only (contract 5): one rule for the selection, the refresh
+    /// decision, the drain and the tap.
+    static func alertIsPending(wants: Bool, departure: Date, leadMinutes: Int, now: Date) -> Bool {
+        wants && NotificationManager.alarmTime(departure: departure, leadMinutes: leadMinutes) > now
+    }
+
+    enum TapRoute: Equatable { case baseline, nothing, fired }
+
+    /// Where the tap of an alert goes: a pending alert is a baseline check when the app-open selection would select the
+    /// event, and nothing otherwise; everything else keeps the fired-alert path.
+    /// @MX:NOTE the window is the app-open selection's own: the same function and the same number, not a copy of the rule.
+    static func tapRoute(for event: ScheduledEvent, now: Date, withinMinutes: Int) -> TapRoute {
+        guard let departure = event.departureDate,
+              alertIsPending(wants: event.wantsNotification, departure: departure,
+                             leadMinutes: event.notifyLeadMinutes, now: now) else { return .fired }
+        return selectRefreshTargets(events: [event], now: now, withinMinutes: withinMinutes).isEmpty ? .nothing : .baseline
+    }
+
     /// @MX:NOTE 계약 5 — 알림 시각은 alarmTime 호출로만 계산한다(본문 2줄). 옛 출발은 await 뒤
     /// id로 다시 읽은 레코드의 출발이다(사본이 아니라, D3). 순수 함수라 드라이버가 값 표로 단언한다.
     /// 일반 static(메인 액터 격리)인 이유는 selectRefreshTargets 머리말과 같다(SPEC-ONTIME-005 M17).
@@ -2864,7 +3040,28 @@ final class Store: ObservableObject {
     /// SPEC-REPLAN-001: `trigger` says who asked. `.appOpen` (the default; the foreground call) looks up with traffic and
     /// keeps a replan outcome; `.background` (the baseline app-refresh task) is not live, keeps no outcome and leaves every
     /// car event alone.
-    func refreshUpcomingEstimates(withinMinutes: Int = 120, trigger: ReplanTrigger = .appOpen) async {
+    func refreshUpcomingEstimates(withinMinutes: Int = Store.refreshWindowMinutes, trigger: ReplanTrigger = .appOpen) async {
+        let postAlertIDs = await refreshBaselineEstimates(withinMinutes: withinMinutes, trigger: trigger)
+        await replanPostAlertEvents(postAlertIDs)
+    }
+
+    /// The foreground sequence (SPEC-REPLAN-003): the legs of the repeats, the baseline check, the alert reschedule, then the
+    /// after-alert checks.
+    /// @MX:NOTE the reschedule runs before the after-alert lookups (REQ-REPLAN-310): that pass stores only earlier departures
+    /// of events whose alert is not pending, never touches a notification and queues no catch-up alert, so it changes neither
+    /// the alerts the reschedule adds nor the catch-up alerts it delivers, and opening the app does not wait for it.
+    func runAppOpenPass() async {
+        // The legs of the repeats for the next days are made before the alarms are rescheduled.
+        await fillSeriesLegs()
+        let postAlertIDs = await refreshBaselineEstimates()
+        rescheduleNearestNotifications()
+        await replanPostAlertEvents(postAlertIDs)
+    }
+
+    /// The baseline pass of `refreshUpcomingEstimates`: the events whose alert has not fired. Returns the ids of the events
+    /// the after-alert pass checks next.
+    private func refreshBaselineEstimates(withinMinutes: Int = Store.refreshWindowMinutes,
+                                          trigger: ReplanTrigger = .appOpen) async -> [UUID] {
         let now = Date()
         // 인덱스가 아니라 id로 대상을 잡는다 — 아래 루프는 await로 중단되고, 그 사이 동기화나
         // 사용자의 추가·삭제로 events 배열이 바뀌면 인덱스가 다른 일정을 가리키거나(엉뚱한 일정을
@@ -2879,50 +3076,64 @@ final class Store: ObservableObject {
         // Events the window skips because their alert fired or their departure passed, while the arrival is ahead.
         let postAlertIDs = trigger == .appOpen
             ? Store.selectPostAlertTargets(events: events, now: replanNow(), withinMinutes: withinMinutes) : []
-        guard !targetIDs.isEmpty || !postAlertIDs.isEmpty else { return }
+        guard !targetIDs.isEmpty || !postAlertIDs.isEmpty else { return [] }
         for id in targetIDs {
-            guard let idx = events.firstIndex(where: { $0.id == id }) else { continue }
-            var event = events[idx]
-            let before = event   // await 전 사본 — 재조회가 실제로 바꾼 필드만 가려내는 기준
-            // Live only for the two foreground triggers and for an event anchored on arrival (REQ-REPLAN-005, 009).
-            let live = trigger != .background && (event.anchor ?? .arrival) == .arrival
-            let started = replanNow()
-            if live {
-                if isLookupInFlight(id) || recentLiveLookup(of: id, at: started) { continue }
-                beginLookup(id)
-                lastLiveAnswers[id] = nil
-            }
-            let decision: RefreshAlarmDecision?
-            switch event.anchor ?? .arrival {
-            case .arrival:
-                // 유지 모드 — 재조회가 실패해도 직전 이동시간·출발 시각·알림을 지우지 않는다(REQ-001).
-                decision = await applyEstimate(to: &event, keepOnFailure: true, live: live)
-            case .departure:
-                guard let dep = event.departureDate else { continue }
-                decision = await applyDepartureAnchoredEstimate(to: &event, departureDate: dep, keepOnFailure: true)
-            }
-            if live { endLookup(id) }
-            // 버림(nil = 레코드 없음·출발 nil·조회 중 옛 알림 울림)이면 되쓰기도 생략한다(REQ-004, Q2=A).
-            guard let decision else { continue }
-            // await 후 인덱스를 다시 찾는다(위와 같은 이유).
-            guard let writeIdx = events.firstIndex(where: { $0.id == id }) else { continue }
-            // 레코드를 통째로 되쓰지 않고 재조회가 바꾼 필드만 지금 레코드에 붙인다. await 동안 다른 쓰기(다른 기기에서
-            // 받아 적용한 제목·버퍼 등)가 이 레코드를 고쳤다면, 통째 되쓰기는 그 고침을 낡은 사본으로 되돌리고
-            // 저장 감지가 그 낡은 판을 새 시각으로 다시 올려 모든 기기에서 고침이 사라진다.
-            Store.patchEstimateFields(from: before, to: event, into: &events[writeIdx])
-            // 따라잡기·늦음은 재예약 꼬리에서 즉시 요청으로 보낸다(REQ-001·002). 되쓴 직후 같은 동기
-            // 구간에 적재한다 — 먼저 적으면 그 틈의 꺼냄이 옛 레코드(알림 미래)를 보고 버린다(감사 N5).
-            if decision == .catchUp || decision == .late {
-                pendingCatchUpIDs.insert(event.id)
-            }
-            if live, let answer = lastLiveAnswers.removeValue(forKey: id) {
-                recordOutcomeOfOpenPass(before: before, started: started, trigger: trigger, answer: answer)
-            }
+            _ = await refreshOneEstimate(id: id, trigger: trigger)
         }
         if !targetIDs.isEmpty { save() }
-        for id in postAlertIDs {
+        return postAlertIDs
+    }
+
+    /// The after-alert pass of the app open: one live check for each event the baseline pass left out.
+    private func replanPostAlertEvents(_ ids: [UUID]) async {
+        for id in ids {
             await replanAfterAlert(id: id, trigger: .appOpen)
         }
+    }
+
+    /// The baseline step for one event, moved out of the loop of `refreshBaselineEstimates` unchanged. Returns true only when
+    /// a live answer was recorded and the record patched; a guard skip, a failed lookup and a discarded answer return false.
+    private func refreshOneEstimate(id: UUID, trigger: ReplanTrigger) async -> Bool {
+        guard let idx = events.firstIndex(where: { $0.id == id }) else { return false }
+        var event = events[idx]
+        let before = event   // the copy before the await: the reference for which fields the lookup really changed
+        // Live only for the two foreground triggers and for an event anchored on arrival (REQ-REPLAN-005, 009).
+        let live = trigger != .background && (event.anchor ?? .arrival) == .arrival
+        let started = replanNow()
+        if live {
+            if isLookupInFlight(id) || recentLiveLookup(of: id, at: started) { return false }
+            beginLookup(id)
+            lastLiveAnswers[id] = nil
+        }
+        let decision: RefreshAlarmDecision?
+        switch event.anchor ?? .arrival {
+        case .arrival:
+            // Keep mode: a failed lookup does not erase the previous travel time, departure or alert (REQ-001).
+            decision = await applyEstimate(to: &event, keepOnFailure: true, live: live)
+        case .departure:
+            guard let dep = event.departureDate else { return false }
+            decision = await applyDepartureAnchoredEstimate(to: &event, departureDate: dep, keepOnFailure: true)
+        }
+        if live { endLookup(id) }
+        // A discard (nil = no record, no departure, or the old alert rang during the lookup) skips the write-back too (REQ-004, Q2=A).
+        guard let decision else { return false }
+        // The index is found again after the await (same reason as above).
+        guard let writeIdx = events.firstIndex(where: { $0.id == id }) else { return false }
+        // The record is not written back whole: only the fields the lookup changed are put on the current record. If another
+        // write (a title or buffer applied from another device) edited the record during the await, a whole write-back would
+        // revert that edit to a stale copy, and the save detection would push the stale version to every device.
+        Store.patchEstimateFields(from: before, to: event, into: &events[writeIdx])
+        // A catch-up or late alert is sent as an immediate request at the end of the reschedule (REQ-001, 002). It is queued in
+        // the same synchronous stretch right after the write-back: queued earlier, a drain in the gap would see the old record
+        // (alert in the future) and drop it (audit N5).
+        if decision == .catchUp || decision == .late {
+            pendingCatchUpIDs.insert(event.id)
+        }
+        if live, let answer = lastLiveAnswers.removeValue(forKey: id) {
+            recordOutcomeOfOpenPass(before: before, started: started, trigger: trigger, answer: answer)
+            return true
+        }
+        return false
     }
 
     // MARK: - Live replan (SPEC-REPLAN-001, card t18)
@@ -2967,7 +3178,7 @@ final class Store: ObservableObject {
                              storedDeparture: storedDeparture, storedTravel: storedTravel)
     }
 
-    /// Keeps an outcome, or removes the event's outcome when the result is unchanged, and asks for the draft of a late one.
+    /// Keeps an outcome, or removes the event's outcome when the result is unchanged. A late one carries the fixed draft.
     private func keep(_ outcome: ReplanOutcome, title: String) {
         guard outcome.kind != .unchanged else {
             replanOutcomes[outcome.eventID] = nil
@@ -2978,27 +3189,6 @@ final class Store: ObservableObject {
             kept.draft = Replan.templateDraft(lateBy: kept.minutes, title: title, estimate: estimate)
         }
         replanOutcomes[kept.eventID] = kept
-        requestDraft(for: kept)
-    }
-
-    /// The Muse Spark replacement of a late outcome's draft (REQ-REPLAN-014). The reply is applied only while the event's
-    /// outcome is still the one the request was made for. A test awaits `replanDraftTask`.
-    private(set) var replanDraftTask: Task<Void, Never>?
-
-    private func requestDraft(for outcome: ReplanOutcome) {
-        guard outcome.kind == .late, outcome.trigger != .background, config.hasAI,
-              let estimate = outcome.arrivalEstimate else { return }
-        let client = ReplanDraftClient(config: config, send: replanDraftSend)
-        let estimateText = Replan.clockText(estimate)
-        let id = outcome.eventID
-        let stamp = outcome.checkedAt
-        let lateBy = outcome.minutes
-        replanDraftTask = Task { @MainActor in
-            guard let text = await client.refine(lateBy: lateBy, estimateText: estimateText),
-                  var current = self.replanOutcomes[id], current.checkedAt == stamp else { return }
-            current.draft = text
-            self.replanOutcomes[id] = current
-        }
     }
 
     /// The app-open path of an event whose alert has not fired: the baseline code has already stored the live pair, so this
@@ -3008,6 +3198,8 @@ final class Store: ObservableObject {
         let id = before.id
         guard let current = events.first(where: { $0.id == id }) else { return }
         // A lookup that started earlier writes no outcome when a later-started one of the event has finished.
+        // @MX:NOTE unreachable behind the lookup guards while the clock does not move back by 300 s or more during a lookup;
+        // kept as defensive code (SPEC-REPLAN-003, plan.md 6.2).
         if let done = finishedLookupStart[id], done >= started { return }
         finishedLookupStart[id] = started
         let finished = replanNow()
@@ -3033,7 +3225,26 @@ final class Store: ObservableObject {
         // No lookup and no draft for a past arrival or an event anchored on departure (REQ-REPLAN-006).
         guard copy.arrivalDate > started, (copy.anchor ?? .arrival) == .arrival,
               let origin = copy.origin, copy.departureDate != nil, copy.travelSeconds != nil else { return }
-        if trigger == .appOpen, isLookupInFlight(id) || recentLiveLookup(of: id, at: started) { return }
+        // @MX:NOTE the tap of an old banner of an event whose new alert is pending is the app-open check of that event
+        // (SPEC-REPLAN-003): without the alert move, the pending alert could ring after the new departure.
+        if trigger == .alertTap {
+            switch Store.tapRoute(for: copy, now: started, withinMinutes: Store.refreshWindowMinutes) {
+            case .nothing:
+                return   // pending but beyond the app-open window: no lookup, nothing stored, the outcome stays
+            case .baseline:
+                // Skipped, failed or discarded: nothing is written.
+                guard await refreshOneEstimate(id: id, trigger: .alertTap) else { return }
+                save()
+                // The reschedule delivers a queued catch-up or late alert; otherwise the check has already moved the alert.
+                if pendingCatchUpIDs.contains(id) { rescheduleNearestNotifications() }
+                return
+            case .fired:
+                break
+            }
+        }
+        // @MX:NOTE every tap obeys the guards of the app open: no live lookup while one of the event is in flight or within
+        // 300 seconds of its last successful one. A skipped tap writes nothing and still opens the event screen.
+        if isLookupInFlight(id) || recentLiveLookup(of: id, at: started) { return }
         beginLookup(id)
         let found = await lookupTravelSeconds(copy.mode, origin: origin, destination: copy.destination, live: true)
         endLookup(id)
@@ -3045,6 +3256,11 @@ final class Store: ObservableObject {
               events[current].arrivalDate > finished,
               let storedDeparture = events[current].departureDate,
               let storedTravel = events[current].travelSeconds else { return }
+        // An alert that became pending during the lookup (the departure was retimed) is not a fired-alert case any more.
+        if Store.alertIsPending(wants: events[current].wantsNotification, departure: storedDeparture,
+                                leadMinutes: events[current].notifyLeadMinutes, now: finished) { return }
+        // @MX:NOTE unreachable behind the lookup guards while the clock does not move back by 300 s or more during a lookup;
+        // kept as defensive code (SPEC-REPLAN-003, plan.md 6.2).
         if let done = finishedLookupStart[id], done >= started { return }
         finishedLookupStart[id] = started
         lastLiveLookup[id] = finished

@@ -98,6 +98,8 @@ enum AgentDayPlan {
         /// Result messages when Confirm adds nothing (the stale-route messages are `planStale` and `planStaleLast`).
         static let scheduleChanged = "Nothing was added. Tell the user the schedule changed."
         static let startPassed = "Nothing was added. Tell the user the start time has passed."
+        /// The message the model reads when the card is cancelled or its chat sheet is closed.
+        static let cancelled = "The user cancelled the plan and nothing was added to the schedule. Do not plan again unless the user asks. When you reply about the plan, say that it was cancelled and nothing was added, and do not call any event planned, scheduled or added."
         /// Card lines.
         static let heading = "Plan for today"
         static let headingProblems = "Plan for today - needs attention"

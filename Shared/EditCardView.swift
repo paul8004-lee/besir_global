@@ -14,6 +14,9 @@ struct EditCardView: View {
     // 카드 크롬의 뷰 쪽 기본값 — 확인 문구만 기본값을 갖는다. 머리글 기본값은 S1에서 빠졌다
     // (REQ-008): 줄 이름이 곧 물어보는 문장이라 머리글은 같은 말을 두 번 하는 군더더기였다.
     var chrome: EditCardChrome = EditCardChrome(header: nil, confirmTitle: "Add")
+    // Pulse from the owner screen: each tap on the empty sheet area outside the card bumps it, and the
+    // card answers with the same close a tap on its own empty space gives.
+    var outsideTapCount: Int = 0
 
     // 직접입력 상태는 카드와 수명을 같이 한다. 채팅 뷰에 두면 카드가 요약으로 바뀐 뒤에도
     // 열린 입력창과 거절 표시가 남아 다음 카드로 흘러간다.
@@ -80,6 +83,9 @@ struct EditCardView: View {
         // 탭을 자기가 받아 이 제스처에 걸리지 않으므로 빈 곳에만 닿는다.
         .contentShape(Rectangle())
         .onTapGesture { collapseOtherEditors() }
+        .onChange(of: outsideTapCount) {
+            collapseOtherEditors()
+        }
         // '반복' 칸에서 포커스가 떠나면 해석을 맡긴다 — 해석이 필요한지(빈 글·이미 해석한 글)는 소유자 쪽 폼이 정하고,
         // 결과도 소유자가 줄에 붙인다. 뷰는 결과를 들지 않는다.
         .onChange(of: titleFocus) { old, new in
@@ -439,6 +445,7 @@ struct EditCardView: View {
     /// 장소 줄은 예시를 붙이지 않는다 — 입력하면 목록이 뜬다는 걸 화면이 스스로 보여주므로 예시는
     /// 부연 설명이 된다(REQ-011 G2).
     private func placeholder(for field: EditField) -> String {
+        if let custom = field.placeholder { return custom }
         // '반복' 줄은 제목 줄과 같은 .title 칸이라 Kind로는 갈리지 않는다 — 열쇠로 먼저 가른다(새 Kind 없음, L-33).
         if field.key == RecurrenceLine.key { return RecurrenceLine.placeholder }
         switch field.kind {
@@ -719,7 +726,12 @@ struct EditCardView: View {
         collapseOtherEditors(except: field.id)
         draft[field.id] = typedLabel(field) == nil ? "" : (field.chosen ?? "")
         customOpen.insert(field.id)
-        if field.kind == .datetime { dialOpenedAt[field.id] = Date() }
+        let now = Date()
+        if field.kind == .datetime { dialOpenedAt[field.id] = now }
+        // Commit the seed the wheel is about to show, so the card holds it without a turn; the wheel stays open.
+        if card.commitsSeedWhenOpened(field) {
+            actions.closeDial?(field.id, currentBasis(field), now)
+        }
     }
 
     /// 다이얼이 서 있는 동안의 now — 열린 순간 잡은 값이 없으면(열림 길이 둘뿐이라 드문 폴백) 지금.

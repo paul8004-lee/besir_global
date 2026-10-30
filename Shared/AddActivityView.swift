@@ -40,6 +40,8 @@ struct AddActivityView: View {
     /// '현재 위치' 행의 측위 대기. 행을 다시 타면 이전 대기를 취소한다 — 대기가 둘 나란히 돌면
     /// 같은 확정이 두 번 일어난다(AddEventView.prefillTask와 같은 형태).
     @State private var originLocationTask: Task<Void, Never>?
+    // Bumped by a tap on the empty sheet area; the card closes its open wheel when it changes.
+    @State private var outsideTapCount = 0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -52,11 +54,13 @@ struct AddActivityView: View {
                     // nil→값 전이는 .task가 딱 한 번 일으킨다.
                     if let card = form?.card {
                         EditCardView(card: card, busy: saving, actions: actions,
-                                     chrome: EditCardChrome(header: nil, confirmTitle: nil))
+                                     chrome: EditCardChrome(header: nil, confirmTitle: nil),
+                                     outsideTapCount: outsideTapCount)
                     }
                 }
                 .padding(24)
             }
+            .onTapGesture { outsideTapCount += 1 }
             Divider()
             footer
         }
@@ -141,9 +145,8 @@ struct AddActivityView: View {
         // 도착해야 확정이므로 여기서 갈라진다. 권한 판정·측위 대기는 PlaceLineResolve(EditCard.swift)가
         // 단독으로 안다.
         if place == nil, value == PlaceTokens.currentLocation,
-           let key = form?.card.fields.first(where: { $0.id == field })?.key,
-           key == LegRowKeys.originQuery || key == "location_query" {
-            pickCurrentLocationRow(field, isOrigin: key == LegRowKeys.originQuery)
+           let row = form?.card.fields.first(where: { $0.id == field }), row.offersCurrentLocation {
+            pickCurrentLocationRow(field, permissionNote: PlaceLineResolve.permissionNote(for: row))
             return
         }
         form?.choose(field: field, value: value, place: place)
@@ -161,9 +164,7 @@ struct AddActivityView: View {
     /// 값이 되지 않고 안내 문구만 띄운다(chosen이 nil이라 저장은 이미 잠겨 있다). 좌표가 이미 있으면
     /// 그 자리에서 확정하고, 없으면 측위를 기다리는 동안 줄의 busy가 알린다. 문구만 줄에 맞게
     /// 갈린다(O-S1-4 — 장소 줄에는 '출발지'라는 낱말이 맞지 않다).
-    private func pickCurrentLocationRow(_ field: UUID, isOrigin: Bool) {
-        let permissionNote = isOrigin ? PlaceLineResolve.locationPermissionNote
-                                      : PlaceLineResolve.locationPermissionNoteForPlace
+    private func pickCurrentLocationRow(_ field: UUID, permissionNote: String) {
         if PlaceLineResolve.isLocationBlocked(location) {
             setRowNote(field, permissionNote)
             return

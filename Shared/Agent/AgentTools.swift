@@ -1,5 +1,4 @@
 import Foundation
-import Combine
 import CoreLocation
 
 // SPEC-AGENT-001: the four schedule tools, SPEC-AGENTPLACE-001: the place and travel-time tools. The app, not the
@@ -7,7 +6,7 @@ import CoreLocation
 // validated values and Store records only. SPEC-PLANDAY-001 adds the two day plan tools and the plan turn.
 
 enum AgentTools {
-    /// JSON array of the thirteen function declarations sent with every request.
+    /// JSON array of the fourteen function declarations sent with every request.
     static func declarationsJSON() -> Data { Data(declarations.utf8) }
 
     private static let declarations = #"""
@@ -163,32 +162,41 @@ enum AgentTools {
       {
         "type": "function",
         "name": "order_delivery",
-        "description": "Order food delivery from a restaurant found with search_places, in a simulated delivery app, with items and a card taken from get_delivery_options. The delivery app is simulated, not a real one: always call the result simulated. items is written as item_id:quantity pairs separated by commas, such as ramen:2,gyoza:1. Ask the user for the arrival time, the items and the card if they have not said. deliver_to is a place_id from search_places, set only when the user named a place to deliver to and left out otherwise; the app may then suggest a place from the schedule. Never write an address. The user confirms before anything is sent.",
+        "description": "Order food delivery from a restaurant found with search_places, in a simulated delivery app, with items taken from get_delivery_options. The delivery app is simulated, not a real one: always call the result simulated. items is written as item_id:quantity pairs separated by commas, such as ramen:2,gyoza:1. Ask the user for the arrival time and the items if they have not said. card_id is a card_id from get_delivery_options, set only when the user named a card and left out otherwise. deliver_to is a place_id from search_places, set only when the user named a place to deliver to and left out otherwise; the app may then suggest a place from the schedule. Never write an address. The user confirms before anything is sent, after filling in what is blank.",
         "parameters": {
           "type": "object",
           "properties": {
             "place_id": {"type": "string", "description": "The restaurant: a place_id returned by search_places."},
             "arrive_at": {"type": "string", "description": "When the food is to arrive, as a local date-time, YYYY-MM-DDTHH:MM. Ask the user if they have not said."},
             "items": {"type": "string", "description": "What to order: item_id:quantity pairs separated by commas with no spaces, 1 to 6 pairs, each quantity 1 to 9, such as ramen:2,gyoza:1. Use item_id values from get_delivery_options. Ask the user if they have not said."},
-            "card_id": {"type": "string", "description": "The card to pay with: a card_id from get_delivery_options. Ask the user if they have not said."},
+            "card_id": {"type": "string", "description": "The card to pay with: a card_id from get_delivery_options. Set only when the user named a card. Leave it out otherwise."},
             "deliver_to": {"type": "string", "description": "Optional. A place_id returned by search_places, set only when the user named a place to deliver to. Leave it out otherwise."}
           },
-          "required": ["place_id", "arrive_at", "items", "card_id"],
+          "required": ["place_id", "arrive_at", "items"],
           "additionalProperties": false
         }
       },
       {
         "type": "function",
-        "name": "request_booking",
-        "description": "Ask a simulated table-booking partner for a table at a place found with search_places. The booking is simulated, not a real reservation: always call the result simulated. The user confirms before anything is sent.",
+        "name": "get_partners",
+        "description": "Look up the partners the app can ask, with the fields each one needs and what each answer will hold. Partners are simulated, not real ones: always call them simulated. Call it before request_partner. Takes no arguments.",
+        "parameters": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      {
+        "type": "function",
+        "name": "request_partner",
+        "description": "Ask one simulated partner from get_partners to act for the user. The partner is simulated, not a real one: always call the result simulated. The user checks and fills the card and confirms before anything is sent. Pass only what the user said in the chat: for each field the user mentioned, its key, the value, and the exact words of the user that give the value as the quote. Leave out every field the user did not mention, and do not ask the user for it in the chat: the user fills it on the card.",
         "parameters": {
           "type": "object",
           "properties": {
-            "place_id": {"type": "string", "description": "The restaurant: a place_id returned by search_places."},
-            "start": {"type": "string", "description": "The time of the table as a local date-time, YYYY-MM-DDTHH:MM. Ask the user if they have not said."},
-            "party_size": {"type": "string", "description": "How many people the table is for, 1 to 12. Ask the user if they have not said."}
+            "partner": {"type": "string", "description": "The id of a partner returned by get_partners."},
+            "fields": {"type": "string", "description": "A JSON array text of objects with the members key, value and quote, all strings, one object for each field the user mentioned. key is a field key from get_partners. value is written as the field needs it: a time as a local date-time YYYY-MM-DDTHH:MM, a number as digits only (2, not two), a text as the user said it; never fill a field that has options. The quote is the user's exact words. Leave the field out when the user did not say it. Never guess."}
           },
-          "required": ["place_id", "start", "party_size"],
+          "required": ["partner"],
           "additionalProperties": false
         }
       }
@@ -196,216 +204,65 @@ enum AgentTools {
     """#
 }
 
-/// SPEC-DELIVERY-001: one value the user changes inside a confirmation card. The view observes it. Once frozen it keeps the value
-/// it had, so an edit made after the Confirm tap changes nothing.
-@MainActor
-class AgentCardField<Value: Equatable>: ObservableObject {
-    @Published var value: Value {
-        didSet { settle(oldValue) }
-    }
-    private(set) var isFrozen = false
-
-    private var settling = false
-    private let normalize: (Value) -> Value
-
-    init(_ value: Value, normalize: @escaping (Value) -> Value = { $0 }) {
-        self.value = value
-        self.normalize = normalize
-    }
-
-    func freeze() { isFrozen = true }
-
-    private func settle(_ old: Value) {
-        guard !settling else { return }
-        settling = true
-        defer { settling = false }
-        let next = isFrozen ? old : normalize(value)
-        if next != value { value = next }
-    }
-}
-
-/// A text the user types in the card. Per keystroke it only removes hidden characters and cuts at `limit` scalars; it never trims
-/// (the one trim and the blank check are made at Confirm, on the snapshot).
-@MainActor
-final class AgentCardText: AgentCardField<String> {
-    let limit: Int
-    /// The app's own suggestion, or nil when the value is not one.
-    let suggestion: String?
-
-    init(text: String, limit: Int, suggestion: String?) {
-        self.limit = limit
-        self.suggestion = suggestion
-        super.init(AgentDelivery.cleanedTyped(text, limit: limit), normalize: { AgentDelivery.cleanedTyped($0, limit: limit) })
-    }
-
-    var text: String {
-        get { value }
-        set { value = newValue }
-    }
-    /// True while the value is the app's suggestion.
-    var isSuggestion: Bool { suggestion != nil && text == suggestion }
-    var isBlank: Bool { AgentDelivery.snapshotText(text) == nil }
-}
-
-/// A switch in the card.
-@MainActor
-final class AgentCardSwitch: AgentCardField<Bool> {
-    init(isOn: Bool) { super.init(isOn) }
-
-    var isOn: Bool {
-        get { value }
-        set { value = newValue }
-    }
-}
-
-/// A time in the card: it keeps the date of `arrival` and has no seconds.
-@MainActor
-final class AgentCardTime: AgentCardField<Date> {
-    let arrival: Date
-    let calendar: Calendar
-
-    init(start: Date, arrival: Date, calendar: Calendar) {
-        self.arrival = arrival
-        self.calendar = calendar
-        super.init(start, normalize: { date in
-            let time = calendar.dateComponents([.hour, .minute], from: date)
-            return calendar.date(bySettingHour: time.hour ?? 0, minute: time.minute ?? 0, second: 0,
-                                 of: calendar.startOfDay(for: arrival)) ?? date
-        })
-    }
-
-    var start: Date {
-        get { value }
-        set { value = newValue }
-    }
-    /// True while the time is the arrival time the app suggested.
-    var isSuggestion: Bool { start == arrival }
-}
-
-/// The editors of one card, and the one object the view observes for all of them.
-@MainActor
-final class AgentCardEditors: ObservableObject {
-    /// What the editors hold at a moment: the snapshot that Confirm takes.
-    struct Values: Equatable {
-        let deliveryText: String?
-        let mealOn: Bool
-        let mealTitle: String?
-        let mealStart: Date?
-    }
-
-    let delivery: AgentCardText?
-    let mealOn: AgentCardSwitch?
-    let mealTitle: AgentCardText?
-    let mealStart: AgentCardTime?
-    private(set) var isFrozen = false
-    private var forwards: [AnyCancellable] = []
-
-    init(delivery: AgentCardText? = nil, mealOn: AgentCardSwitch? = nil, mealTitle: AgentCardText? = nil,
-         mealStart: AgentCardTime? = nil) {
-        self.delivery = delivery
-        self.mealOn = mealOn
-        self.mealTitle = mealTitle
-        self.mealStart = mealStart
-        let changes = [delivery?.objectWillChange, mealOn?.objectWillChange, mealTitle?.objectWillChange, mealStart?.objectWillChange]
-        forwards = changes.compactMap { $0 }.map { $0.sink { [weak self] _ in self?.objectWillChange.send() } }
-    }
-
-    var isEmpty: Bool { delivery == nil && mealOn == nil && mealTitle == nil && mealStart == nil }
-
-    /// False while the delivery text, or a title that is switched on, is blank after trimming. It only reads the values.
-    var canConfirm: Bool {
-        if let delivery, delivery.isBlank { return false }
-        if mealOn?.isOn == true, let mealTitle, mealTitle.isBlank { return false }
-        return true
-    }
-
-    var values: Values {
-        Values(deliveryText: delivery?.text, mealOn: mealOn?.isOn ?? false, mealTitle: mealTitle?.text, mealStart: mealStart?.start)
-    }
-
-    func freeze() {
-        isFrozen = true
-        delivery?.freeze()
-        mealOn?.freeze()
-        mealTitle?.freeze()
-        mealStart?.freeze()
-    }
-}
-
-/// One row of a card. A row of an editable value carries its line and the mark the line holds; the view draws it as a control
-/// while the card waits.
-enum AgentCardRow: Equatable {
-    case text(String)
-    /// The delivery line, `To <text>` and its mark.
-    case delivery(line: String, mark: String)
-    /// The meal entry: its line (nil while the switch is off) and its mark.
-    case meal(line: String?, mark: String)
-
-    var line: String? {
-        switch self {
-        case .text(let line), .delivery(let line, _): return line
-        case .meal(let line, _): return line
-        }
-    }
-}
-
-/// A pending confirmation card: its English lines, its actions, and a single resolution.
+/// A pending confirmation card: its English lines, its actions, and a single resolution. A card has fixed lines or, for a card
+/// drawn from a partner's field list (SPEC-CHOICECARD-001), the model of that list.
 @MainActor
 final class AgentCard {
-    /// The lines in order, the heading first; for a card with editors they are read from the editors.
-    var lines: [String] { makeRows == nil ? fixedLines : rows.compactMap(\.line) }
-    /// The rows in order; a row of an editable value tells the view where a control goes.
-    var rows: [AgentCardRow] { makeRows?() ?? fixedLines.map { .text($0) } }
-    /// The values the user can change in this card (empty for every card but a delivery card).
-    let editors: AgentCardEditors
-    /// False while an edited value is blank; the chat disables Confirm then.
-    var canConfirm: Bool { editors.canConfirm }
+    /// The lines in order, the heading first; for a field card they are read from its model.
+    var lines: [String] { fieldCard?.lines ?? fixedLines }
+    /// SPEC-CHOICECARD-001: the model of a card drawn from a partner's field list; nil for a card of fixed lines.
+    let fieldCard: AgentFieldCard?
+    /// False while a field card has a blank required value; the chat disables Confirm then.
+    var canConfirm: Bool { fieldCard?.isReady ?? true }
     /// The actions the card offers.
     let actions = ["Confirm", "Cancel"]
     /// Nil while the card is pending.
     private(set) var mark: AgentCardMark?
+    /// What the model reads after Cancel or a closed sheet; nil means the generic declined answer.
+    fileprivate(set) var cancelResult: String?
     /// True when the card carries Google place or route data, so the chat draws the Google Maps mark inside it
     /// (SPEC-AGENTPLACE-001).
     let showsGoogleMark: Bool
 
     private var taken = false
     private let fixedLines: [String]
-    private let makeRows: (@MainActor () -> [AgentCardRow])?
     private let onConfirm: @MainActor () async -> (AgentResolution, AgentCardMark)
 
     init(lines: [String], showsGoogleMark: Bool = false,
          onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         fixedLines = lines
-        makeRows = nil
-        editors = AgentCardEditors()
+        fieldCard = nil
         self.showsGoogleMark = showsGoogleMark
         self.onConfirm = onConfirm
     }
 
-    /// SPEC-DELIVERY-001: a card whose rows are read from its editors.
-    init(editors: AgentCardEditors, showsGoogleMark: Bool = false, rows: @escaping @MainActor () -> [AgentCardRow],
+    /// SPEC-CHOICECARD-001: a card whose rows are the fields of `fieldCard`.
+    init(fieldCard: AgentFieldCard, showsGoogleMark: Bool = false,
          onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         fixedLines = []
-        makeRows = rows
-        self.editors = editors
+        self.fieldCard = fieldCard
         self.showsGoogleMark = showsGoogleMark
         self.onConfirm = onConfirm
     }
 
-    /// Acts on the first resolution only and returns its outcome; any later call returns nil. Confirm freezes the editors before
-    /// it awaits the closure, so no edit made after the tap changes anything.
+    /// Acts on the first resolution only and returns its outcome; any later call returns nil. Every resolution freezes the field card
+    /// (Confirm before it awaits the closure), so no edit or armed search made after the tap changes anything.
     func resolve(_ how: AgentCardResolution) async -> AgentResolution? {
         guard !taken else { return nil }
         taken = true
         switch how {
         case .confirm:
-            editors.freeze()
+            fieldCard?.freeze()
             let (resolution, result) = await onConfirm()
             mark = result
+            // A card that ended without an applied answer no longer shows the rows besir added itself.
+            if result != .confirmed { fieldCard?.removeOwnRows() }
             return resolution
         case .cancel, .dismiss:
+            fieldCard?.freeze()
             mark = .cancelled
-            return AgentResolution(result: AgentToolbox.declinedResult, notice: nil)
+            fieldCard?.removeOwnRows()
+            return AgentResolution(result: cancelResult ?? AgentToolbox.declinedResult, notice: nil)
         }
     }
 }
@@ -423,13 +280,14 @@ private enum Tool: String {
     case delete = "delete_activity"
     case search = "search_places"
     case travel = "get_travel_time"
-    case booking = "request_booking"
     case checkDay = "check_day_plan"
     case showDay = "show_day_plan"
     case budgetLeft = "get_budget_left"
     case spend = "record_spend"
     case deliveryOptions = "get_delivery_options"
     case delivery = "order_delivery"
+    case partners = "get_partners"
+    case partner = "request_partner"
 
     /// The declared parameters, in declaration order. Nothing else is ever read.
     var params: [String] {
@@ -440,13 +298,14 @@ private enum Tool: String {
         case .delete: return ["id"]
         case .search: return ["query"]
         case .travel: return ["place_id", "mode", "origin_place_id", "arrive_by"]
-        case .booking: return ["place_id", "start", "party_size"]
         case .checkDay: return ["stops"]
         case .showDay: return ["plan_id"]
         case .budgetLeft: return []
         case .spend: return ["amount"]
         case .deliveryOptions: return []
         case .delivery: return ["place_id", "arrive_at", "items", "card_id", "deliver_to"]
+        case .partners: return []
+        case .partner: return ["partner", "fields"]
         }
     }
 }
@@ -461,17 +320,15 @@ private enum Say {
     }
     static let listRange = "Call list_activities again with from and to as local date-times, or ask the user which days they mean."
     static func wrongType(_ tool: Tool, _ param: String) -> String {
-        // Every booking argument is required, so "omit it" would be the wrong advice for this tool.
-        if tool == .booking {
-            return "Call request_booking again with \(param) as a string. If you do not have it, ask the user; do not guess it."
-        }
+        // The partner id is required, so "omit it" would be the wrong advice for it; `fields` is optional and gets the last line.
+        if tool == .partner, param == "partner" { return "Call request_partner again with partner as a string, an id from the get_partners answer." }
         // The day plan tools have their own fixed lines.
         if tool == .checkDay { return AgentDayPlan.Say.stopsFormat }
         if tool == .showDay { return AgentDayPlan.Say.planUnknown }
         // The one budget argument is required, so "omit it" would be the wrong advice here too.
         if tool == .spend { return "Call record_spend again with \(param) as a string. If you do not have it, ask the user; do not guess it." }
-        // Four delivery arguments are required, so "omit it" is right for the optional deliver_to only.
-        if tool == .delivery, param != "deliver_to" {
+        // Three delivery arguments are required, so "omit it" is right for the two optional ones, card_id and deliver_to, only.
+        if tool == .delivery, param != "deliver_to", param != "card_id" {
             return "Call order_delivery again with \(param) as a string. If you do not have it, ask the user; do not guess it."
         }
         return "Call \(tool.rawValue) again with \(param) as a string, or omit it if the user did not give it."
@@ -512,12 +369,11 @@ private enum Say {
     static let routeExpired = "Call get_travel_time again, then call create_activity again with the new route_id."
     static let routeExpiredNotice = "The travel time is out of date. Nothing was added."
 
-    // SPEC-BOOKING-001: each string names only request_booking or search_places.
-    static let bookPlace = "Call search_places to find the place, then call request_booking again with the place_id it returns."
-    static let bookStart = "Ask the user for the time, then call request_booking again. Do not guess it."
-    static let bookWindow = "Ask the user to confirm the date, then call request_booking again. The start must be a time that has not passed and be within the next 366 days."
-    static let bookParty = "Ask the user how many people the table is for, then call request_booking again. Do not guess it."
-    static let bookUnavailable = "Tell the user booking is not available right now. Do not call request_booking again."
+    // SPEC-BOOKCARD-001: each string names only get_partners or request_partner.
+    static let partnersFirst = "Call get_partners first, then call request_partner again with a partner id from its answer."
+    static let partnerWindowAtConfirm = "Nothing was done. Tell the user nothing was done because the time given in the chosen_time key of this result is out of range, and ask for a new time, then call request_partner again. A time must not have passed and must be within the next 366 days."
+    static let partnersUnavailable = "Tell the user partners are not available right now. Do not call get_partners or request_partner again."
+    static let partnerUnavailable = "Tell the user the partner is not available right now. Do not call request_partner again."
 
     // SPEC-BUDGET-001: each string names only get_budget_left or record_spend and the one declared parameter.
     static let spendAmount = "Ask the user how much they spent, as digits with an optional decimal point such as 18.50, then call record_spend again. Do not guess it."
@@ -526,13 +382,13 @@ private enum Say {
     // SPEC-DELIVERY-001: each string names only get_delivery_options, order_delivery, search_places and the declared parameters.
     static let deliveryPlace = "Call search_places to find the restaurant, then call order_delivery again with the place_id it returns."
     static let deliveryTime = "Ask the user when the food is to arrive, then call order_delivery again. Do not guess it."
-    static let deliveryWindow = "Ask the user to confirm the date, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
-    static let deliveryOptionsFirst = "Call get_delivery_options first, then call order_delivery again with items and card_id taken from its answer."
+    static let deliveryWindow = "Nothing was ordered. Tell the user the arrival time is out of range and ask for a new time, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
+    // Said when the card was already confirmed: the value is in the arrive_at key of the same result, never in this text.
+    static let deliveryWindowAtConfirm = "Nothing was ordered. Tell the user nothing was ordered because the arrival time given in the arrive_at key of this result is out of range, and ask for a new time, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
+    static let deliveryOptionsFirst = "Call get_delivery_options first, then call order_delivery again with items taken from its answer."
     static let deliveryItems = "Ask the user what to order, then call order_delivery again with items as comma-separated pairs of an item id from the get_delivery_options answer and a quantity from 1 to 9, 1 to 6 pairs, no spaces, no id repeated. Do not guess it."
     static let deliveryItemUnknown = "Call order_delivery again with items that use only item ids from the get_delivery_options answer, or ask the user what to order."
-    static let deliveryCard = "Ask the user which card to pay with, then call order_delivery again with card_id from the get_delivery_options answer. Do not guess it."
-    static let deliveryCardUnknown = "Call order_delivery again with a card_id from the get_delivery_options answer, or ask the user which card to pay with."
-    static let deliveryTo = "Ask the user where to deliver. If they name a place, call search_places for it, then call order_delivery again with its place_id as deliver_to."
+    static let deliveryCardUnknown = "Call order_delivery again with a card_id from the get_delivery_options answer, or leave card_id out."
     static let deliveryToHandle = "Call search_places for the place to deliver to, then call order_delivery again with its place_id as deliver_to, or leave deliver_to out."
     static let deliveryUnavailable = "Tell the user delivery is not available right now. Do not call order_delivery again."
     static let deliveryOptionsUnavailable = "Tell the user delivery is not available right now. Do not call get_delivery_options or order_delivery again."
@@ -614,8 +470,10 @@ final class AgentToolbox {
     let deviceOrigin: () -> Place?
     let placeSearchProvider: (() -> PlaceSearch)?
     let directionsProvider: (() -> DirectionsService)?
-    /// SPEC-BOOKING-001: the booking client, built on use from the live configuration; tests inject a stubbed one.
-    let bookingProvider: (() -> BookingClient)?
+    /// SPEC-BOOKCARD-001: the partner client, built on use from the live configuration; tests inject a stubbed one.
+    let partnersProvider: (() -> PartnerClient)?
+    /// The lines the user wrote in this chat, read when a card is built; the session sets it. Empty for a toolbox with no session.
+    var userLines: () -> [String] = { [] }
     /// SPEC-BUDGET-001: the budget client, built on use from the live configuration; tests inject a stubbed one.
     let budgetProvider: (() -> BudgetClient)?
     /// SPEC-DELIVERY-001: the delivery client and the order record, built on use; tests inject stubbed ones.
@@ -623,13 +481,16 @@ final class AgentToolbox {
     let deliveryOrdersProvider: (() -> DeliveryOrderLog)?
     /// The partner's last good options answer. In memory only: the next good answer replaces it and a new chat forgets it.
     private var deliveryOptions: DeliveryOptions?
+    /// The partners the last good `get_partners` answer held, with their forms. In memory only: a good answer replaces it and a
+    /// new chat forgets it.
+    private var partners: [PartnerSpec] = []
 
     /// `timeZone` is read on every use, so a zone change while the app runs reaches dates, cards and the gate.
     init(store: Store, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone,
          deviceOrigin: @escaping () -> Place? = { nil },
          places: (() -> PlaceSearch)? = nil,
          directions: (() -> DirectionsService)? = nil,
-         booking: (() -> BookingClient)? = nil,
+         partners: (() -> PartnerClient)? = nil,
          budget: (() -> BudgetClient)? = nil,
          delivery: (() -> DeliveryClient)? = nil,
          deliveryOrders: (() -> DeliveryOrderLog)? = nil) {
@@ -639,7 +500,7 @@ final class AgentToolbox {
         self.deviceOrigin = deviceOrigin
         placeSearchProvider = places
         directionsProvider = directions
-        bookingProvider = booking
+        partnersProvider = partners
         budgetProvider = budget
         deliveryProvider = delivery
         deliveryOrdersProvider = deliveryOrders
@@ -649,20 +510,21 @@ final class AgentToolbox {
                      deviceOrigin: @escaping () -> Place? = { nil },
                      places: (() -> PlaceSearch)? = nil,
                      directions: (() -> DirectionsService)? = nil,
-                     booking: (() -> BookingClient)? = nil,
+                     partners: (() -> PartnerClient)? = nil,
                      budget: (() -> BudgetClient)? = nil,
                      delivery: (() -> DeliveryClient)? = nil,
                      deliveryOrders: (() -> DeliveryOrderLog)? = nil) {
         self.init(store: store, now: now, timeZone: { timeZone }, deviceOrigin: deviceOrigin,
-                  places: places, directions: directions, booking: booking, budget: budget,
+                  places: places, directions: directions, partners: partners, budget: budget,
                   delivery: delivery, deliveryOrders: deliveryOrders)
     }
 
     /// New chat: forgets the handles; the counters keep counting up, so an old handle never names a new entry. The held
-    /// delivery options go too.
+    /// delivery options and partners go too.
     func resetConversation() {
         registry.clear()
         deliveryOptions = nil
+        partners = []
         endDayPlan()
     }
 
@@ -705,7 +567,7 @@ final class AgentToolbox {
     }
 
     /// Reads one function call (tool name and the raw arguments string the model sent).
-    /// - `flow`: the Connections flow of the user message that caused the call. Only the two Google lookups, the two budget lookups and the delivery options lookup read it.
+    /// - `flow`: the Connections flow of the user message that caused the call. Only the two Google lookups, the two budget lookups and the delivery options and partners lookups read it.
     func handle(name: String, arguments: String, flow: UUID? = nil) -> AgentToolOutcome {
         guard let tool = Tool(rawValue: name) else { return reject(Say.unknownTool) }
         // SPEC-PLANDAY-001: the rules of a plan turn come before any argument is read.
@@ -722,11 +584,14 @@ final class AgentToolbox {
         case .deliveryOptions:
             // SPEC-DELIVERY-001: the options tool needs the proxy, and this check comes before any argument is read.
             if !deliveryClient().isConfigured { return reject(Say.deliveryOptionsUnavailable) }
+        case .partners:
+            // SPEC-BOOKCARD-001: the partners tool needs the proxy, and this check comes before any argument is read.
+            if !partnerClient().isConfigured { return reject(Say.partnersUnavailable) }
         default:
             break
         }
-        // A blank arguments text is `{}` for the two tools that take no argument; every other tool keeps `Say.notObject`.
-        let text = (tool == .budgetLeft || tool == .deliveryOptions) && arguments.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // A blank arguments text is `{}` for the three tools that take no argument; every other tool keeps `Say.notObject`.
+        let text = (tool == .budgetLeft || tool == .deliveryOptions || tool == .partners) && arguments.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "{}" : arguments
         guard let data = text.data(using: .utf8),
               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -740,13 +605,14 @@ final class AgentToolbox {
             case .delete: return try delete(values)
             case .search: return try search(values, flow: flow)
             case .travel: return try travel(values, flow: flow)
-            case .booking: return try book(values)
             case .checkDay: return try checkDayPlan(values, flow: flow)
             case .showDay: return try showDayPlan(values)
             case .budgetLeft: return budgetLeft(flow: flow)
             case .spend: return try recordSpend(values, flow: flow)
             case .deliveryOptions: return deliveryOptionsLookup(flow: flow)
             case .delivery: return try orderDelivery(values)
+            case .partners: return partnersLookup(flow: flow)
+            case .partner: return try requestPartner(values)
             }
         } catch {
             return reject((error as? Rejection)?.message ?? Say.notObject(tool))
@@ -1073,9 +939,11 @@ final class AgentToolbox {
         }
         // The baseline of "what changed" is the first check of the turn.
         let lines = AgentDayPlan.cardLines(check, first: checks.first, mode: context.mode, zone: zone())
-        return .card(AgentCard(lines: lines, showsGoogleMark: AgentDayPlan.showsGoogleMark(check)) { [self] in
+        let card = AgentCard(lines: lines, showsGoogleMark: AgentDayPlan.showsGoogleMark(check)) { [self] in
             await confirmDayPlan(check, context)
-        })
+        }
+        card.cancelResult = Self.encode(["status": "declined", "message": AgentDayPlan.Say.cancelled])
+        return .card(card)
     }
 
     /// One answer for a Confirm that writes nothing: the status and message for the model and the notice for the user.
@@ -1126,103 +994,197 @@ final class AgentToolbox {
         return (AgentResolution(result: result, notice: kept.count < listed ? AgentDayPlan.Say.partialAdded : nil), .confirmed)
     }
 
-    // MARK: - Booking (SPEC-BOOKING-001)
+    // MARK: - Partners (SPEC-BOOKCARD-001)
 
-    private func bookingClient() -> BookingClient {
-        bookingProvider?() ?? BookingClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
+    private func partnerClient() -> PartnerClient {
+        partnersProvider?() ?? PartnerClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
     }
 
-    /// A booking start is a time that has not passed (by the minute) and is within the next 366 days.
+    /// A time the card may carry is a time that has not passed (by the minute) and is within the next 366 days.
     private func withinBookingWindow(_ date: Date) -> Bool {
         let minute = (now().timeIntervalSince1970 / 60).rounded(.down) * 60
         return date >= Date(timeIntervalSince1970: minute) && date <= Date(timeIntervalSince1970: minute + Self.futureWindow)
     }
 
-    private func book(_ values: [String: String]) throws -> AgentToolOutcome {
-        guard let handle = values["place_id"], AgentPlaces.isPlaceHandle(handle), let place = registry.place(handle),
-              !AgentPlaces.displayName(place.name).isEmpty else { throw Rejection(Say.bookPlace) }
-        guard values["start"] != nil, let start = try time(values, .booking, "start") else { throw Rejection(Say.bookStart) }
-        guard withinBookingWindow(start) else { throw Rejection(Say.bookWindow) }
-        guard let sizeText = values["party_size"], let partySize = AgentBooking.parsePartySize(sizeText) else {
-            throw Rejection(Say.bookParty)
-        }
-        guard bookingClient().isConfigured else { throw Rejection(Say.bookUnavailable) }
-
-        let f = formats
-        let placeName = AgentPlaces.displayName(place.name)
-        let request = BookingRequest(requestID: UUID().uuidString, restaurant: AgentBooking.sentName(place),
-                                     partySize: partySize, start: f.local.string(from: start))
-        let lines = AgentBooking.cardLines(placeName: placeName, start: f.day.string(from: start), partySize: partySize)
-        // The card keeps the place as it was when it was built; Confirm never reads the registry.
-        return .card(AgentCard(lines: lines, showsGoogleMark: true) { [self] in
-            // The card may have waited a long time: the start must still be a time that has not passed.
-            guard withinBookingWindow(start) else {
-                let result = Self.encode(["status": "rejected", "message": Say.bookWindow])
-                return (AgentResolution(result: result, notice: Say.startPassed), .notApplied)
+    /// `get_partners`: the directory and one form for each entry, run as the request in flight. It writes nothing; the partners
+    /// whose form is good are held in memory, and a failure, a task cancelled meanwhile or no good partner holds nothing new.
+    private func partnersLookup(flow: UUID?) -> AgentToolOutcome {
+        let flow = flow ?? ConnectionLog.beginFlow()
+        return .lookup(AgentLookup { [self] in
+            let client = partnerClient()
+            var good: [PartnerSpec] = []
+            if case .success(let entries) = await client.directory(flow: flow) {
+                for entry in entries {
+                    if case .success(let spec) = await client.form(of: entry, flow: flow) { good.append(spec) }
+                }
             }
-            let flow = ConnectionLog.beginFlow()
-            let answer = await bookingClient().book(request, flow: flow)
-            // Cancellation is checked after the answer is known and before anything is written.
-            guard !Task.isCancelled else { return bookingUnavailable() }
-            switch answer {
-            case .failure:
-                return bookingUnavailable()
-            case .success(.declined):
-                let result = Self.encode(["status": "declined", "partner": BookingClient.partnerName, "simulated": true,
-                                          "message": AgentBooking.declinedMessage])
-                return (AgentResolution(result: result, notice: nil), .notApplied)
-            case .success(.confirmed(let code)):
-                let made = await store.addActivityWithTravel(
-                    title: AgentBooking.entryTitle(partySize: partySize, placeName: placeName), location: place,
-                    startDate: start, endDate: start.addingTimeInterval(AgentBooking.entryDuration), travelFrom: nil,
-                    returnTo: nil, outboundMode: .walk, returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0,
-                    syncToCalendar: store.calendarSyncDefault, travelSecondsHint: nil)
-                // SPEC-BUDGET-001: the table is booked and on the schedule; its estimated spend goes to the budget partner
-                // under the booking's own flow. With no proxy nothing is sent and the result is the base one.
-                let budget = await sendEstimatedSpend(partySize: partySize, start: start, flow: flow)
-                return bookingApplied(made.activityId, code: code, budget: budget)
+            guard !good.isEmpty, !Task.isCancelled else {
+                let result = Self.encode(["status": "unavailable", "simulated": true, "message": AgentPartner.listUnavailableMessage])
+                return AgentLookupOutput(result: result, showsGoogleData: false)
             }
+            partners = good
+            return AgentLookupOutput(result: Self.encode(AgentPartner.listResult(good)), showsGoogleData: false)
         })
     }
 
-    /// One `spend` of the table's estimated amount, counted in the week of the table's start. Nil when the proxy is not
-    /// configured. A failure, or a task cancelled meanwhile, never changes the booking.
-    private func sendEstimatedSpend(partySize: Int, start: Date, flow: UUID) async -> AgentBudget.BookingSpend? {
+    /// Gate, then the card: the partner must be a held one, and the card is exactly the partner's field list in its order.
+    /// Building the card writes nothing and sends nothing; the model's `fields` fill only what its quotes support.
+    private func requestPartner(_ values: [String: String]) throws -> AgentToolOutcome {
+        guard let id = values["partner"], let spec = partners.first(where: { $0.entry.id == id }) else { throw Rejection(Say.partnersFirst) }
+        guard partnerClient().isConfigured else { throw Rejection(Say.partnerUnavailable) }
+
+        let f = formats
+        let filled = AgentPrefill.values(fieldsText: values["fields"], fields: spec.fields, userLines: userLines(), now: now(),
+                                         calendar: f.calendar)
+        var rows: [AgentFieldRow] = []
+        for field in spec.fields {
+            guard let seed = AgentFieldSpec(field) else { throw Rejection(Say.partnerUnavailable) }
+            let kept = filled[field.key]
+            rows.append(.field(seed, value: kept, source: kept == nil ? .blank : .stated))
+        }
+        // The schedule choice is the app's own row and exists only when the partner announced a time result.
+        let schedulable = spec.results.contains { $0.kind == .time }
+        if schedulable { rows.append(AgentPartner.scheduleRow()) }
+        rows.append(.line(AgentPartner.partnerLine(spec.entry.name)))
+
+        // The card's place search goes through the provider `search_places` uses. The device position is read here, when a
+        // search fires, and reaches the Google Places request only.
+        let fieldCard = AgentFieldCard(header: spec.entry.title, rows: rows, favorites: store.favorites, search: { [self] query in
+            let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+            return await (placeSearchProvider?() ?? store.placeSearch).search(query, near: center)
+        }, now: { [self] in now() })
+        let requestID = UUID().uuidString
+        return .card(AgentCard(fieldCard: fieldCard, showsGoogleMark: spec.fields.contains { $0.kind == .place }) { [self] in
+            // The one snapshot of the model (Confirm froze it): every use below reads it, never a value from the build.
+            await confirmPartner(spec, taken: fieldCard.values, requestID: requestID, schedulable: schedulable)
+        })
+    }
+
+    /// Confirm, in order: the window check of every time field, the one trim and the required values, the length of the
+    /// entry, then one request under a new flow and, on `confirmed`, the acting by kind.
+    private func confirmPartner(_ spec: PartnerSpec, taken: AgentFieldCard.Snapshot, requestID: String,
+                                schedulable: Bool) async -> (AgentResolution, AgentCardMark) {
+        let f = formats
+        for field in spec.fields where field.kind == .time {
+            if let when = taken.date(field.key), !withinBookingWindow(when) {
+                let result = Self.encode(["status": "rejected", "message": Say.partnerWindowAtConfirm, "chosen_time": f.local.string(from: when)])
+                return (AgentResolution(result: result, notice: Say.startPassed), .notApplied)
+            }
+        }
+        var items: [PartnerRequest.Item] = []
+        for field in spec.fields {
+            let value: PartnerValue?
+            switch field.kind {
+            case .text, .place: value = taken.text(field.key).flatMap(AgentDelivery.snapshotText).map { PartnerValue.text($0) }
+            case .time: value = taken.date(field.key).map { PartnerValue.text(f.local.string(from: $0)) }
+            case .number: value = taken.int(field.key).map { PartnerValue.number($0) }
+            case .pickOne: value = taken.option(field.key).map { PartnerValue.text($0) }
+            case .onOff: value = taken.flag(field.key).map { PartnerValue.flag($0) }
+            }
+            if let value {
+                items.append(PartnerRequest.Item(key: field.key, value: value))
+            } else if !field.isOptional {
+                return partnerEditRejected()
+            }
+        }
+        // The length is the app's own row: it counts only while the switch is on.
+        let scheduleOn = schedulable && taken.flag(AgentPartner.cardSwitchKey) == true
+        var minutes = 0
+        if scheduleOn {
+            guard let length = taken.int(AgentPartner.cardLengthKey), AgentPartner.lengthRange.contains(length) else { return partnerEditRejected() }
+            minutes = length
+        }
+
+        let flow = ConnectionLog.beginFlow()
+        let answer = await partnerClient().submit(PartnerRequest(requestID: requestID, values: items), to: spec, flow: flow)
+        // Cancellation is checked after the answer is known and before anything is written.
+        guard !Task.isCancelled else { return partnerUnavailable(spec) }
+        switch answer {
+        case .failure:
+            return partnerUnavailable(spec)
+        case .success(.declined):
+            let result = Self.encode(["status": "declined", "partner": spec.entry.name, "simulated": true, "message": AgentPartner.declinedMessage])
+            return (AgentResolution(result: result, notice: nil), .notApplied)
+        case .success(.confirmed(let results)):
+            return await actOnPartner(spec, results: results, scheduleOn: scheduleOn, skipped: schedulable && !scheduleOn, minutes: minutes, flow: flow)
+        }
+    }
+
+    /// Acting by kind, from the answer only: a `time` item becomes the entry when the switch was on, a `money` item goes to the
+    /// budget as an estimate in the week of the `time` item (this week when there is none), a `text` item stays in the reply.
+    private func actOnPartner(_ spec: PartnerSpec, results: [PartnerResultItem], scheduleOn: Bool, skipped: Bool, minutes: Int,
+                              flow: UUID) async -> (AgentResolution, AgentCardMark) {
+        var start: Date?
+        var itemName: String?
+        for item in results {
+            if case .time(let text) = item.value {
+                start = localDate(text)
+                itemName = item.name
+            }
+        }
+        var entryID: UUID?
+        if scheduleOn, let start, let itemName {
+            let made = await store.addActivityWithTravel(
+                title: AgentPartner.entryTitle(partner: spec.entry.name, item: itemName), location: nil, startDate: start,
+                endDate: start.addingTimeInterval(TimeInterval(minutes * 60)), travelFrom: nil, returnTo: nil, outboundMode: .walk,
+                returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0, syncToCalendar: store.calendarSyncDefault, travelSecondsHint: nil)
+            entryID = made.activityId
+        }
+        var budget: AgentBudget.BookingSpend?
+        if let cents = results.moneyCents {
+            budget = await sendEstimatedSpend(amountCents: cents, start: start ?? now(), flow: flow)
+        }
+        return partnerApplied(entryID, partner: spec.entry.name, results: results, skipped: skipped, budget: budget)
+    }
+
+    /// One `spend` of the answered amount, counted in the week of `start`, under the request's own flow. Nil when the proxy is not
+    /// configured. A failure, or a task cancelled meanwhile, never changes the request.
+    private func sendEstimatedSpend(amountCents: Int, start: Date, flow: UUID) async -> AgentBudget.BookingSpend? {
         let client = budgetClient()
         guard client.isConfigured else { return nil }
-        let amount = partySize * AgentBudget.estimatePerPersonCents
-        let tableWeek = BudgetWeek.start(of: start, in: zone())
-        let result = await client.spend(amountCents: amount, isEstimate: true, weekStart: tableWeek,
+        let week = BudgetWeek.start(of: start, in: zone())
+        let result = await client.spend(amountCents: amountCents, isEstimate: true, weekStart: week,
                                         requestID: UUID().uuidString, flow: flow)
         switch result {
         case .success(let standing):
-            let week = AgentBudget.weekPhrase(weekStart: tableWeek, currentWeekStart: BudgetWeek.start(of: now(), in: zone()))
-            return .recorded(amountCents: amount, standing: standing, week: week)
+            let phrase = AgentBudget.weekPhrase(weekStart: week, currentWeekStart: BudgetWeek.start(of: now(), in: zone()))
+            return .recorded(amountCents: amountCents, standing: standing, week: phrase)
         case .failure:
             return .unavailable(notify: !Task.isCancelled)
         }
     }
 
-    private func bookingUnavailable() -> (AgentResolution, AgentCardMark) {
-        let result = Self.encode(["status": "unavailable", "partner": BookingClient.partnerName, "simulated": true,
-                                  "message": AgentBooking.unavailableMessage])
-        return (AgentResolution(result: result, notice: AgentBooking.unavailableNotice), .notApplied)
+    private func partnerEditRejected() -> (AgentResolution, AgentCardMark) {
+        let result = Self.encode(["status": "rejected", "message": AgentPartner.editRejectedMessage])
+        return (AgentResolution(result: result, notice: nil), .notApplied)
     }
 
-    /// `applied`, with the entry's values read back from the Store. Not private so a test can reach the read-back refusal,
-    /// which the Store write cannot be made to produce (it never suspends between the write and the read).
-    func bookingApplied(_ id: UUID, code: String, budget: AgentBudget.BookingSpend? = nil) -> (AgentResolution, AgentCardMark) {
-        guard let stored = store.activity(id: id) else { return (notFound(), .notApplied) }
-        let local = formats.local
-        var object: [String: Any] = ["status": "applied", "partner": BookingClient.partnerName, "simulated": true,
-                                     "reservation_code": code, "id": stored.id.uuidString, "title": Self.sanitized(stored.title),
-                                     "start": local.string(from: stored.startDate), "end": local.string(from: stored.endDate),
-                                     "message": AgentBooking.appliedMessage]
-        if let place = stored.location { object["location"] = AgentPlaces.displayName(place.name) }
+    private func partnerUnavailable(_ spec: PartnerSpec) -> (AgentResolution, AgentCardMark) {
+        let result = Self.encode(["status": "unavailable", "partner": spec.entry.name, "simulated": true, "message": AgentPartner.unavailableMessage])
+        return (AgentResolution(result: result, notice: AgentPartner.unavailableNotice), .notApplied)
+    }
+
+    /// `applied`, with the entry's values read back from the Store. Not private so a test can reach the read-back refusal, which
+    /// the Store write cannot be made to produce (it never suspends between the write and the read). `skipped` is true when the
+    /// user chose not to add the entry to the schedule.
+    func partnerApplied(_ id: UUID?, partner: String, results: [PartnerResultItem], skipped: Bool,
+                        budget: AgentBudget.BookingSpend? = nil) -> (AgentResolution, AgentCardMark) {
+        var object: [String: Any] = ["status": "applied", "partner": partner, "simulated": true, "results": AgentDelivery.resultFields(results)]
+        var message = AgentPartner.appliedMessage
+        if skipped { message += " " + AgentPartner.scheduleSkippedSentence }
+        if let id {
+            guard let stored = store.activity(id: id) else { return (notFound(), .notApplied) }
+            let local = formats.local
+            object["id"] = stored.id.uuidString
+            object["title"] = Self.sanitized(stored.title)
+            object["start"] = local.string(from: stored.startDate)
+            object["end"] = local.string(from: stored.endDate)
+        }
         if let budget {
             object["budget"] = budget.block
-            object["message"] = AgentBooking.appliedMessage + " " + budget.sentence
+            message += " " + budget.sentence
         }
+        object["message"] = message
         return (AgentResolution(result: Self.encode(object), notice: budget?.notice), .confirmed)
     }
 
@@ -1263,7 +1225,7 @@ final class AgentToolbox {
                                                     requestID: requestID, flow: flow)
             switch answer {
             case .failure:
-                // A task cancelled meanwhile says nothing to the user, as in the booking hook.
+                // A task cancelled meanwhile says nothing to the user, as in the partner request.
                 return AgentLookupOutput(result: budgetUnavailable(AgentBudget.spendUnavailableMessage), showsGoogleData: false,
                                          notice: Task.isCancelled ? nil : AgentBudget.spendFailureNotice)
             case .success(let standing):
@@ -1291,7 +1253,7 @@ final class AgentToolbox {
         deliveryProvider?() ?? DeliveryClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
     }
 
-    /// What a confirmed delivery order is made from: the values of the card as it was built and the one snapshot of its editors.
+    /// What a confirmed delivery order is made from: the values of the card as it was built and the one snapshot of its field card.
     private struct DeliveryOrder {
         /// The meal entry as the snapshot has it: the title as typed and trimmed (before ` (Simulated)`) and the start time.
         struct Meal {
@@ -1325,8 +1287,9 @@ final class AgentToolbox {
         })
     }
 
-    /// Gate, then the card: every argument is decided here, in the order of spec.md REQ-DELIVERY-008. Building the card writes
-    /// nothing and sends nothing.
+    /// Gate, then the card: every argument is decided here, in the order of design.md section 4. Building the card writes
+    /// nothing and sends nothing. The card is the generic field card (SPEC-CHOICECARD-001): the user fills what is blank and
+    /// taps Confirm once.
     private func orderDelivery(_ values: [String: String]) throws -> AgentToolOutcome {
         guard let handle = values["place_id"], AgentPlaces.isPlaceHandle(handle), let place = registry.place(handle),
               !AgentPlaces.displayName(place.name).isEmpty else { throw Rejection(Say.deliveryPlace) }
@@ -1335,99 +1298,111 @@ final class AgentToolbox {
         guard let options = deliveryOptions else { throw Rejection(Say.deliveryOptionsFirst) }
         guard let itemsText = values["items"], let lines = AgentDelivery.parseItems(itemsText) else { throw Rejection(Say.deliveryItems) }
         guard lines.allSatisfy({ options.menuItem(id: $0.itemID) != nil }) else { throw Rejection(Say.deliveryItemUnknown) }
-        guard let cardID = values["card_id"] else { throw Rejection(Say.deliveryCard) }
-        guard let card = options.card(id: cardID) else { throw Rejection(Say.deliveryCardUnknown) }
+        // A card id is optional. The model fills optional arguments with guesses, so the card shows what it passed and an id the
+        // held options do not hold is refused.
+        var card: DeliveryCard?
+        if let cardID = values["card_id"] {
+            guard let held = options.card(id: cardID) else { throw Rejection(Say.deliveryCardUnknown) }
+            card = held
+        }
         guard let totalCents = options.totalCents(for: lines) else { throw Rejection(Say.deliveryItems) }
         // The delivery place comes from the place table or from the schedule, never from the model's text.
-        let deliveryText: String
-        let isSuggested: Bool
+        var named: String?
         if let target = values["deliver_to"] {
-            guard AgentPlaces.isPlaceHandle(target), let named = registry.place(target), let text = AgentDelivery.placeText(named) else {
+            guard AgentPlaces.isPlaceHandle(target), let found = registry.place(target), let text = AgentDelivery.placeText(found) else {
                 throw Rejection(Say.deliveryToHandle)
             }
-            deliveryText = text
-            isSuggested = false
-        } else {
-            guard let text = AgentDelivery.suggestedPlaceText(activities: store.activities, arrival: arrival, now: now()) else {
-                throw Rejection(Say.deliveryTo)
-            }
-            deliveryText = text
-            isSuggested = true
+            named = text
         }
         guard deliveryClient().isConfigured else { throw Rejection(Say.deliveryUnavailable) }
 
         let f = formats
+        let current = now()
+        var addressValue: AgentFieldValue?
+        var addressSource = AgentFieldSource.blank
+        if let named {
+            addressValue = .text(named)
+            addressSource = .stated
+        } else {
+            // One read of the schedule sees the stored entries and the occurrences of repeating activities (REQ-015); the
+            // interval holds both anchors, the arrival and now, and the minute of the later one.
+            let span = DateInterval(start: min(arrival, current), end: max(arrival, current).addingTimeInterval(60))
+            let entries = store.activities(in: span, calendar: f.calendar)
+            if let suggestion = AgentDelivery.suggestedPlaceText(activities: entries, arrival: arrival, now: current) {
+                addressValue = .text(suggestion)
+                addressSource = .inferred
+            }
+        }
+
         let placeName = AgentPlaces.displayName(place.name)
-        let arrives = f.day.string(from: arrival)
         let items = lines.map { (name: options.menuItem(id: $0.itemID)?.name ?? $0.itemID, quantity: $0.quantity) }
+        var rows: [AgentFieldRow] = [.line(placeName)]
+        rows += items.map { AgentFieldRow.line("\($0.quantity) x \($0.name)") }
+        rows.append(.line(AgentDelivery.estimatedTotalLine(cents: totalCents)))
+        // The partner's fields, in the partner's order; the value of each comes from what the call and the schedule gave.
+        for field in options.fields {
+            guard let spec = AgentFieldSpec(field) else { throw Rejection(Say.deliveryUnavailable) }
+            switch field.key {
+            case DeliveryClient.arriveKey:
+                rows.append(.field(spec, value: .time(arrival), source: .stated))
+            case DeliveryClient.addressKey:
+                rows.append(.field(spec, value: addressValue, source: addressSource))
+            default:
+                rows.append(.field(spec, value: card.map { AgentFieldValue.option($0.id) }, source: card == nil ? .blank : .stated))
+            }
+        }
+        // The meal entry is the app's own row: the switch, and while it is on the title and the start, all inferred.
         let minuteOfDay = f.calendar.component(.hour, from: arrival) * 60 + f.calendar.component(.minute, from: arrival)
-        let word = AgentDelivery.mealWord(arrivalMinute: minuteOfDay)
-        let editors = AgentCardEditors(
-            delivery: isSuggested ? AgentCardText(text: deliveryText, limit: AgentDelivery.maxDeliveryText, suggestion: deliveryText) : nil,
-            mealOn: AgentCardSwitch(isOn: true),
-            mealTitle: AgentCardText(text: word, limit: AgentDelivery.maxMealTitle, suggestion: word),
-            mealStart: AgentCardTime(start: arrival, arrival: arrival, calendar: f.calendar))
+        let mealSwitch = AgentFieldSpec.onOff(key: AgentDelivery.mealSwitchKey, label: AgentDelivery.mealSwitchLabel,
+                                              on: AgentDelivery.mealOnWord, off: AgentDelivery.mealOffWord)
+        let mealTitle = AgentFieldSpec(key: AgentDelivery.mealTitleKey, kind: .text, label: AgentDelivery.mealTitleLabel,
+                                       limit: AgentBooking.maxTitle - AgentBooking.simulatedSuffix.count)
+        let mealStart = AgentFieldSpec(key: AgentDelivery.mealStartKey, kind: .time, label: AgentDelivery.mealStartLabel)
+        rows.append(.switchField(mealSwitch, value: .flag(true), source: .inferred, dependents: [
+            .field(mealTitle, value: .text(AgentDelivery.mealWord(arrivalMinute: minuteOfDay)), source: .inferred),
+            .field(mealStart, value: .time(arrival), source: .inferred)]))
+        rows.append(.line(AgentDelivery.partnerLine))
+
+        // The card's place search goes through the provider `search_places` uses. The device position is read here, when a
+        // search fires, and reaches the Google Places request only.
+        let fieldCard = AgentFieldCard(header: AgentDelivery.cardHeader, rows: rows, favorites: store.favorites, search: { [self] query in
+            let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+            return await (placeSearchProvider?() ?? store.placeSearch).search(query, near: center)
+        }, now: { [self] in now() })
         let requestID = UUID().uuidString
         // The card keeps the place, the items and the total as they were when it was built, except the editable values;
         // Confirm never reads the registry, the held options or the schedule again.
-        let rows: @MainActor () -> [AgentCardRow] = {
-            let text = editors.delivery?.text ?? deliveryText
-            var meal: AgentDelivery.CardMeal?
-            if editors.mealOn?.isOn == true, let title = editors.mealTitle, let start = editors.mealStart {
-                meal = AgentDelivery.CardMeal(title: AgentDelivery.mealTitle(typed: title.text), time: f.time.string(from: start.start),
-                                              isSuggested: title.isSuggestion && start.isSuggestion)
-            }
-            let cardLines = AgentDelivery.cardLines(placeName: placeName, arrives: arrives, items: items, deliveryText: text,
-                                                    deliveryIsSuggested: editors.delivery?.isSuggestion ?? false, cardLabel: card.label,
-                                                    totalCents: totalCents, meal: meal)
-            return Self.deliveryRows(cardLines, itemCount: items.count, deliveryText: text, hasDeliveryEditor: editors.delivery != nil,
-                                     meal: meal)
-        }
-        return .card(AgentCard(editors: editors, showsGoogleMark: true, rows: rows) { [self] in
-            // The card may have waited a long time: the arrival must still be a time that has not passed.
-            guard withinBookingWindow(arrival) else {
-                let result = Self.encode(["status": "rejected", "message": Say.deliveryWindow])
+        return .card(AgentCard(fieldCard: fieldCard, showsGoogleMark: true) { [self] in
+            // The one snapshot of the model (Confirm froze it): every use of the arrival below reads this value, never the
+            // arrival that was captured when the card was built, because the Arrival is an editable field.
+            let taken = fieldCard.values
+            let when = taken.date(DeliveryClient.arriveKey)
+            // The card may have waited a long time, and the user may have dialled another time: it must still be a time that
+            // has not passed and that is inside the window.
+            if let when, !withinBookingWindow(when) {
+                let result = Self.encode(["status": "rejected", "message": Say.deliveryWindowAtConfirm, "arrive_at": f.local.string(from: when)])
                 return (AgentResolution(result: result, notice: Say.startPassed), .notApplied)
             }
-            // The one snapshot of the editors (Confirm froze them): the delivery text and the title are trimmed once, here.
-            let taken = editors.values
-            let address = AgentDelivery.snapshotText(taken.deliveryText ?? deliveryText)
-            let title = AgentDelivery.snapshotText(taken.mealTitle ?? "")
-            guard let address, !taken.mealOn || title != nil else {
+            // The one trim, here: the delivery text and the title.
+            let address = taken.text(DeliveryClient.addressKey).flatMap(AgentDelivery.snapshotText)
+            let chosen = taken.option(DeliveryClient.cardKey).flatMap { options.card(id: $0) }
+            let mealOn = taken.flag(AgentDelivery.mealSwitchKey) == true
+            let title = mealOn ? taken.text(AgentDelivery.mealTitleKey).flatMap(AgentDelivery.snapshotText) : nil
+            guard let when, let address, let chosen, !mealOn || title != nil else {
                 let result = Self.encode(["status": "rejected", "message": AgentDelivery.editRejectedMessage])
                 return (AgentResolution(result: result, notice: nil), .notApplied)
             }
-            let meal = title.flatMap { title in taken.mealOn ? DeliveryOrder.Meal(title: title, start: taken.mealStart ?? arrival) : nil }
-            let request = DeliveryRequest(requestID: requestID, restaurant: AgentBooking.sentName(place), arriveAt: f.local.string(from: arrival),
-                                          items: lines, address: address, cardID: card.id)
-            return await placeOrder(DeliveryOrder(request: request, options: options, placeName: placeName, arrival: arrival,
-                                                  cardLabel: card.label, items: items, totalCents: totalCents, meal: meal))
+            let meal = title.map { DeliveryOrder.Meal(title: $0, start: taken.date(AgentDelivery.mealStartKey) ?? when) }
+            let request = DeliveryRequest(requestID: requestID, restaurant: AgentBooking.sentName(place), arriveAt: f.local.string(from: when),
+                                          items: lines, address: address, cardID: chosen.id)
+            return await placeOrder(DeliveryOrder(request: request, options: options, placeName: placeName, arrival: when,
+                                                  cardLabel: chosen.label, items: items, totalCents: totalCents, meal: meal))
         })
-    }
-
-    /// The rows of a delivery card from its lines: the delivery line and the meal line carry the marks they hold, and the meal row
-    /// exists (without a line) while the entry is switched off, so the view keeps its switch.
-    private static func deliveryRows(_ lines: [String], itemCount: Int, deliveryText: String, hasDeliveryEditor: Bool,
-                                     meal: AgentDelivery.CardMeal?) -> [AgentCardRow] {
-        let deliveryIndex = 3 + itemCount
-        let mealIndex = deliveryIndex + 3
-        var rows: [AgentCardRow] = []
-        for (index, line) in lines.enumerated() {
-            if index == mealIndex, meal == nil { rows.append(.meal(line: nil, mark: "")) }
-            if index == deliveryIndex, hasDeliveryEditor {
-                rows.append(.delivery(line: line, mark: String(line.dropFirst("To \(deliveryText)".count))))
-            } else if index == mealIndex, let meal {
-                rows.append(.meal(line: line, mark: String(line.dropFirst("Add to schedule: \(meal.title) at \(meal.time)".count))))
-            } else {
-                rows.append(.text(line))
-            }
-        }
-        return rows
     }
 
     /// The order request and what follows it (spec.md REQ-DELIVERY-011 to 013): one request under a new flow, the cancellation
     /// check, then on `confirmed` the meal entry, the order record and the budget hand-off, in that order. It uses only the
-    /// snapshot in `order`: the editors, the registry, the held options and the schedule are not read again.
+    /// snapshot in `order`: the field card, the registry, the held options and the schedule are not read again.
     private func placeOrder(_ order: DeliveryOrder) async -> (AgentResolution, AgentCardMark) {
         let flow = ConnectionLog.beginFlow()
         let answer = await deliveryClient().order(order.request, options: order.options, flow: flow)
@@ -1440,9 +1415,11 @@ final class AgentToolbox {
             let result = Self.encode(["status": "declined", "partner": DeliveryClient.partnerName, "simulated": true,
                                       "message": AgentDelivery.declinedMessage])
             return (AgentResolution(result: result, notice: nil), .notApplied)
-        case .success(.confirmed(let orderID, let totalCents)):
-            // The client already refuses a different total; the card's total is checked again here.
-            guard totalCents == order.totalCents else { return deliveryUnavailable() }
+        case .success(.confirmed(let orderID, let results)):
+            // Act by kind. The client already refuses a different total or arrival; the `money` and `time` items are checked
+            // again here against the card's, and the total, the arrival and the money item's name are read from those items.
+            guard let totalCents = results.moneyCents, totalCents == order.totalCents, let moneyName = results.moneyName,
+                  let arrivalText = results.arrival, arrivalText == order.request.arriveAt else { return deliveryUnavailable() }
             let f = formats
             // The suggested meal entry, with the write `book(_:)` uses; the written activity is looked up in the Store.
             var meal: AgentDelivery.AppliedMeal?
@@ -1467,14 +1444,15 @@ final class AgentToolbox {
                                   quantity: line.quantity, unitPriceCents: order.options.menuItem(id: line.itemID)?.priceCents ?? 0)
             }
             (deliveryOrdersProvider?() ?? DeliveryOrderLog.shared).add(DeliveryOrderEntry(
-                orderID: orderID, requestID: order.request.requestID, placeName: order.placeName, arrival: order.request.arriveAt,
+                orderID: orderID, requestID: order.request.requestID, placeName: order.placeName, arrival: arrivalText,
                 items: lines, address: order.request.address, cardLabel: order.cardLabel, estimatedTotalCents: totalCents,
                 createdAt: now(), mealActivityID: mealID))
             let budget = await sendOrderTotal(order, totalCents: totalCents, flow: flow)
             let fields = AgentDelivery.appliedFields(
-                orderID: orderID, restaurant: order.placeName, arrival: order.request.arriveAt, items: order.items,
-                address: order.request.address, cardLabel: order.cardLabel, totalCents: totalCents, meal: meal, budget: budget)
-            return (AgentResolution(result: Self.encode(fields), notice: budget.notice(totalCents: totalCents)), .confirmed)
+                orderID: orderID, restaurant: order.placeName, items: order.items, address: order.request.address,
+                cardLabel: order.cardLabel, results: results, meal: meal, budget: budget)
+            let notice = budget.notice(moneyName: moneyName, totalCents: totalCents)
+            return (AgentResolution(result: Self.encode(fields), notice: notice), .confirmed)
         }
     }
 
@@ -1495,7 +1473,7 @@ final class AgentToolbox {
         }
     }
 
-    /// `unavailable`: nothing was ordered. Not private so a test can reach it, as `bookingApplied` is.
+    /// `unavailable`: nothing was ordered. Not private so a test can reach it, as `partnerApplied` is.
     func deliveryUnavailable() -> (AgentResolution, AgentCardMark) {
         let result = Self.encode(["status": "unavailable", "partner": DeliveryClient.partnerName, "simulated": true,
                                   "message": AgentDelivery.unavailableMessage])

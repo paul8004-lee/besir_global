@@ -42,7 +42,7 @@ final class SnapCamera: NSObject, SnapCameraAccess, SnapShutter {
     }
 
     func capture() async -> Data? {
-        guard configured, pending == nil else { return nil }
+        guard configured, pending == nil, session.isRunning, output.connection(with: .video)?.isActive == true else { return nil }
         return await withCheckedContinuation { continuation in
             pending = continuation
             output.capturePhoto(with: AVCapturePhotoSettings(), delegate: self)

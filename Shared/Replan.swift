@@ -49,7 +49,7 @@ struct ReplanOutcome: Equatable {
     let minutes: Int
     /// Late only: the time the user would arrive if leaving at the moment of the check.
     let arrivalEstimate: Date?
-    /// Late only: the message draft (the fixed text first, a checked Muse Spark text when one arrives).
+    /// Late only: the message draft, the fixed text.
     var draft: String?
     /// True for a later live departure found after the alert fired (SPEC-REPLAN-002): shown, never stored.
     var afterAlert: Bool = false
@@ -68,10 +68,16 @@ enum Replan {
     static let afterAlertLinesLifetime: TimeInterval = 15 * 60
     /// An app-open pass checks at most this many events beyond the baseline window.
     static let maxPostAlertEvents = 5
-    static let draftMaxLength = 280
     static let draftTitleLength = 40
 
     // MARK: - Classification
+
+    /// The late minutes: whole minutes, rounded up, of `now + live travel - arrival`; 0 when not late. One rule for
+    /// `classify` and for the card (REQ-REPLAN-308).
+    static func lateMinutes(now: Date, liveTravel: TimeInterval, arrival: Date) -> Int {
+        let over = now.addingTimeInterval(liveTravel).timeIntervalSince(arrival)
+        return over > 0 ? Int((over / 60).rounded(.up)) : 0
+    }
 
     /// REQ-REPLAN-004. `referenceDeparture` and `referenceTravel` are the first plan of the cycle.
     static func classify(eventID: UUID, trigger: ReplanTrigger, checkedAt: Date, inputs: ReplanInputs,
@@ -83,8 +89,7 @@ enum Replan {
         var minutes = 0
         var estimate: Date?
         if (inputs.anchor ?? .arrival) == .arrival {
-            let overSeconds = now.addingTimeInterval(liveTravel).timeIntervalSince(inputs.arrivalDate)
-            let lateBy = overSeconds > 0 ? Int((overSeconds / 60).rounded(.up)) : 0
+            let lateBy = lateMinutes(now: now, liveTravel: liveTravel, arrival: inputs.arrivalDate)
             let delta = referenceDeparture.timeIntervalSince(newDeparture)
             if lateBy >= 1 {
                 kind = .late
@@ -151,10 +156,14 @@ enum Replan {
             return "Leave by \(clockText(outcome.newDeparture, timeZone: timeZone)), \(outcome.minutes) min later"
         case .late:
             let arrival = outcome.arrivalEstimate ?? outcome.newDeparture
-            return "Leave now to arrive about \(clockText(arrival, timeZone: timeZone)), \(outcome.minutes) min late"
+            return lateHeadline(minutes: outcome.minutes, arrival: arrival, timeZone: timeZone)
         case .unchanged:
             return nil
         }
+    }
+
+    private static func lateHeadline(minutes: Int, arrival: Date, timeZone: TimeZone) -> String {
+        "Leave now to arrive about \(clockText(arrival, timeZone: timeZone)), \(minutes) min late"
     }
 
     /// The reason in facts the lookup returned: it names traffic only for a car lookup that shows it, and no other cause.
@@ -191,7 +200,15 @@ enum Replan {
         case .late:
             let age = now.timeIntervalSince(outcome.checkedAt)
             guard age < lateLinesLifetime else { return nil }
-            return (headline, reason(for: outcome), outcome.draft, .late, false)
+            // @MX:NOTE the late numbers follow the clock (REQ-REPLAN-308, 309): minutes and arrival are computed from the stored
+            // live travel time at draw time, never lower than the stored ones, and the headline and the message are built from
+            // the same two values, so they cannot disagree. Nothing is looked up.
+            let reached = now.addingTimeInterval(outcome.liveTravel)
+            let minutes = max(outcome.minutes, lateMinutes(now: now, liveTravel: outcome.liveTravel,
+                                                           arrival: outcome.inputs.arrivalDate))
+            let estimate = max(outcome.arrivalEstimate ?? reached, reached)
+            let message = templateDraft(lateBy: minutes, title: event.title, estimate: estimate, timeZone: timeZone)
+            return (lateHeadline(minutes: minutes, arrival: estimate, timeZone: timeZone), reason(for: outcome), message, .late, false)
         case .unchanged:
             return nil
         }
@@ -212,115 +229,11 @@ enum Replan {
             + "I should be there around \(clockText(estimate, timeZone: timeZone))."
     }
 
-    /// A model reply is used only when it is short, names the arrival time exactly as given, and holds no number
-    /// that the two facts do not hold.
-    static func accepts(draft: String, lateBy: Int, estimateText: String) -> Bool {
-        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, text.count <= draftMaxLength, text.contains(estimateText) else { return false }
-        let allowed = Set(digitRuns(in: "\(lateBy) \(estimateText)"))
-        return digitRuns(in: text).allSatisfy { allowed.contains($0) }
-    }
-
-    /// The runs of ASCII digits in a text.
-    static func digitRuns(in text: String) -> [String] {
-        var runs: [String] = []
-        var current = ""
-        for ch in text {
-            if ch.isASCII, ch.isNumber {
-                current.append(ch)
-            } else if !current.isEmpty {
-                runs.append(current)
-                current = ""
-            }
-        }
-        if !current.isEmpty { runs.append(current) }
-        return runs
-    }
-
     // MARK: - Navigation
 
     /// REQ-REPLAN-013: the tapped id counts only when the event still exists.
     static func tapSelection(pending: UUID?, events: [ScheduledEvent]) -> UUID? {
         guard let pending, events.contains(where: { $0.id == pending }) else { return nil }
         return pending
-    }
-}
-
-// MARK: - Draft client
-
-/// One `POST /ai` that asks Muse Spark for a replacement of the delay draft (REQ-REPLAN-014, 015). The request carries
-/// only the late minutes and the arrival time: no title, no place, no address, no coordinates, no event id.
-struct ReplanDraftClient {
-    typealias Send = (URLRequest) async throws -> (Data, URLResponse)
-
-    static let path = "/ai"
-    static let timeout: TimeInterval = 8
-    static let model = "muse-spark-1.3"
-    static let summary = "Delay message draft"
-    static let instructions = "Write one or two short, polite sentences in plain English from the user to the people "
-        + "waiting for them. Say that the user is running late by the number of minutes given and expects to arrive at "
-        + "the time given. Use only those two facts. Do not add names, places, reasons or any other number. "
-        + "Reply with the sentences only."
-
-    let config: AppConfig
-    let send: Send
-    var connections: ConnectionLog = ConnectionLog.shared
-
-    /// The text of the request input: the only place the two facts are put.
-    static func input(lateBy: Int, estimateText: String) -> String {
-        "Minutes late: \(lateBy). Expected arrival: \(estimateText)."
-    }
-
-    func makeRequest(lateBy: Int, estimateText: String) -> URLRequest? {
-        let body: [String: Any] = [
-            "model": Self.model,
-            "instructions": Self.instructions,
-            "input": Self.input(lateBy: lateBy, estimateText: estimateText),
-            "reasoning": ["effort": reasoningEffort]
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]) else { return nil }
-        return config.proxyPOSTRequest(Self.path, body: data, timeout: Self.timeout)
-    }
-
-    /// The accepted replacement text, or nil (the template stays). One packet per request: `failed` for a transport or
-    /// HTTP failure, an undecodable body or an answer without text; `ok` for an answer with text, accepted or not;
-    /// none for a cancelled request.
-    func refine(lateBy: Int, estimateText: String) async -> String? {
-        guard config.hasAI, let request = makeRequest(lateBy: lateBy, estimateText: estimateText) else { return nil }
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await send(request)
-        } catch {
-            if AgentClient.transportError(for: error) != .cancelled { note(.failed) }
-            return nil
-        }
-        guard !Task.isCancelled else { return nil }
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode),
-              let text = Self.outputText(from: data), !text.isEmpty else {
-            note(.failed)
-            return nil
-        }
-        note(.ok)
-        return Replan.accepts(draft: text, lateBy: lateBy, estimateText: estimateText)
-            ? text.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-    }
-
-    private func note(_ status: ConnectionStatus) {
-        connections.record(from: .besir, to: .museSpark, kind: .agentMessage, summary: Self.summary, status: status, flowID: nil)
-    }
-
-    /// The text parts of the `message` items of a Responses answer, joined; nil for a body that is not a Responses answer.
-    static func outputText(from data: Data) -> String? {
-        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let output = root["output"] as? [Any] else { return nil }
-        var pieces: [String] = []
-        for element in output {
-            guard let item = element as? [String: Any], item["type"] as? String == "message" else { continue }
-            for part in (item["content"] as? [[String: Any]]) ?? [] where part["type"] as? String == "output_text" {
-                if let text = part["text"] as? String { pieces.append(text) }
-            }
-        }
-        return pieces.isEmpty ? nil : pieces.joined()
     }
 }

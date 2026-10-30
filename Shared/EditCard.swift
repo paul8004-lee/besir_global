@@ -413,6 +413,12 @@ enum PlaceLine {
     static let locationPermissionNoteForPlace =
         "Location permission is off. Allow it in Settings, or search for a place yourself."
 
+    /// The note a "Current Location" tap shows on `row` when location permission is off: the origin wording for the
+    /// Origin row, the place wording for every other row. Both screens call this instead of carrying a key test.
+    static func permissionNote(for row: EditField) -> String {
+        row.key == LegRowKeys.originQuery ? locationPermissionNote : locationPermissionNoteForPlace
+    }
+
     /// 대기 끝에 도착한 위치를 줄에 받아들일지의 단일 판정(R1, AC-015) — 기준은 "비어 있었나"가
     /// 아니라 "대기를 시작한 뒤 줄 값이 그대로인가"다. 옛 가드(`chosen == nil`)는 수정 카드처럼
     /// 값이 미리 채워진 줄에서 '현재 위치'를 눌러도 도착한 위치를 영영 버렸다. 기다리는 사이 사용자가
@@ -548,10 +554,15 @@ enum PlaceLine {
     /// 옮겨온 것이라 여기가 줄별 구성의 단일 출처이다(PlaceLineSpecials). 기본값이 빈 배열이라
     /// 이 속성을 모르는 생성부(AddEventView 등)의 줄은 한 줄도 바뀌지 않는다.
     var placeSpecials: [String] = []
+    /// Whether this row lists "Current Location" among its special rows. The two screens ask the row instead of
+    /// testing its key, so a row that gains the special row is routed without a second edit.
+    var offersCurrentLocation: Bool { placeSpecials.contains(PlaceTokens.currentLocation) }
     /// 글은 바뀌었는데 아직 해석되지 않은 '반복' 줄(SPEC-UIKIT-019 REQ-004 — 칸을 마칠 때 해석한다). 그동안은 확인이
     /// 잠긴다: 쓰다 만 글로 저장되면 고친 글과 다른 규칙(또는 한 번짜리)이 조용히 만들어진다. busy를 쓰지 않은 이유:
     /// busy는 줄 옆에 진행 표시를 띄우는 깃발이라 글자를 치는 동안 줄곧 돌게 된다. 다른 줄은 늘 false다.
     var pendingCommit: Bool = false
+    /// The text a typed row shows while empty; nil keeps the view's own wording for the row's kind.
+    var placeholder: String? = nil
 
     var chosenLabel: String? {
         guard let chosen else { return nil }
@@ -730,6 +741,10 @@ extension EditCard {
         }
         return spec.fixedBase
     }
+
+    /// Whether opening this row's wheel should commit the value the wheel shows: a time row with no chosen value.
+    /// The caller commits through `closeDial`, the same path closing the wheel takes, so no second value rule exists.
+    func commitsSeedWhenOpened(_ field: EditField) -> Bool { field.kind == .datetime && field.chosen == nil }
 
     /// '지금'의 다음 정각 — 옛 뷰 전용 nextWholeHour(EditCardView)를 모델로 옮긴 것(REQ-006 F1).
     /// '지금'을 인자로 받는 이유: 드라이버가 시각을 고정해 사본 대조를 결정적으로 만들기
@@ -1402,9 +1417,12 @@ extension EndWheelSpec {
     }
 
     private func returnRows(to: String?, mode: String) -> [EditField] {
-        [
-            .init(key: LegRowKeys.returnQuery, kind: .place, label: "Destination", options: favoriteOptions,
-                  allowsCustom: true, chosen: to),
+        // The Destination offers the same Current Location row as the Origin, from the same constant.
+        let specials = PlaceLineSpecials.currentLocation
+        return [
+            .init(key: LegRowKeys.returnQuery, kind: .place, label: "Destination",
+                  options: favoriteOptions + specials.map { PlaceTokens.chip($0) },
+                  allowsCustom: true, chosen: to, placeSpecials: specials),
             .init(key: LegRowKeys.returnMode, kind: .mode, label: "Return Travel Mode",
                   options: TransportMode.allCases.map { .init(label: $0.title, value: $0.rawValue) },
                   allowsCustom: false, chosen: mode),

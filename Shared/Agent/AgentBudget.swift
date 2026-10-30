@@ -1,24 +1,22 @@
 import Foundation
 
-/// SPEC-BUDGET-001: the pure helpers of the `get_budget_left` and `record_spend` tools and of the booking hook, so what decides
+/// SPEC-BUDGET-001: the pure helpers of the `get_budget_left` and `record_spend` tools and of the partner request hook, so what decides
 /// and what is said is testable without the toolbox. Money is whole cents (`Int`) everywhere; dollars appear only in text.
 enum AgentBudget {
-    /// A table's spend is an estimate: this many cents for each person (no place price exists in the app).
-    static let estimatePerPersonCents = 3000
     /// The largest amount `record_spend` takes: $10,000.00.
     static let maxAmountCents = 1_000_000
 
     // MARK: Fixed result texts
 
-    static let leftMessage = "State the amount left or over as a fact and say it comes from a simulated budget app. If includes_estimate is true, say it includes estimated spending. Give no advice."
+    static let leftMessage = "State the amount left or over and say it comes from a simulated budget app. If includes_estimate is true, say it includes estimated spending. Give no advice."
     static let leftUnavailableMessage = "The simulated budget app could not be reached. Tell the user the budget left is not available right now."
-    static let spendMessage = "State the amount recorded and the amount left or over as facts in one line and say it comes from a simulated budget app. If includes_estimate is true, say it includes estimated spending. Give no advice."
+    static let spendMessage = "State the amount recorded and the amount left or over in one line and say it comes from a simulated budget app. If includes_estimate is true, say it includes estimated spending. Give no advice."
     static let spendUnavailableMessage = "The simulated budget app could not record the spend. Tell the user the spend could not be recorded and that nothing was added."
 
-    // MARK: Booking hook texts
+    // MARK: Partner request hook texts
 
-    static let bookingRecordedSentence = "Tell the user the estimated spend sent to the simulated budget app and the amount left or over, as facts and as estimates. Do not call record_spend for this table."
-    static let bookingUnavailableSentence = "The estimated spend could not be sent to the simulated budget app. Tell the user so, and do not call record_spend for this table."
+    static let bookingRecordedSentence = "Tell the user the estimated spend that was sent to the simulated budget app, and that the amount left or over comes from the simulated budget app, not from the partner. Do not call record_spend for this request."
+    static let bookingUnavailableSentence = "The estimated spend could not be sent to the simulated budget app. Tell the user so, and do not call record_spend for this request."
     static let bookingFailureNotice = "The estimated spend could not be sent to \(partnerLabel)."
     static let spendFailureNotice = "The spend could not be recorded in \(partnerLabel)."
 
@@ -89,7 +87,7 @@ enum AgentBudget {
         return standing.isWithin ? "\(field.value) left \(inWeek(week))" : "\(field.value) over the budget \(inWeek(week))"
     }
 
-    /// The one notice line after a recorded `record_spend`, in the same form as the booking's.
+    /// The one notice line after a recorded `record_spend`, in the same form as the partner request's.
     static func spendNotice(amountCents: Int, standing: BudgetStanding, week: String) -> String {
         "\(dollars(cents: amountCents)) recorded in \(partnerLabel): \(standingText(standing, week: week))."
     }
@@ -102,7 +100,7 @@ enum AgentBudget {
                 "includes_estimate": standing.includesEstimate, field.key: field.value]
     }
 
-    // MARK: The booking hook
+    // MARK: The partner request hook
 
     /// What the budget partner came to for a confirmed table.
     enum BookingSpend {
@@ -111,7 +109,7 @@ enum AgentBudget {
         /// The request failed (`notify` is false when the task was cancelled, which says nothing to the user).
         case unavailable(notify: Bool)
 
-        /// The `budget` key of the booking result.
+        /// The `budget` key of the partner result.
         var block: [String: Any] {
             switch self {
             case .recorded(let amount, let standing, let week):
@@ -123,7 +121,7 @@ enum AgentBudget {
             }
         }
 
-        /// The fixed sentence added to the booking result's message.
+        /// The fixed sentence added to the partner result's message.
         var sentence: String {
             switch self {
             case .recorded: return AgentBudget.bookingRecordedSentence
@@ -131,7 +129,7 @@ enum AgentBudget {
             }
         }
 
-        /// The one notice line of the booking, or nil.
+        /// The one notice line of the partner request, or nil.
         var notice: String? {
             switch self {
             case .recorded(let amount, let standing, let week):

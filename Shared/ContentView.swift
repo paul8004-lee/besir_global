@@ -1563,6 +1563,8 @@ struct ContentView: View {
         switch drag.kind {
         case .activity(let a):
             if a.recurrenceId != nil {
+                // Card t83: a drag that moves the activity's own start to another day is cancelled; nothing is saved.
+                if Store.seriesDragOutcome(for: a, deltaMinutes: drag.deltaMinutes, calendar: calendar) == .cancel { return }
                 pendingMove = PendingMove(message: "'\(a.title)' is a repeating event. How do you want to move it?") { whole in
                     store.moveActivity(a, byMinutes: drag.deltaMinutes, wholeSeries: whole)
                 }
@@ -1573,6 +1575,8 @@ struct ContentView: View {
                 store.moveActivity(a, byMinutes: drag.deltaMinutes, wholeSeries: false)
             }
         case .event(let e):
+            // Card t92: a drag of an outbound leg that moves its repeating activity's own start to another day is cancelled; nothing is saved.
+            if Store.legDragOutcome(leg: e, owner: drag.owner, deltaMinutes: drag.deltaMinutes, calendar: calendar) == .cancel { return }
             // 구간 드래그는 소유 여부와 무관하게 따라간다(Q-20) — 활동 블록 드래그는 따라가지 않는다.
             // 반복이면 대화상자에서 "전체/이 일정만"을 고른 뒤에만(applyPendingMove), 비반복이면 확정
             // 직후. "취소"·끄기 취소·유효 Δ 0(onEnd가 이미 걸렀다)에는 따라가기가 없다. 드롭은 눌렀던
