@@ -293,5 +293,60 @@ final class AgentFieldCardCardTests: XCTestCase {
             XCTAssertNil(fields.values.entry(key)?.value, key)
             XCTAssertEqual(fields.source(of: key), .blank, key)
         }
+
+        // A New chat while get_partners is in flight: the late answer is dropped and counted, no card appears and nothing is held.
+        let line = PartnerRig.parts(.init()).line
+        let lookup = StubPartner()
+        lookup.holdOps = ["list"]
+        let lookupRig = PartnerRig(partner: lookup)
+        let lookupFolder = lookupRig.folder
+        addTeardownBlock { try? FileManager.default.removeItem(at: lookupFolder) }
+        let lookupFake = FakeTransport([.turn(Turns.turn(Turns.call("get_partners", "{}", id: "c1"))),
+                                        .turn(Turns.turn(Turns.call("request_partner", PlaceTurns.arguments(PartnerRig.arguments()), id: "c2")))])
+        let lookupSession = AgentSession(toolbox: lookupRig.tools, transport: lookupFake, connections: lookupRig.log)
+        lookupSession.send(line)
+        let inFlight = await lookup.waitForHeld(1)
+        XCTAssertTrue(inFlight, "the directory request is in flight")
+        await lookupSession.newChat()
+        XCTAssertTrue(lookup.release(), "the old lookup was still waiting")
+        let dropped = await eventually { lookupSession.discardedCount == 1 }
+        XCTAssertTrue(dropped, "the late answer is dropped and counted")
+        XCTAssertNil(lookupSession.pendingCard)
+        XCTAssertTrue(lookupSession.entries.isEmpty)
+        XCTAssertTrue(lookupSession.history.isEmpty)
+        XCTAssertFalse(lookupSession.isWaiting)
+        XCTAssertEqual(lookupFake.requests.count, 1, "the dropped answer started no further model request")
+        XCTAssertEqual(lookupRig.partner.requests.count, 1, "no form was asked after the New chat")
+        XCTAssertEqual(lookupRig.call("request_partner", PartnerRig.arguments()).message,
+                       "Call get_partners first, then call request_partner again with a partner id from its answer.")
+        await lookupRig.log.flush()
+        XCTAssertTrue(lookupRig.log.packets.filter { $0.kind == .partner }.isEmpty, "a cancelled lookup records no packet")
+
+        // A New chat while the request is being sent: the request is already out, as for any confirmed card, so its outcome is
+        // applied, but nothing of it reaches the new chat and no model request follows.
+        let sending = StubPartner()
+        sending.holdOps = ["submit"]
+        let sendingRig = PartnerRig(partner: sending)
+        let sendingFolder = sendingRig.folder
+        addTeardownBlock { try? FileManager.default.removeItem(at: sendingFolder) }
+        let sendingFake = FakeTransport([.turn(Turns.turn(Turns.call("get_partners", "{}", id: "c1"))),
+                                         .turn(Turns.turn(Turns.call("request_partner", PlaceTurns.arguments(PartnerRig.arguments()), id: "c2"))),
+                                         .turn(Turns.text("Late."))])
+        let sendingSession = AgentSession(toolbox: sendingRig.tools, transport: sendingFake, connections: sendingRig.log)
+        sendingSession.send(line)
+        await sendingSession.settle()
+        XCTAssertNotNil(sendingSession.pendingCard)
+        let confirming = Task { await sendingSession.confirmCard() }
+        let sent = await sending.waitForHeld(1)
+        XCTAssertTrue(sent, "the submit request is in flight")
+        await sendingSession.newChat()
+        XCTAssertNil(sendingSession.pendingCard)
+        XCTAssertTrue(sending.release())
+        await confirming.value
+        XCTAssertEqual(sending.bodies(op: "submit").count, 1)
+        XCTAssertEqual(sendingFake.requests.count, 2, "no model request follows the New chat")
+        XCTAssertTrue(sendingSession.entries.isEmpty)
+        XCTAssertTrue(sendingSession.history.isEmpty)
+        XCTAssertFalse(sendingSession.isWaiting)
     }
 }

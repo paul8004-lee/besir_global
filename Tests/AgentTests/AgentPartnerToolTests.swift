@@ -36,6 +36,27 @@ final class StubPartner {
     private(set) var requests: [URLRequest] = []
     /// Runs inside the send call of every request, before the answer is handed back.
     var duringSend: (() -> Void)?
+    /// The ops (`list`, `fields`, `submit`) whose answer waits for `release()`: the request is recorded, then held.
+    var holdOps: Set<String> = []
+    private var held: [CheckedContinuation<Void, Never>] = []
+    var heldCount: Int { held.count }
+
+    /// Lets the oldest held request go on. False when nothing is held.
+    @discardableResult
+    func release() -> Bool {
+        guard !held.isEmpty else { return false }
+        held.removeFirst().resume()
+        return true
+    }
+
+    /// Waits (yielding, bounded) until `count` requests are held.
+    func waitForHeld(_ count: Int) async -> Bool {
+        for _ in 0..<5000 {
+            if heldCount >= count { return true }
+            await Task.yield()
+        }
+        return heldCount >= count
+    }
 
     var send: PartnerClient.Send {
         { [self] request in
@@ -44,6 +65,7 @@ final class StubPartner {
             let path = request.url?.path ?? ""
             let sent = (try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any] ?? [:]
             let op = sent["op"] as? String
+            if let op, holdOps.contains(op) { await withCheckedContinuation { held.append($0) } }
             if op == "submit", case .cancel = mode { withUnsafeCurrentTask { $0?.cancel() } }
             func reply(_ status: Int, _ body: Data) -> (Data, URLResponse) {
                 (body, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
