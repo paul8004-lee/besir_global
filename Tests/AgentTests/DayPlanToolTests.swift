@@ -1337,7 +1337,7 @@ final class DayPlanToolTests: XCTestCase {
         let before = rig.snapshot
         let cancelled = try await dayCard(rig)
         let first = await cancelled.resolve(.cancel)
-        XCTAssertEqual(first?.result, AgentToolbox.declinedResult)
+        XCTAssertEqual(first?.result, Self.cancelledAnswer)
         XCTAssertEqual(first?.status, "declined")
         XCTAssertNil(first?.notice)
         XCTAssertEqual(cancelled.mark, .cancelled)
@@ -1352,6 +1352,44 @@ final class DayPlanToolTests: XCTestCase {
         XCTAssertNil(late, "a resolved card acts once")
         XCTAssertEqual(rig.snapshot, before)
         XCTAssertEqual(rig.routes.callCount, 4, "two checks of two lookups; nothing at Cancel")
+    }
+
+    /// SPEC-CANCELREPLY-001: what the model reads after Cancel or a closed sheet on the day-plan card, typed out on purpose.
+    private static let cancelledAnswer = #"{"message":"The user cancelled the plan and nothing was added to the schedule. Do not plan again unless the user asks. When you reply about the plan, say that it was cancelled and nothing was added, and do not call any event planned, scheduled or added.","status":"declined"}"#
+
+    @MainActor
+    func testCANCELREPLY_T1_cancelAnswersWithTheDayPlanSentence() async throws {
+        let rig = planRig()
+        let before = rig.snapshot
+        let card = try await dayCard(rig)
+        let routesBefore = rig.routes.callCount
+        let placesBefore = rig.places.callCount
+        let outcome = await card.resolve(.cancel)
+        XCTAssertEqual(outcome?.result, Self.cancelledAnswer)
+        XCTAssertEqual(outcome?.status, "declined")
+        let decoded = try XCTUnwrap(TestClock.object(outcome?.result ?? ""))
+        XCTAssertEqual(Set(decoded.keys), ["message", "status"])
+        XCTAssertNil(outcome?.notice)
+        XCTAssertEqual(card.mark, .cancelled)
+        XCTAssertEqual(rig.snapshot, before)
+        XCTAssertEqual(rig.routes.callCount, routesBefore, "Cancel makes no Routes lookup")
+        XCTAssertEqual(rig.places.callCount, placesBefore, "Cancel makes no Places lookup")
+    }
+
+    @MainActor
+    func testCANCELREPLY_T2_dismissAnswersTheSameAndAResolvedCardActsOnce() async throws {
+        let rig = planRig()
+        let before = rig.snapshot
+        let first = try await dayCard(rig)
+        _ = await first.resolve(.cancel)
+        let second = try await dayCard(rig, handle: "d2")
+        let outcome = await second.resolve(.dismiss)
+        XCTAssertEqual(outcome?.result, Self.cancelledAnswer)
+        XCTAssertEqual(second.mark, .cancelled)
+        XCTAssertEqual(rig.snapshot, before)
+        let late = await second.resolve(.confirm)
+        XCTAssertNil(late, "a resolved card acts once")
+        XCTAssertEqual(rig.snapshot, before)
     }
 
     @MainActor
