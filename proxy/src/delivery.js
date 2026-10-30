@@ -23,6 +23,13 @@ const CARDS = [
   { id: "credit-1881", label: "Example Credit \u2022\u20221881 (Simulated)" },
 ];
 const FEE_CENTS = 500;
+// The fields of an order, in the order the app draws them. The options of the card field are built from CARDS,
+// the table the order check reads, so the options and the accepted cards cannot diverge.
+const ORDER_FIELDS = [
+  { key: "arrive_at", kind: "time", label: "Arrival" },
+  { key: "address", kind: "place", label: "Delivery place" },
+  { key: "card_id", kind: "pick_one", label: "Pay with", options: CARDS.map(({ id, label }) => ({ id, label })) },
+];
 const MAX_LINES = 6;
 const MAX_QUANTITY = 9;
 const SALT = "delivery:";
@@ -106,8 +113,11 @@ function optionsAnswer() {
     partner: PARTNER,
     simulated: true,
     menu: MENU.map(({ id, name, price_cents }) => ({ id, name, price_cents })),
-    cards: CARDS.map(({ id, label }) => ({ id, label })),
     delivery_fee_cents: FEE_CENTS,
+    order_fields: ORDER_FIELDS.map((field) => ({
+      ...field,
+      ...(field.options && { options: field.options.map(({ id, label }) => ({ id, label })) }),
+    })),
   };
 }
 
@@ -161,7 +171,10 @@ export async function handleDelivery(request, { json }) {
     status: "confirmed",
     ...answer,
     order_id: await orderId(value.request_id),
-    arrival_estimate: value.arrive_at,
-    estimated_total_cents: totalCents(items),
+    results: [
+      { name: "Arrival", kind: "time", value: value.arrive_at },
+      { name: "Estimated total", kind: "money", value: totalCents(items) },
+      { name: "Status", kind: "text", value: "Preparing" },
+    ],
   });
 }

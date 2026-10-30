@@ -18,8 +18,16 @@ final class DeliveryToolPartner {
     var whileSending: (@MainActor () -> Void)?
     /// The partner's unit prices in cents; a test changes one to show that the card's total comes from the held answer.
     var prices: [String: Int] = ["ramen": 1400, "gyoza": 700, "curry": 1300, "pizza": 2500, "salad": 900, "lemonade": 400]
-    /// Added to the total of an order answer, so the answer differs from the card's.
+    /// Added to the money item of an order answer, so the answer differs from the card's.
     var totalDelta = 0
+    /// The keys of the order form in the order the partner lists them (its options answer holds exactly these three).
+    var fieldOrder = ["arrive_at", "address", "card_id"]
+    /// Result items sent after the three the Worker sends.
+    var extraResults: [[String: Any]] = []
+    /// When set, the `time` item of a confirmed order carries this text instead of the requested arrival.
+    var timeItem: String?
+    /// The name the partner gives its money item (the Worker says `Estimated total`).
+    var moneyName = "Estimated total"
 
     private static let menu: [(id: String, name: String)] = [
         ("ramen", "Ramen"), ("gyoza", "Gyoza"), ("curry", "Curry rice"), ("pizza", "Cheese pizza"), ("salad", "Garden salad"),
@@ -46,11 +54,21 @@ final class DeliveryToolPartner {
         }
     }
 
+    private static func field(_ key: String) -> [String: Any] {
+        switch key {
+        case "arrive_at": return ["key": "arrive_at", "kind": "time", "label": "Arrival"]
+        case "address": return ["key": "address", "kind": "place", "label": "Delivery place"]
+        default:
+            return ["key": "card_id", "kind": "pick_one", "label": "Pay with",
+                    "options": cards.map { ["id": $0.id, "label": $0.label] }]
+        }
+    }
+
     private func optionsAnswer() -> [String: Any] {
         ["partner": "Example Delivery", "simulated": true,
          "menu": Self.menu.map { ["id": $0.id, "name": $0.name, "price_cents": prices[$0.id] ?? 0] as [String: Any] },
-         "cards": Self.cards.map { ["id": $0.id, "label": $0.label] },
-         "delivery_fee_cents": 500]
+         "delivery_fee_cents": 500,
+         "order_fields": fieldOrder.map(Self.field)]
     }
 
     private func orderAnswer(_ sent: [String: Any]) -> [String: Any] {
@@ -63,10 +81,13 @@ final class DeliveryToolPartner {
         if (600...1320).contains(minute) {
             answer["status"] = "confirmed"
             answer["order_id"] = "DL-AB12CD"
-            answer["arrival_estimate"] = arrive
-            answer["estimated_total_cents"] = totalDelta + lines.reduce(500) {
+            let total = totalDelta + lines.reduce(500) {
                 $0 + (prices[$1["item_id"] as? String ?? ""] ?? 0) * ($1["quantity"] as? Int ?? 0)
             }
+            let items: [[String: Any]] = [["name": "Arrival", "kind": "time", "value": timeItem ?? arrive],
+                                          ["name": moneyName, "kind": "money", "value": total],
+                                          ["name": "Status", "kind": "text", "value": "Preparing"]]
+            answer["results"] = items + extraResults
         } else {
             answer["status"] = "declined"
             answer["reason"] = "outside_hours"
@@ -132,7 +153,7 @@ final class DeliveryToolRig {
 
     init(config: AppConfig = DeliveryToolFixture.config, partner: DeliveryToolPartner = DeliveryToolPartner(),
          places: [Place] = DeliveryToolFixture.places, budgetPartner: BudgetToolPartner = BudgetToolPartner(),
-         failingRecord: Bool = false, injectBudget: Bool = false) {
+         failingRecord: Bool = false, injectBudget: Bool = false, placesTransport: PlacesTransportStub? = nil) {
         let store = EmptyStore.make()
         store.config = AppConfig()
         let clock = MutableClock()
@@ -148,8 +169,14 @@ final class DeliveryToolRig {
         // Without an injected budget client the toolbox builds its own from the Store's configuration (no proxy here).
         var budget: (() -> BudgetClient)?
         if injectBudget { budget = { BudgetClient(config: box.config, ledger: ledger, send: budgetPartner.send, connections: log) } }
+        // The card's place search reaches the same provider seam as `search_places`: a Places client over a stub transport.
+        var search: (() -> PlaceSearch)?
+        if let placesTransport {
+            search = { PlaceSearch(config: PlacesTestSupport.config, transport: placesTransport.transport, connections: log) }
+        }
         let toolbox = AgentToolbox(store: store, now: { clock.now }, timeZone: { clock.zone },
                                    deviceOrigin: { reads.count += 1; return DeliveryToolFixture.device },
+                                   places: search,
                                    budget: budget,
                                    delivery: { DeliveryClient(config: box.config, send: partner.send, connections: log) },
                                    deliveryOrders: { orders })
@@ -251,9 +278,10 @@ final class DeliveryCallOrder {
 final class AgentDeliveryToolTests: XCTestCase {
     private func makeRig(config: AppConfig = DeliveryToolFixture.config, partner: DeliveryToolPartner = DeliveryToolPartner(),
                          places: [Place] = DeliveryToolFixture.places, budgetPartner: BudgetToolPartner = BudgetToolPartner(),
-                         failingRecord: Bool = false, injectBudget: Bool = true) -> DeliveryToolRig {
+                         failingRecord: Bool = false, injectBudget: Bool = true,
+                         placesTransport: PlacesTransportStub? = nil) -> DeliveryToolRig {
         let rig = DeliveryToolRig(config: config, partner: partner, places: places, budgetPartner: budgetPartner,
-                                  failingRecord: failingRecord, injectBudget: injectBudget)
+                                  failingRecord: failingRecord, injectBudget: injectBudget, placesTransport: placesTransport)
         let folder = rig.folder
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         return rig
@@ -264,13 +292,12 @@ final class AgentDeliveryToolTests: XCTestCase {
         static let place = "Call search_places to find the restaurant, then call order_delivery again with the place_id it returns."
         static let time = "Ask the user when the food is to arrive, then call order_delivery again. Do not guess it."
         static let timeForm = "Call order_delivery again with arrive_at as a local date-time in the form YYYY-MM-DDTHH:MM, or ask the user."
-        static let window = "Ask the user to confirm the date, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
-        static let optionsFirst = "Call get_delivery_options first, then call order_delivery again with items and card_id taken from its answer."
+        static let window = "Nothing was ordered. Tell the user the arrival time is out of range and ask for a new time, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
+        static let windowAtConfirm = "Nothing was ordered. Tell the user nothing was ordered because the arrival time given in the arrive_at key of this result is out of range, and ask for a new time, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
+        static let optionsFirst = "Call get_delivery_options first, then call order_delivery again with items taken from its answer."
         static let items = "Ask the user what to order, then call order_delivery again with items as comma-separated pairs of an item id from the get_delivery_options answer and a quantity from 1 to 9, 1 to 6 pairs, no spaces, no id repeated. Do not guess it."
         static let itemUnknown = "Call order_delivery again with items that use only item ids from the get_delivery_options answer, or ask the user what to order."
-        static let card = "Ask the user which card to pay with, then call order_delivery again with card_id from the get_delivery_options answer. Do not guess it."
-        static let cardUnknown = "Call order_delivery again with a card_id from the get_delivery_options answer, or ask the user which card to pay with."
-        static let to = "Ask the user where to deliver. If they name a place, call search_places for it, then call order_delivery again with its place_id as deliver_to."
+        static let cardUnknown = "Call order_delivery again with a card_id from the get_delivery_options answer, or leave card_id out."
         static let toHandle = "Call search_places for the place to deliver to, then call order_delivery again with its place_id as deliver_to, or leave deliver_to out."
         static let unavailable = "Tell the user delivery is not available right now. Do not call order_delivery again."
         static let optionsUnavailable = "Tell the user delivery is not available right now. Do not call get_delivery_options or order_delivery again."
@@ -278,13 +305,32 @@ final class AgentDeliveryToolTests: XCTestCase {
         static func wrongType(_ param: String) -> String {
             "Call order_delivery again with \(param) as a string. If you do not have it, ask the user; do not guess it."
         }
-        static let wrongTypeDeliverTo = "Call order_delivery again with deliver_to as a string, or omit it if the user did not give it."
+        static func wrongTypeOmit(_ param: String) -> String {
+            "Call order_delivery again with \(param) as a string, or omit it if the user did not give it."
+        }
         static let notice = "That start time is now out of range. Nothing was added."
     }
 
     private func declarations() -> [[String: Any]] {
         ((try? JSONSerialization.jsonObject(with: AgentTools.declarationsJSON())) as? [[String: Any]]) ?? []
     }
+
+    /// The field-card model of a card; a card that is not a field card fails the test here.
+    private func model(_ card: AgentCard?, file: StaticString = #filePath, line: UInt = #line) throws -> AgentFieldCard {
+        try XCTUnwrap(card?.fieldCard, "the card carries the field-card model", file: file, line: line)
+    }
+
+    /// The delivery place on a card: its text and where the value came from.
+    private func address(_ card: AgentCard?, file: StaticString = #filePath,
+                         line: UInt = #line) throws -> (text: String?, source: AgentFieldSource) {
+        let fields = try model(card, file: file, line: line)
+        return (fields.values.text("address"), fields.source(of: "address"))
+    }
+
+    private var arrivalDate: Date { TestClock.date(DeliveryToolFixture.arrival) }
+
+    /// The text a time row shows (the edit card formats in the device zone, so the tests use the same formatter).
+    private func whenText(_ date: Date) -> String { BesirTime.when(date) }
 
     private func assertRefused(_ outcome: AgentToolOutcome, _ message: String, _ note: String = "",
                                file: StaticString = #filePath, line: UInt = #line) {
@@ -344,7 +390,7 @@ final class AgentDeliveryToolTests: XCTestCase {
         let order = decls[11]
         XCTAssertEqual(order["type"] as? String, "function")
         let orderParameters = try XCTUnwrap(order["parameters"] as? [String: Any])
-        XCTAssertEqual(orderParameters["required"] as? [String], ["place_id", "arrive_at", "items", "card_id"])
+        XCTAssertEqual(orderParameters["required"] as? [String], ["place_id", "arrive_at", "items"])
         XCTAssertEqual(orderParameters["additionalProperties"] as? Bool, false)
         let properties = try XCTUnwrap(orderParameters["properties"] as? [String: Any])
         XCTAssertEqual(Set(properties.keys), ["place_id", "arrive_at", "items", "card_id", "deliver_to"])
@@ -374,13 +420,18 @@ final class AgentDeliveryToolTests: XCTestCase {
         }
         let orderText = try XCTUnwrap(order["description"] as? String)
         for clause in ["simulated delivery app", "always call the result simulated", "found with search_places",
-                       "taken from get_delivery_options", "item_id:quantity pairs separated by commas",
-                       "Ask the user for the arrival time, the items and the card if they have not said",
+                       "with items taken from get_delivery_options", "item_id:quantity pairs separated by commas",
+                       "Ask the user for the arrival time and the items if they have not said",
+                       "card_id is a card_id from get_delivery_options, set only when the user named a card and left out otherwise",
                        "deliver_to is a place_id from search_places, set only when the user named a place to deliver to and left out otherwise",
                        "the app may then suggest a place from the schedule", "Never write an address",
-                       "The user confirms before anything is sent"] {
+                       "The user confirms before anything is sent, after filling in what is blank"] {
             XCTAssertTrue(orderText.contains(clause), clause)
         }
+        XCTAssertFalse(orderText.contains("and the card if they have not said"), "the model is no longer told to ask for the card")
+        XCTAssertEqual(orderText, "Order food delivery from a restaurant found with search_places, in a simulated delivery app, with items taken from get_delivery_options. The delivery app is simulated, not a real one: always call the result simulated. items is written as item_id:quantity pairs separated by commas, such as ramen:2,gyoza:1. Ask the user for the arrival time and the items if they have not said. card_id is a card_id from get_delivery_options, set only when the user named a card and left out otherwise. deliver_to is a place_id from search_places, set only when the user named a place to deliver to and left out otherwise; the app may then suggest a place from the schedule. Never write an address. The user confirms before anything is sent, after filling in what is blank.")
+        let cardText = try XCTUnwrap((properties["card_id"] as? [String: Any])?["description"] as? String)
+        XCTAssertEqual(cardText, "The card to pay with: a card_id from get_delivery_options. Set only when the user named a card. Leave it out otherwise.")
         let toText = try XCTUnwrap((properties["deliver_to"] as? [String: Any])?["description"] as? String)
         XCTAssertTrue(toText.contains("only when the user named a place"))
         XCTAssertEqual(AgentSession.knownToolNames().intersection(["get_delivery_options", "order_delivery"]).count, 2)
@@ -518,7 +569,7 @@ final class AgentDeliveryToolTests: XCTestCase {
             XCTAssertEqual(card.lines.filter { $0.contains(" x ") }.count, count, text)
         }
         let lines = try XCTUnwrap(rig.order(["items": "gyoza:3,ramen:1", "deliver_to": "p2"]).card).lines
-        XCTAssertEqual(Array(lines[3...4]), ["3 x Gyoza", "1 x Ramen"], "the lines keep the order given")
+        XCTAssertEqual(Array(lines[2...3]), ["3 x Gyoza", "1 x Ramen"], "the lines keep the order given")
         assertRefused(rig.order(drop: ["items"]), Text.items, "missing")
         assertRefused(rig.order(["items": "  "]), Text.items, "blank")
         for text in ["ramen", "ramen:0", "ramen:10", "ramen:2,", ",ramen:2", "ramen: 2", "ramen:2, gyoza:1", "ramen:2:1", "ramen:x",
@@ -530,32 +581,45 @@ final class AgentDeliveryToolTests: XCTestCase {
         assertRefused(rig.order(["items": "ramen:1,sushi:2"]), Text.itemUnknown, "one unknown id among known ones")
     }
 
-    func testO08_ACardIdIsCheckedAgainstTheHeldCards() async throws {
+    func testO08_ACardIdIsOptionalAndAnUnknownOneIsRefused() async throws {
         let rig = makeRig()
+        rig.seedDinner()
         await rig.hold()
-        assertRefused(rig.order(drop: ["card_id"]), Text.card, "missing")
-        assertRefused(rig.order(["card_id": "  "]), Text.card, "blank")
+        // A call with no card id, or a blank one, is no longer refused: the card shows the card blank.
+        for card in [rig.order(drop: ["card_id"]).card, rig.order(["card_id": "  "]).card] {
+            let fields = try model(card)
+            XCTAssertEqual(fields.source(of: "card_id"), .blank)
+            XCTAssertNil(fields.values.option("card_id"))
+            XCTAssertTrue(fields.lines.contains("Pay with:"))
+            XCTAssertFalse(fields.isReady)
+        }
+        let credit = try model(rig.order(["card_id": "credit-1881", "deliver_to": "p2"]).card)
+        XCTAssertTrue(credit.lines.contains("Pay with: \(DeliveryToolPartner.cards[1].label)"))
+        XCTAssertEqual(credit.source(of: "card_id"), .stated)
+        XCTAssertNotNil(rig.order(["deliver_to": "p2"]).card)
+        // An id the held options do not hold is still refused, with the reworded line.
         for id in ["visa", "DEBIT-4242", "debit-4242 ", "credit-1882"] {
             assertRefused(rig.order(["card_id": id]), Text.cardUnknown, id)
         }
-        let credit = try XCTUnwrap(rig.order(["card_id": "credit-1881", "deliver_to": "p2"]).card)
-        XCTAssertTrue(credit.lines.contains("Pay with \(DeliveryToolPartner.cards[1].label)"))
-        XCTAssertNotNil(rig.order(["deliver_to": "p2"]).card)
+        XCTAssertEqual(rig.partner.requests.count, 1, "only the options request")
     }
 
     func testO09_ANonStringArgumentGetsTheStringMessageAndNeverOmitForARequiredParameter() async {
         let rig = makeRig()
         await rig.hold()
-        for param in ["place_id", "arrive_at", "items", "card_id"] {
+        for param in ["place_id", "arrive_at", "items"] {
             for value in wrongValues {
                 let outcome = rig.order([param: value])
                 assertRefused(outcome, Text.wrongType(param), "\(param) = \(value)")
                 XCTAssertFalse((outcome.message ?? "").contains("omit"))
             }
         }
-        for value in wrongValues {
-            let outcome = rig.order(["deliver_to": value])
-            assertRefused(outcome, Text.wrongTypeDeliverTo, "deliver_to = \(value)")
+        // The two optional arguments get the line that says to omit them.
+        for param in ["card_id", "deliver_to"] {
+            for value in wrongValues {
+                let outcome = rig.order([param: value])
+                assertRefused(outcome, Text.wrongTypeOmit(param), "\(param) = \(value)")
+            }
         }
         XCTAssertEqual(rig.partner.requests.count, 1, "only the options request")
     }
@@ -569,10 +633,10 @@ final class AgentDeliveryToolTests: XCTestCase {
                                      "name": "SENTINEL-NAME-1", "duration": ["x"]]
         let plain = try XCTUnwrap(rig.order().card)
         let card = try XCTUnwrap(rig.order(extras).card, "undeclared keys, even of a wrong type, are dropped")
+        XCTAssertEqual(card.lines.count, 12, "premise: this is the full field card")
         XCTAssertEqual(card.lines, plain.lines, "an address or a meal key from the model changes nothing on the card")
         XCTAssertFalse(card.lines.joined().contains("SENTINEL"))
-        XCTAssertEqual(card.editors.delivery?.text, plain.editors.delivery?.text)
-        XCTAssertEqual(card.editors.mealTitle?.text, plain.editors.mealTitle?.text)
+        XCTAssertEqual(try model(card).values, try model(plain).values, "nor on the values the card holds")
         XCTAssertEqual(rig.partner.requests.count, 1, "only the options request")
         let sent = String(decoding: try XCTUnwrap(rig.partner.requests.first?.httpBody), as: UTF8.self)
         XCTAssertFalse(sent.contains("SENTINEL"))
@@ -580,23 +644,36 @@ final class AgentDeliveryToolTests: XCTestCase {
 
     // MARK: O11-O13 the delivery place and the meal entry
 
-    func testO11_ADeliverToHandleGivesTheDeliveryTextOfTheRuleAndIsNotEditable() async throws {
+    func testO11_ADeliverToHandleGivesTheStatedDeliveryTextOfTheRuleAndTheCardStaysEditable() async throws {
         let rig = makeRig()
         await rig.hold()
-        let library = try XCTUnwrap(rig.order(["deliver_to": "p2"]).card)
-        XCTAssertEqual(library.lines[5], "To 9 Library Road", "the address, shown without a mark")
-        XCTAssertNil(library.editors.delivery, "a named place is not edited in the card")
-        XCTAssertNotNil(library.editors.mealOn, "the meal entry is still editable")
-        let corner = try XCTUnwrap(rig.order(["deliver_to": "p3"]).card)
-        XCTAssertEqual(corner.lines[5], "To Corner Cafe", "no address: the name")
-        let harbor = try XCTUnwrap(rig.order(["deliver_to": "p5"]).card)
-        XCTAssertEqual(harbor.lines[5], "To Harbor Hall", "an address over 120 scalars falls to the name")
+        let library = try model(rig.order(["deliver_to": "p2"]).card)
+        XCTAssertTrue(library.lines.contains("Delivery place: 9 Library Road"), "the address, shown without a mark")
+        XCTAssertEqual(library.source(of: "address"), .stated)
+        XCTAssertEqual(library.values.text("address"), "9 Library Road")
+        XCTAssertTrue(library.isReady)
+        XCTAssertEqual(library.field("address")?.kind, .place, "a named place is still a place the user can change")
+        XCTAssertTrue(library.choosePlace("address", DeliveryToolFixture.corner))
+        XCTAssertEqual(library.values.text("address"), "Corner Cafe")
+        XCTAssertEqual(library.source(of: "address"), .entered)
+        XCTAssertEqual(library.values.flag("meal"), true, "the meal entry is still on the card")
+        let corner = try model(rig.order(["deliver_to": "p3"]).card)
+        XCTAssertEqual(corner.values.text("address"), "Corner Cafe", "no address: the name")
+        XCTAssertEqual(corner.source(of: "address"), .stated)
+        let harbor = try model(rig.order(["deliver_to": "p5"]).card)
+        XCTAssertEqual(harbor.values.text("address"), "Harbor Hall", "an address over 120 scalars falls to the name")
+        XCTAssertEqual(harbor.source(of: "address"), .stated)
         for handle in ["p99", "x1", "P2", "library", "r1", "p4"] {
             assertRefused(rig.order(["deliver_to": handle]), Text.toHandle, handle)
         }
-        // A blank deliver_to is absent: with no schedule entry the call asks the user.
-        assertRefused(rig.order(["deliver_to": "   "]), Text.to, "blank")
-        assertRefused(rig.order(), Text.to, "absent")
+        // A blank deliver_to is absent: with no schedule entry the card is returned with the delivery place blank.
+        for blank in [rig.order(["deliver_to": "   "]).card, rig.order().card] {
+            let fields = try model(blank)
+            XCTAssertNil(fields.values.text("address"))
+            XCTAssertEqual(fields.source(of: "address"), .blank)
+            XCTAssertTrue(fields.lines.contains("Delivery place:"))
+            XCTAssertFalse(fields.isReady)
+        }
         XCTAssertEqual(rig.partner.requests.count, 1, "only the options request")
         XCTAssertEqual(rig.reads.count, 0)
     }
@@ -614,7 +691,7 @@ final class AgentDeliveryToolTests: XCTestCase {
         }
     }
 
-    /// A rig whose schedule holds `seeds`, the options held, and the card of the usual call without `deliver_to` (nil when refused).
+    /// A rig whose schedule holds `seeds`, the options held, and the card of the usual call without `deliver_to`.
     private func suggested(_ seeds: [Seed]) async -> (card: AgentCard?, rig: DeliveryToolRig) {
         let rig = makeRig()
         for seed in seeds { rig.seed(seed.title, seed.start, seed.end, place: seed.place) }
@@ -622,26 +699,34 @@ final class AgentDeliveryToolTests: XCTestCase {
         return (rig.order().card, rig)
     }
 
-    func testO12_WithoutDeliverToTheScheduleSuggestsAPlaceOrTheCallAsksTheUser() async throws {
+    func testO12_WithoutDeliverToTheScheduleSuggestsAPlaceOrTheDeliveryPlaceStaysBlank() async throws {
         let library = DeliveryToolFixture.library
         let corner = DeliveryToolFixture.corner
         let dinner = Seed("Team dinner", "2026-10-28T19:00", "2026-10-28T21:00", library)
         let nowEntry = Seed("Study", "2026-10-27T08:00", "2026-10-27T10:00", corner)
         // The entry in progress at the arrival time wins over a different one in progress now.
         let both = await suggested([dinner, nowEntry])
-        XCTAssertEqual(both.card?.lines[5], "To 9 Library Road (suggested from your schedule)")
+        let bothAddress = try address(both.card)
+        XCTAssertEqual(bothAddress.text, "9 Library Road")
+        XCTAssertEqual(bothAddress.source, .inferred)
+        XCTAssertTrue(try XCTUnwrap(both.card).lines.contains("Delivery place: 9 Library Road"), "no mark on the line")
+        XCTAssertTrue(try model(both.card).isReady)
         // With none at the arrival time the entry in progress now is used.
         let nowOnly = await suggested([nowEntry])
-        XCTAssertEqual(nowOnly.card?.lines[5], "To Corner Cafe (suggested from your schedule)")
-        XCTAssertEqual(nowOnly.card?.editors.delivery?.text, "Corner Cafe")
-        // Two different places at one anchor give no suggestion, and the later anchor is not used.
+        let nowAddress = try address(nowOnly.card)
+        XCTAssertEqual(nowAddress.text, "Corner Cafe")
+        XCTAssertEqual(nowAddress.source, .inferred)
+        // Two different places at one anchor give no suggestion, the later anchor is not used, and the call is not refused.
         let differ = await suggested([dinner, Seed("Other", "2026-10-28T19:30", "2026-10-28T20:30", DeliveryToolFixture.restaurant), nowEntry])
-        XCTAssertNil(differ.card)
-        assertRefused(differ.rig.order(), Text.to)
+        let differAddress = try address(differ.card)
+        XCTAssertNil(differAddress.text)
+        XCTAssertEqual(differAddress.source, .blank)
+        XCTAssertFalse(try model(differ.card).isReady)
         // Two equal places give one suggestion.
         let same = await suggested([dinner, Seed("Other", "2026-10-28T19:30", "2026-10-28T20:30", library)])
-        XCTAssertEqual(same.card?.lines[5], "To 9 Library Road (suggested from your schedule)")
-        // None at either anchor, no place, no usable text, an ended entry, a future entry and a past one: the call asks the user.
+        XCTAssertEqual(try address(same.card).text, "9 Library Road")
+        // None at either anchor, no place, no usable text, an ended entry, a future entry and a past one: the card is
+        // returned with the delivery place blank.
         let none: [[Seed]] = [
             [],
             [Seed("Team dinner", "2026-10-28T19:00", "2026-10-28T21:00", nil)],
@@ -650,13 +735,15 @@ final class AgentDeliveryToolTests: XCTestCase {
             [Seed("Later", "2026-10-28T19:41", "2026-10-28T21:00", library)],
             [Seed("Past", "2026-10-26T08:00", "2026-10-26T10:00", library)]]
         for (index, seeds) in none.enumerated() {
-            let refused = await suggested(seeds)
-            XCTAssertNil(refused.card, "case \(index)")
-            assertRefused(refused.rig.order(), Text.to, "case \(index)")
+            let blank = await suggested(seeds)
+            let got = try address(blank.card)
+            XCTAssertNil(got.text, "case \(index)")
+            XCTAssertEqual(got.source, .blank, "case \(index)")
+            XCTAssertEqual(blank.rig.partner.requests.count, 1, "case \(index): only the options request")
         }
         // An entry that starts at the arrival minute counts.
         let starts = await suggested([Seed("Starts", "2026-10-28T19:40", "2026-10-28T21:00", library)])
-        XCTAssertNotNil(starts.card)
+        XCTAssertEqual(try address(starts.card).text, "9 Library Road")
         // Building the card does not write the Store and the device position is never read.
         let rig = makeRig()
         rig.seedDinner()
@@ -672,15 +759,23 @@ final class AgentDeliveryToolTests: XCTestCase {
     func testO13_TheCardCarriesTheSuggestedMealEntryByTheArrivalMinute() async throws {
         let rig = makeRig()
         await rig.hold()
-        let evening = try XCTUnwrap(rig.order(["deliver_to": "p2"]).card)
-        XCTAssertEqual(evening.lines[8], "Add to schedule: Dinner (Simulated) at \(timeText(DeliveryToolFixture.arrival)) (suggested)")
-        XCTAssertEqual(evening.editors.mealTitle?.text, "Dinner")
-        XCTAssertEqual(evening.editors.mealOn?.isOn, true)
-        XCTAssertEqual(evening.editors.mealStart?.start, TestClock.date(DeliveryToolFixture.arrival))
+        let evening = try model(rig.order(["deliver_to": "p2"]).card)
+        XCTAssertEqual(evening.values.flag("meal"), true)
+        XCTAssertEqual(evening.source(of: "meal"), .inferred)
+        XCTAssertEqual(evening.values.text("meal_title"), "Dinner")
+        XCTAssertEqual(evening.source(of: "meal_title"), .inferred)
+        XCTAssertEqual(evening.values.date("meal_start"), arrivalDate, "Start is the arrival to begin with")
+        XCTAssertEqual(evening.source(of: "meal_start"), .inferred)
+        XCTAssertTrue(evening.lines.contains("Add to schedule: Add"))
+        XCTAssertTrue(evening.lines.contains("Meal title: Dinner"))
+        XCTAssertTrue(evening.lines.contains("Start: \(whenText(arrivalDate))"))
         for (arrive, word) in [("2026-10-27T10:30", "Brunch"), ("2026-10-27T11:00", "Lunch"), ("2026-10-27T14:59", "Lunch"),
                                ("2026-10-27T15:00", "Snack"), ("2026-10-27T16:59", "Snack"), ("2026-10-27T17:00", "Dinner")] {
-            let card = try XCTUnwrap(rig.order(["arrive_at": arrive, "deliver_to": "p2"]).card, arrive)
-            XCTAssertEqual(card.lines[8], "Add to schedule: \(word) (Simulated) at \(timeText(arrive)) (suggested)", arrive)
+            let card = try model(rig.order(["arrive_at": arrive, "deliver_to": "p2"]).card)
+            XCTAssertEqual(card.values.text("meal_title"), word, arrive)
+            XCTAssertEqual(card.values.date("meal_start"), TestClock.date(arrive), arrive)
+            XCTAssertTrue(card.lines.contains("Meal title: \(word)"), arrive)
+            XCTAssertTrue(card.lines.contains("Start: \(whenText(TestClock.date(arrive)))"), arrive)
         }
     }
 
@@ -724,7 +819,6 @@ final class AgentDeliveryToolTests: XCTestCase {
         collect(rig.order(["deliver_to": sentinel]))
         collect(rig.order(drop: ["place_id", "arrive_at"]))
         collect(rig.order(drop: ["items"]))
-        collect(rig.order(drop: ["card_id"]))
         for param in declared { collect(rig.order([param: 5])) }
         collect(makeRig().order(["deliver_to": "p99"]))
         let empty = makeRig()
@@ -735,8 +829,13 @@ final class AgentDeliveryToolTests: XCTestCase {
         collect(rig.order())
         collect(makeRig(config: DeliveryToolFixture.unconfigured).call("get_delivery_options"))
         XCTAssertGreaterThan(messages.count, 15)
+        let asksForCardOrPlace = try NSRegularExpression(pattern: #"ask the user[^."]*\b(card|deliver)\b"#, options: [.caseInsensitive])
+        let planted = "Ask the user which card to pay with."
+        XCTAssertEqual(asksForCardOrPlace.numberOfMatches(in: planted, range: NSRange(planted.startIndex..., in: planted)), 1,
+                       "the scan can fire")
         for message in messages {
             XCTAssertFalse(message.contains(sentinel), message)
+            XCTAssertEqual(asksForCardOrPlace.numberOfMatches(in: message, range: NSRange(message.startIndex..., in: message)), 0, message)
             let words = message.split { !($0.isLetter || $0 == "_") }.map(String.init)
             for word in words where word.contains("_") {
                 XCTAssertTrue(declared.contains(word) || toolNames.contains(word), "\(message) names \(word)")
@@ -758,7 +857,7 @@ final class AgentDeliveryToolTests: XCTestCase {
 
     // MARK: O16-O18 the card
 
-    func testO16_ValidArgumentsReturnACardWithTheExactLinesAndTheTotalOfTheHeldOptions() async throws {
+    func testO16_ValidArgumentsReturnAFieldCardWithTheExactLinesAndTheTotalOfTheHeldOptions() async throws {
         let rig = makeRig()
         rig.seedDinner()
         await rig.hold()
@@ -767,24 +866,38 @@ final class AgentDeliveryToolTests: XCTestCase {
         XCTAssertNil(outcome.lookup)
         XCTAssertNil(outcome.resultText)
         let card = try XCTUnwrap(outcome.card)
-        let arrives = "Arrives \(dayText(DeliveryToolFixture.arrival))"
-        let dinner = "Add to schedule: Dinner (Simulated) at \(timeText(DeliveryToolFixture.arrival))"
-        XCTAssertEqual(card.lines, ["Order delivery", "Pasta Palace", arrives, "2 x Ramen", "1 x Gyoza",
-                                    "To 9 Library Road (suggested from your schedule)", "Pay with \(DeliveryToolPartner.cards[0].label)",
-                                    "Estimated total $40.00", dinner + " (suggested)", "Example Delivery - Simulated"])
+        let fields = try model(card)
+        let when = whenText(arrivalDate)
+        XCTAssertEqual(card.lines, ["Order delivery", "Pasta Palace", "2 x Ramen", "1 x Gyoza", "Estimated total $40.00",
+                                    "Arrival: \(when)", "Delivery place: 9 Library Road",
+                                    "Pay with: \(DeliveryToolPartner.cards[0].label)", "Add to schedule: Add", "Meal title: Dinner",
+                                    "Start: \(when)", "Example Delivery - Simulated"])
         XCTAssertTrue(card.showsGoogleMark)
         XCTAssertEqual(card.actions, ["Confirm", "Cancel"])
         XCTAssertTrue(card.canConfirm)
+        XCTAssertFalse(fields.isFrozen)
         XCTAssertFalse(card.lines.joined().contains("DL-"), "no order id is on the card")
+        XCTAssertFalse(card.lines.joined().contains("suggested"), "no source mark on the card")
+        XCTAssertEqual(fields.card.fields.filter { $0.kind != .readonly }.map(\.key),
+                       ["arrive_at", "address", "card_id", "meal", "meal_title", "meal_start"])
+        // The two chips of the meal switch: the words of the delivery code, the values true and false.
+        let chips = try XCTUnwrap(fields.field("meal")?.options)
+        XCTAssertEqual(chips.map(\.label), ["Add", "Don't Add"])
+        XCTAssertEqual(chips.map(\.value), ["true", "false"])
+        // The Meal title holds at most 68 characters: 80 less the ` (Simulated)` suffix.
+        XCTAssertEqual(AgentBooking.maxTitle - AgentBooking.simulatedSuffix.count, 68)
+        XCTAssertTrue(fields.setText("meal_title", String(repeating: "m", count: 75)))
+        XCTAssertEqual(fields.values.text("meal_title")?.count, 68)
         XCTAssertEqual(rig.partner.requests.count, 1, "nothing is sent while the card waits")
         XCTAssertEqual(rig.snapshot, before)
         XCTAssertEqual(rig.files, [])
 
-        // A named delivery place: no mark on the To line.
+        // A named delivery place and another card.
         let named = try XCTUnwrap(rig.order(["deliver_to": "p3", "card_id": "credit-1881"]).card)
-        XCTAssertEqual(named.lines, ["Order delivery", "Pasta Palace", arrives, "2 x Ramen", "1 x Gyoza", "To Corner Cafe",
-                                     "Pay with \(DeliveryToolPartner.cards[1].label)", "Estimated total $40.00", dinner + " (suggested)",
-                                     "Example Delivery - Simulated"])
+        XCTAssertEqual(named.lines, ["Order delivery", "Pasta Palace", "2 x Ramen", "1 x Gyoza", "Estimated total $40.00",
+                                     "Arrival: \(when)", "Delivery place: Corner Cafe",
+                                     "Pay with: \(DeliveryToolPartner.cards[1].label)", "Add to schedule: Add", "Meal title: Dinner",
+                                     "Start: \(when)", "Example Delivery - Simulated"])
 
         // The total comes from the options the app holds, not from a constant: a partner with another price is held and shown.
         let partner = DeliveryToolPartner()
@@ -830,7 +943,9 @@ final class AgentDeliveryToolTests: XCTestCase {
         let resolved = await card.resolve(.confirm)
         let resolution = try XCTUnwrap(resolved)
         XCTAssertEqual(resolution.status, "rejected")
-        XCTAssertEqual(resolution.message, Text.window)
+        XCTAssertEqual(resolution.message, Text.windowAtConfirm)
+        // The result carries the time the user chose, as a key, so the model does not repeat the time it first asked for.
+        XCTAssertEqual(resolution.json?["arrive_at"] as? String, "2026-10-28T19:40")
         XCTAssertEqual(resolution.notice, Text.notice)
         XCTAssertEqual(card.mark, .notApplied)
         XCTAssertEqual(rig.partner.requests.count, sent, "nothing is sent")
@@ -934,23 +1049,31 @@ final class AgentDeliveryToolTests: XCTestCase {
         let resolution = try await confirm(card)
         XCTAssertEqual(card.mark, .confirmed)
         let json = try XCTUnwrap(resolution.json)
-        XCTAssertEqual(Set(json.keys), ["status", "partner", "simulated", "order_id", "restaurant", "arrival_estimate", "items", "address",
-                                        "card", "estimated_total", "estimate", "message", "budget", "meal"])
+        // The keys of AC-019: the result items in one `results` array beside the unchanged keys, and none of the old estimate keys.
+        XCTAssertEqual(Set(json.keys), ["status", "partner", "simulated", "order_id", "restaurant", "items", "address",
+                                        "card", "results", "message", "budget", "meal"])
+        for old in ["arrival_estimate", "estimated_total", "estimate", "estimated_total_cents"] {
+            XCTAssertNil(json[old], old)
+        }
         XCTAssertNil(json["people"])
         XCTAssertEqual(json["status"] as? String, "applied")
         XCTAssertEqual(json["partner"] as? String, DeliveryClient.partnerName)
         XCTAssertEqual(json["simulated"] as? Bool, true)
         XCTAssertEqual(json["order_id"] as? String, "DL-AB12CD")
         XCTAssertEqual(json["restaurant"] as? String, "Pasta Palace")
-        XCTAssertEqual(json["arrival_estimate"] as? String, DeliveryToolFixture.arrival)
+        // Every result item is a fact for the model: the time as text, the money through `AgentBudget.dollars`, the text as it is.
+        let results = try XCTUnwrap(json["results"] as? [[String: Any]])
+        XCTAssertEqual(results.count, 3)
+        XCTAssertTrue(results.allSatisfy { Set($0.keys) == ["name", "kind", "value"] })
+        XCTAssertEqual(results.compactMap { $0["name"] as? String }, ["Arrival", "Estimated total", "Status"])
+        XCTAssertEqual(results.compactMap { $0["kind"] as? String }, ["time", "money", "text"])
+        XCTAssertEqual(results.compactMap { $0["value"] as? String }, [DeliveryToolFixture.arrival, "$40.00", "Preparing"])
         let items = try XCTUnwrap(json["items"] as? [[String: Any]])
         XCTAssertEqual(items.compactMap { $0["name"] as? String }, ["Ramen", "Gyoza"])
         XCTAssertEqual(items.compactMap { $0["quantity"] as? Int }, [2, 1])
         XCTAssertTrue(items.allSatisfy { Set($0.keys) == ["name", "quantity"] })
         XCTAssertEqual(json["address"] as? String, "9 Library Road")
         XCTAssertEqual(json["card"] as? String, DeliveryToolPartner.cards[0].label)
-        XCTAssertEqual(json["estimated_total"] as? String, "$40.00")
-        XCTAssertEqual(json["estimate"] as? Bool, true)
         let entry = try XCTUnwrap(mealEntry(rig))
         let meal = try XCTUnwrap(json["meal"] as? [String: Any])
         XCTAssertEqual(Set(meal.keys), ["status", "id", "title", "start", "end"])
@@ -1218,9 +1341,10 @@ final class AgentDeliveryToolTests: XCTestCase {
         await rig.hold()
         let card = try XCTUnwrap(rig.order(["place_id": "p6"]).card)
         let address = "SENTINEL-ADDRESS-1"
-        card.editors.delivery?.text = address
+        let picked = Place(name: "Sentinel Pick", address: address, latitude: 37.5, longitude: -122.4)
+        XCTAssertTrue(try model(card).choosePlace("address", picked))
         let cardText = card.lines.joined(separator: "\n")
-        for part in [address, "Sentinel Bistro 77", "2 x Ramen", "1 x Gyoza", "Pay with " + DeliveryToolPartner.cards[0].label] {
+        for part in [address, "Sentinel Bistro 77", "2 x Ramen", "1 x Gyoza", "Pay with: " + DeliveryToolPartner.cards[0].label] {
             XCTAssertTrue(cardText.contains(part), part)
         }
         let resolution = try await confirm(card)
@@ -1284,8 +1408,13 @@ final class AgentDeliveryToolTests: XCTestCase {
             AgentDelivery.mealAddedSentence, AgentDelivery.mealMissedSentence, AgentDelivery.declinedMessage,
             AgentDelivery.unavailableMessage, AgentDelivery.unavailableNotice, AgentDelivery.editRejectedMessage,
             AgentDelivery.budgetRecordedSentence, AgentDelivery.budgetUnavailableSentence, AgentDelivery.budgetFailureNotice,
-            AgentDelivery.partnerLine] + AgentDelivery.controlLabels
-        XCTAssertEqual(AgentDelivery.controlLabels, ["Delivery place", "Add to schedule", "Meal title", "Start"])
+            AgentDelivery.partnerLine, AgentDelivery.mealSwitchLabel, AgentDelivery.mealTitleLabel, AgentDelivery.mealStartLabel]
+        XCTAssertEqual([AgentDelivery.mealSwitchLabel, AgentDelivery.mealTitleLabel, AgentDelivery.mealStartLabel],
+                       ["Add to schedule", "Meal title", "Start"])
+        // The model-facing texts that the field card changed, word for word.
+        XCTAssertEqual(AgentDelivery.optionsMessage, "State the items with their estimated prices, the estimated delivery fee and the cards as facts, and say the delivery app is simulated and every price an estimate. Ask the user what to order and when it is to arrive. Do not ask which card or where to deliver: the user chooses them on the order card. Give no advice.")
+        XCTAssertEqual(AgentDelivery.appliedMessage, "Tell the user the delivery is ordered with a simulated delivery app. Give the order id, the items, the delivery place (the address field) and each result item as a fact, and say any amount is an estimate. Give no advice.")
+        XCTAssertEqual(AgentDelivery.editRejectedMessage, "A required value of the order card was empty. Tell the user nothing was ordered.")
 
         // The texts a run produces: the card, the results, the notices and the refusals.
         let rig = makeRig()
@@ -1326,9 +1455,11 @@ final class AgentDeliveryToolTests: XCTestCase {
             texts += properties.values.compactMap { ($0 as? [String: Any])?["description"] as? String }
         }
         XCTAssertGreaterThan(texts.count, 40)
+        let asksForCardOrPlace = try NSRegularExpression(pattern: #"ask the user[^."]*\b(card|deliver)\b"#, options: [.caseInsensitive])
         for text in texts {
             XCTAssertEqual(hits(text), 0, text)
             XCTAssertEqual(hangul(text), 0, text)
+            XCTAssertEqual(asksForCardOrPlace.numberOfMatches(in: text, range: NSRange(text.startIndex..., in: text)), 0, text)
         }
 
         // Simulated and estimate where the SPEC requires them.
@@ -1350,8 +1481,10 @@ final class AgentDeliveryToolTests: XCTestCase {
             XCTAssertTrue(text.contains("(Simulated)") && text.lowercased().contains("estimated total"), text)
         }
         XCTAssertTrue(DeliveryToolPartner.cards.allSatisfy { $0.label.contains("(Simulated)") })
-        XCTAssertEqual(applied.json?["estimated_total"] as? String, "$40.00")
-        XCTAssertEqual(applied.json?["estimate"] as? Bool, true)
+        let appliedResults = try XCTUnwrap(applied.json?["results"] as? [[String: Any]])
+        XCTAssertEqual(appliedResults.compactMap { $0["value"] as? String }, [DeliveryToolFixture.arrival, "$40.00", "Preparing"])
+        XCTAssertNil(applied.json?["estimated_total"])
+        XCTAssertNil(applied.json?["estimate"])
         for resolution in [applied, declinedResolution, failedResolution] {
             XCTAssertEqual(resolution.json?["simulated"] as? Bool, true)
             XCTAssertEqual(resolution.json?["partner"] as? String, DeliveryClient.partnerName)
@@ -1375,39 +1508,55 @@ final class AgentDeliveryToolTests: XCTestCase {
 
     // MARK: O34-O35 the edits at Confirm
 
-    func testO34_AnEditedDeliveryTextIsSentRecordedAndReturnedAsTheOneTrimmedSnapshot() async throws {
-        // Typed text with a hidden character and spaces at both ends: sent trimmed, and the same string comes back.
-        let typed = makeRig()
-        let card = try await readyCard(typed)
-        card.editors.delivery?.text = "  12 Example\u{0007} Street  "
-        XCTAssertEqual(card.editors.delivery?.text, "  12 Example Street  ", "hidden characters go as they are typed, the spaces stay")
-        XCTAssertFalse(card.lines[5].contains("(suggested"), "an edited text loses its mark")
+    func testO34_ThePickedDeliveryPlaceIsSentRecordedAndReturnedAsTheOneCleanedSnapshot() async throws {
+        // A pick whose address holds a hidden character and spaces at both ends: sent as the cleaned text, and the same string
+        // comes back.
+        let picked = makeRig()
+        let card = try await readyCard(picked)
+        let fields = try model(card)
+        XCTAssertEqual(fields.values.text("address"), "9 Library Road", "premise: the schedule's suggestion is on the card")
+        let place = Place(name: "Picked", address: "  12 Example\u{0007} Street  ", latitude: 37.5, longitude: -122.4)
+        XCTAssertTrue(fields.choosePlace("address", place))
+        XCTAssertEqual(fields.values.text("address"), "12 Example Street")
+        XCTAssertEqual(fields.source(of: "address"), .entered)
+        XCTAssertTrue(card.lines.contains("Delivery place: 12 Example Street"))
+        XCTAssertFalse(card.lines.joined().contains("suggested"), "an edited place carries no mark")
         XCTAssertTrue(card.canConfirm)
         let resolution = try await confirm(card)
-        XCTAssertEqual(resolution.status, "applied", "the trimmed text is the one the partner echoes")
-        XCTAssertEqual(typed.partner.body(1)?["address"] as? String, "12 Example Street")
+        XCTAssertEqual(resolution.status, "applied", "the cleaned text is the one the partner echoes")
+        XCTAssertEqual(picked.partner.body(1)?["address"] as? String, "12 Example Street")
         XCTAssertEqual(resolution.json?["address"] as? String, "12 Example Street")
-        XCTAssertEqual(typed.orders.orders.first?.address, "12 Example Street")
+        XCTAssertEqual(picked.orders.orders.first?.address, "12 Example Street")
 
-        // Cut at 120 scalars as it is typed.
+        // A text over 120 scalars falls to the name; a place with no usable text is refused and the value stays; an address of
+        // exactly 120 scalars is sent whole.
         let long = makeRig()
         let longCard = try await readyCard(long)
-        longCard.editors.delivery?.text = String(repeating: "A", count: 130)
-        XCTAssertEqual(longCard.editors.delivery?.text.unicodeScalars.count, 120)
+        let longFields = try model(longCard)
+        XCTAssertTrue(longFields.choosePlace("address", Place(name: "Long Name", address: String(repeating: "A", count: 130),
+                                                              latitude: 37.5, longitude: -122.4)))
+        XCTAssertEqual(longFields.values.text("address"), "Long Name")
+        XCTAssertFalse(longFields.choosePlace("address", DeliveryToolFixture.noText))
+        XCTAssertEqual(longFields.values.text("address"), "Long Name")
+        XCTAssertTrue(longFields.choosePlace("address", Place(name: "Exact", address: String(repeating: "A", count: 120),
+                                                              latitude: 37.5, longitude: -122.4)))
+        XCTAssertEqual(longFields.values.text("address")?.unicodeScalars.count, 120)
         _ = try await confirm(longCard)
         XCTAssertEqual(long.partner.body(1)?["address"] as? String, String(repeating: "A", count: 120))
 
         // An unedited suggestion is sent as suggested.
         let plain = makeRig()
         let plainCard = try await readyCard(plain)
-        XCTAssertEqual(plainCard.lines[5], "To 9 Library Road (suggested from your schedule)")
+        XCTAssertTrue(plainCard.lines.contains("Delivery place: 9 Library Road"))
         _ = try await confirm(plainCard)
         XCTAssertEqual(plain.partner.body(1)?["address"] as? String, "9 Library Road")
 
-        // A blank text cannot be confirmed; forced, it is rejected and nothing is sent or written.
+        // A blank place cannot be confirmed; forced, it is rejected and nothing is sent or written.
         let blank = makeRig()
-        let blankCard = try await readyCard(blank)
-        blankCard.editors.delivery?.text = "   "
+        await blank.hold()
+        let blankCard = try XCTUnwrap(blank.order().card)
+        XCTAssertEqual(blankCard.lines.count, 12, "premise: the full card, with the place blank")
+        XCTAssertEqual(try model(blankCard).source(of: "address"), .blank)
         XCTAssertFalse(blankCard.canConfirm)
         let before = blank.snapshot
         let rejected = try await confirm(blankCard)
@@ -1421,35 +1570,39 @@ final class AgentDeliveryToolTests: XCTestCase {
         XCTAssertTrue(blank.orders.orders.isEmpty)
 
         // The model's undeclared address key changes nothing.
-        let model = makeRig()
-        model.seedDinner()
-        await model.hold()
-        let modelCard = try XCTUnwrap(model.order(["address": "SENTINEL-ADDRESS-2", "meal": "SENTINEL-MEAL-2"]).card)
-        _ = try await confirm(modelCard)
-        XCTAssertEqual(model.partner.body(1)?["address"] as? String, "9 Library Road")
-        for request in model.partner.requests + model.budgetPartner.requests {
+        let undeclared = makeRig()
+        undeclared.seedDinner()
+        await undeclared.hold()
+        let undeclaredCard = try XCTUnwrap(undeclared.order(["address": "SENTINEL-ADDRESS-2", "meal": "SENTINEL-MEAL-2"]).card)
+        _ = try await confirm(undeclaredCard)
+        XCTAssertEqual(undeclared.partner.body(1)?["address"] as? String, "9 Library Road")
+        for request in undeclared.partner.requests + undeclared.budgetPartner.requests {
             XCTAssertFalse(String(decoding: request.httpBody ?? Data(), as: UTF8.self).contains("SENTINEL"))
         }
 
         // An edit made while the order request is in flight changes none of request, record or result.
         let moving = makeRig()
         let movingCard = try await readyCard(moving)
-        moving.partner.whileSending = { movingCard.editors.delivery?.text = "CHANGED-WHILE-SENT" }
+        let movingFields = try model(movingCard)
+        moving.partner.whileSending = { _ = movingFields.choosePlace("address", DeliveryToolFixture.corner) }
         let movingResolution = try await confirm(movingCard)
         XCTAssertEqual(movingResolution.status, "applied")
         XCTAssertEqual(moving.partner.body(1)?["address"] as? String, "9 Library Road")
         XCTAssertEqual(movingResolution.json?["address"] as? String, "9 Library Road")
         XCTAssertEqual(moving.orders.orders.first?.address, "9 Library Road")
-        XCTAssertEqual(movingCard.editors.delivery?.text, "9 Library Road", "frozen at the tap")
-        XCTAssertEqual(movingCard.lines[5], "To 9 Library Road (suggested from your schedule)")
+        XCTAssertEqual(movingFields.values.text("address"), "9 Library Road", "frozen at the tap")
+        XCTAssertTrue(movingCard.lines.contains("Delivery place: 9 Library Road"))
     }
 
-    func testO35_AnEditedMealEntryIsWrittenOrLeftOutAsTheSnapshotHasIt() async throws {
-        // The switch off: nothing is written and nothing says there was an entry.
+    func testO35_TheMealSwitchTitleAndStartAreWrittenOrLeftOutAsTheSnapshotHasThem() async throws {
+        // The switch off: the two dependent rows go, nothing is written and nothing says there was an entry.
         let off = makeRig()
         let offCard = try await readyCard(off)
-        offCard.editors.mealOn?.isOn = false
-        XCTAssertFalse(offCard.lines.contains { $0.hasPrefix("Add to schedule") })
+        let offFields = try model(offCard)
+        XCTAssertTrue(offCard.lines.contains("Add to schedule: Add"), "premise: the switch starts on")
+        XCTAssertTrue(offFields.chooseOption("meal", "false"))
+        XCTAssertTrue(offCard.lines.contains("Add to schedule: Don't Add"))
+        XCTAssertFalse(offCard.lines.contains { $0.hasPrefix("Meal title") || $0.hasPrefix("Start") })
         let offResolution = try await confirm(offCard)
         XCTAssertEqual(offResolution.status, "applied")
         XCTAssertEqual(offCard.mark, .confirmed)
@@ -1459,22 +1612,35 @@ final class AgentDeliveryToolTests: XCTestCase {
         let offRecord = try XCTUnwrap(off.orders.orders.first)
         XCTAssertNil(offRecord.mealActivityID)
 
-        // A typed title and a chosen time reach the Store entry, and the marks are gone.
+        // A typed title and a chosen time reach the Store entry, and the title is trimmed once.
         let edit = makeRig()
         let editCard = try await readyCard(edit)
-        editCard.editors.mealTitle?.text = "Family dinner"
-        editCard.editors.mealStart?.start = TestClock.date("2026-10-28T20:15")
-        XCTAssertEqual(editCard.lines[8], "Add to schedule: Family dinner (Simulated) at \(timeText("2026-10-28T20:15"))")
-        editCard.editors.mealTitle?.text = "  Family dinner "
+        let editFields = try model(editCard)
+        let start = TestClock.date("2026-10-28T20:15")
+        XCTAssertTrue(editFields.setText("meal_title", "Family dinner"))
+        XCTAssertTrue(editFields.chooseTime("meal_start", start))
+        XCTAssertEqual(editFields.source(of: "meal_title"), .entered)
+        XCTAssertEqual(editFields.source(of: "meal_start"), .entered)
+        XCTAssertTrue(editCard.lines.contains("Meal title: Family dinner"))
+        XCTAssertTrue(editCard.lines.contains("Start: \(whenText(start))"))
+        XCTAssertTrue(editFields.setText("meal_title", "  Family dinner "))
         let editResolution = try await confirm(editCard)
         let entry = try XCTUnwrap(edit.store.activities.first { $0.title == "Family dinner (Simulated)" }, "the title is trimmed once")
-        XCTAssertEqual(entry.startDate, TestClock.date("2026-10-28T20:15"))
+        XCTAssertEqual(entry.startDate, start)
         XCTAssertEqual(entry.endDate, TestClock.date("2026-10-28T21:15"))
         XCTAssertEqual(edit.store.activities.count, 2)
         let meal = try XCTUnwrap(editResolution.json?["meal"] as? [String: Any])
         XCTAssertEqual(meal["title"] as? String, "Family dinner (Simulated)")
         XCTAssertEqual(meal["id"] as? String, entry.id.uuidString)
         XCTAssertEqual(edit.orders.orders.first?.mealActivityID, entry.id.uuidString)
+
+        // Start has no rule tied to the arrival date: another day is written as chosen.
+        let elsewhere = makeRig()
+        let elsewhereCard = try await readyCard(elsewhere)
+        let otherDay = TestClock.date("2026-10-30T09:00")
+        XCTAssertTrue(try model(elsewhereCard).chooseTime("meal_start", otherDay))
+        _ = try await confirm(elsewhereCard)
+        XCTAssertEqual(try XCTUnwrap(mealEntry(elsewhere)).startDate, otherDay)
 
         // No edit: the suggested entry is written.
         let plain = makeRig()
@@ -1483,19 +1649,40 @@ final class AgentDeliveryToolTests: XCTestCase {
         XCTAssertEqual(suggested.title, "Dinner (Simulated)")
         XCTAssertEqual(suggested.startDate, TestClock.date(DeliveryToolFixture.arrival))
 
+        // A title of 75 typed characters is held at 68; the entry is exactly 80 characters, the first 68 and the suffix.
+        let typed = String((0..<75).map { Character(UnicodeScalar(UInt8(97 + $0 % 26))) })
+        let long = makeRig()
+        let longCard = try await readyCard(long)
+        let longFields = try model(longCard)
+        XCTAssertTrue(longFields.setText("meal_title", typed))
+        XCTAssertEqual(longFields.values.text("meal_title"), String(typed.prefix(68)))
+        XCTAssertTrue(longCard.canConfirm)
+        let longResolution = try await confirm(longCard)
+        XCTAssertEqual(longResolution.status, "applied", "an over-length title is cut, never refused")
+        let longEntry = try XCTUnwrap(mealEntry(long))
+        XCTAssertEqual(longEntry.title, String(typed.prefix(68)) + " (Simulated)")
+        XCTAssertEqual(longEntry.title.count, 80)
+        XCTAssertTrue(longEntry.title.hasSuffix(" (Simulated)"))
+        XCTAssertEqual((longResolution.json?["meal"] as? [String: Any])?["title"] as? String, longEntry.title)
+
         // A blank title blocks Confirm while the switch is on, and does not once the switch is off.
         let blank = makeRig()
         let blankCard = try await readyCard(blank)
-        blankCard.editors.mealTitle?.text = "   "
+        let blankFields = try model(blankCard)
+        XCTAssertTrue(blankCard.canConfirm, "premise: the same card can be confirmed")
+        XCTAssertTrue(blankFields.setText("meal_title", "   "))
         XCTAssertFalse(blankCard.canConfirm)
         let rejected = try await confirm(blankCard)
         XCTAssertEqual(rejected.status, "rejected")
+        XCTAssertEqual(rejected.message, AgentDelivery.editRejectedMessage)
         XCTAssertEqual(blank.partner.requests.count, 1)
         XCTAssertEqual(blank.store.activities.count, 1)
         let blankOff = makeRig()
         let blankOffCard = try await readyCard(blankOff)
-        blankOffCard.editors.mealTitle?.text = "   "
-        blankOffCard.editors.mealOn?.isOn = false
+        let blankOffFields = try model(blankOffCard)
+        XCTAssertTrue(blankOffFields.setText("meal_title", "   "))
+        XCTAssertFalse(blankOffCard.canConfirm)
+        XCTAssertTrue(blankOffFields.chooseOption("meal", "false"))
         XCTAssertTrue(blankOffCard.canConfirm)
         let blankOffResolution = try await confirm(blankOffCard)
         XCTAssertEqual(blankOffResolution.status, "applied")
@@ -1504,10 +1691,11 @@ final class AgentDeliveryToolTests: XCTestCase {
         // Edits made while the order request is in flight change neither the entry, the record nor the result.
         let moving = makeRig()
         let movingCard = try await readyCard(moving)
+        let movingFields = try model(movingCard)
         moving.partner.whileSending = {
-            movingCard.editors.mealOn?.isOn = false
-            movingCard.editors.mealTitle?.text = "Other"
-            movingCard.editors.mealStart?.start = TestClock.date("2026-10-28T21:00")
+            _ = movingFields.chooseOption("meal", "false")
+            _ = movingFields.setText("meal_title", "Other")
+            _ = movingFields.chooseTime("meal_start", TestClock.date("2026-10-28T21:00"))
         }
         let movingResolution = try await confirm(movingCard)
         let movedEntry = try XCTUnwrap(mealEntry(moving))
@@ -1519,12 +1707,435 @@ final class AgentDeliveryToolTests: XCTestCase {
         // And the other way round: off at the tap, switched on meanwhile.
         let late = makeRig()
         let lateCard = try await readyCard(late)
-        lateCard.editors.mealOn?.isOn = false
-        late.partner.whileSending = { lateCard.editors.mealOn?.isOn = true }
+        let lateFields = try model(lateCard)
+        XCTAssertTrue(lateFields.chooseOption("meal", "false"))
+        late.partner.whileSending = { _ = lateFields.chooseOption("meal", "true") }
         let lateResolution = try await confirm(lateCard)
         XCTAssertEqual(lateResolution.status, "applied")
         XCTAssertEqual(late.store.activities.count, 1)
         XCTAssertNil(lateResolution.json?["meal"])
         XCTAssertNil(late.orders.orders.first?.mealActivityID)
+    }
+
+    // MARK: O36 the sources at build
+
+    func testO36_TheSourcesAtBuildAreStatedInferredOrBlank() async throws {
+        // The usual call: the arrival and the card stated, the place inferred from the schedule, the meal rows inferred.
+        let rig = makeRig()
+        let usual = try await readyCard(rig)
+        let fields = try model(usual)
+        XCTAssertEqual(fields.source(of: "arrive_at"), .stated)
+        XCTAssertEqual(fields.values.date("arrive_at"), arrivalDate)
+        XCTAssertEqual(fields.source(of: "card_id"), .stated)
+        XCTAssertEqual(fields.values.option("card_id"), "debit-4242")
+        XCTAssertEqual(fields.source(of: "address"), .inferred)
+        XCTAssertEqual(fields.values.text("address"), "9 Library Road")
+        XCTAssertEqual(fields.source(of: "meal"), .inferred)
+        XCTAssertEqual(fields.values.flag("meal"), true)
+        XCTAssertEqual(fields.source(of: "meal_title"), .inferred)
+        XCTAssertEqual(fields.values.text("meal_title"), "Dinner")
+        XCTAssertEqual(fields.source(of: "meal_start"), .inferred)
+        XCTAssertEqual(fields.values.date("meal_start"), arrivalDate)
+        XCTAssertTrue(usual.canConfirm)
+        XCTAssertEqual(rig.partner.requests.count, 1, "building the card sends nothing")
+
+        // No card id and no schedule: the call is not refused; the card and the place are blank and Confirm waits.
+        let bare = makeRig()
+        await bare.hold()
+        let blankCard = try XCTUnwrap(bare.order(drop: ["card_id"]).card)
+        let blank = try model(blankCard)
+        XCTAssertEqual(blank.source(of: "arrive_at"), .stated)
+        XCTAssertEqual(blank.source(of: "card_id"), .blank)
+        XCTAssertEqual(blank.source(of: "address"), .blank)
+        XCTAssertEqual(blank.source(of: "meal"), .inferred)
+        XCTAssertNil(blank.values.option("card_id"))
+        XCTAssertNil(blank.values.text("address"))
+        XCTAssertFalse(blankCard.canConfirm)
+
+        // deliver_to names the place: stated; a model-passed card id the options hold is stated, and an unknown one is refused.
+        let named = try model(bare.order(["deliver_to": "p3"]).card)
+        XCTAssertEqual(named.source(of: "address"), .stated)
+        XCTAssertEqual(named.values.text("address"), "Corner Cafe")
+        XCTAssertEqual(named.source(of: "card_id"), .stated)
+        assertRefused(bare.order(["card_id": "visa", "deliver_to": "p3"]), Text.cardUnknown, "an unknown card id")
+        assertRefused(bare.order(["deliver_to": "p4"]), Text.toHandle, "a place with no usable text")
+        XCTAssertEqual(bare.partner.requests.count, 1, "only the options request")
+        XCTAssertEqual(bare.reads.count, 0)
+    }
+
+    // MARK: O37-O40 the delivery place sees the occurrences of repeating activities (T-a to T-d)
+
+    /// A weekly repeating activity (Calendar numbering, Sunday = 1) from a first day, added to the rig's Store.
+    private func addRepeat(_ rig: DeliveryToolRig, weekday: Int, from startMinute: Int, to endMinute: Int, first: Int, place: Place?,
+                           file: StaticString = #filePath, line: UInt = #line) {
+        let series = RepeatSeries(id: RepeatSeries.newID(), title: "Repeating", location: place,
+                                  rule: RecurrenceRule(weekdays: [weekday], unit: .weekly), lunarCalendar: nil,
+                                  firstDayKey: first, lastDayKey: nil, startMinute: startMinute, endMinute: endMinute,
+                                  endDayDistance: 0, syncToCalendar: nil, skippedDayKeys: [], legPlan: nil,
+                                  legsFilledThroughDayKey: nil)
+        XCTAssertTrue(rig.store.addSeries(series), "the series was stored", file: file, line: line)
+    }
+
+    // The arrival is Wednesday 2026-10-28 19:40; the fixed clock is Tuesday 2026-10-27 09:00.
+    private static let wednesday = 4
+    private static let tuesday = 3
+    private static let firstWednesday = 20261028
+    private static let firstTuesday = 20261027
+
+    func testO37_ARepeatingEntryInProgressAtTheArrivalGivesTheDeliveryPlaceAndThePartnersFieldOrderIsFollowed() async throws {
+        let rig = makeRig()
+        addRepeat(rig, weekday: Self.wednesday, from: 19 * 60, to: 21 * 60, first: Self.firstWednesday, place: DeliveryToolFixture.library)
+        await rig.hold()
+        let card = try XCTUnwrap(rig.order().card, "the occurrence in progress at the arrival is the suggestion")
+        let got = try address(card)
+        XCTAssertEqual(got.text, "9 Library Road")
+        XCTAssertEqual(got.source, .inferred)
+        XCTAssertTrue(card.lines.contains("Delivery place: 9 Library Road"))
+        XCTAssertEqual(rig.reads.count, 0)
+
+        // The card follows the partner's order of fields when the list is reordered.
+        let partner = DeliveryToolPartner()
+        partner.fieldOrder = ["card_id", "arrive_at", "address"]
+        let other = makeRig(partner: partner)
+        addRepeat(other, weekday: Self.wednesday, from: 19 * 60, to: 21 * 60, first: Self.firstWednesday, place: DeliveryToolFixture.library)
+        await other.hold()
+        let reordered = try XCTUnwrap(other.order().card)
+        let when = whenText(arrivalDate)
+        XCTAssertEqual(reordered.lines, ["Order delivery", "Pasta Palace", "2 x Ramen", "1 x Gyoza", "Estimated total $40.00",
+                                         "Pay with: \(DeliveryToolPartner.cards[0].label)", "Arrival: \(when)",
+                                         "Delivery place: 9 Library Road", "Add to schedule: Add", "Meal title: Dinner",
+                                         "Start: \(when)", "Example Delivery - Simulated"])
+    }
+
+    func testO38_AOneOffAndARepeatingOccurrenceAtDifferentPlacesGiveNoSuggestion() async throws {
+        let rig = makeRig()
+        rig.seed("Team dinner", "2026-10-28T19:00", "2026-10-28T21:00", place: DeliveryToolFixture.library)
+        addRepeat(rig, weekday: Self.wednesday, from: 19 * 60 + 30, to: 20 * 60 + 30, first: Self.firstWednesday,
+                  place: DeliveryToolFixture.corner)
+        await rig.hold()
+        let card = try XCTUnwrap(rig.order().card, "the call is not refused")
+        XCTAssertEqual(card.lines.count, 12, "premise: the full card is returned")
+        let got = try address(card)
+        XCTAssertNil(got.text, "two different places give none")
+        XCTAssertEqual(got.source, .blank)
+        XCTAssertFalse(card.lines.joined().contains("9 Library Road"))
+        XCTAssertFalse(card.lines.joined().contains("Corner Cafe"))
+    }
+
+    func testO39_AOneOffAndARepeatingOccurrenceAtTheSamePlaceGiveThatOneText() async throws {
+        let rig = makeRig()
+        rig.seed("Team dinner", "2026-10-28T19:00", "2026-10-28T21:00", place: DeliveryToolFixture.library)
+        addRepeat(rig, weekday: Self.wednesday, from: 19 * 60 + 30, to: 20 * 60 + 30, first: Self.firstWednesday,
+                  place: DeliveryToolFixture.library)
+        await rig.hold()
+        let got = try address(rig.order().card)
+        XCTAssertEqual(got.text, "9 Library Road")
+        XCTAssertEqual(got.source, .inferred)
+    }
+
+    func testO40_AnOccurrenceInProgressAtNowIsTheSecondAnchorAndTheEdgesOfTheIntervalHold() async throws {
+        // Only in progress now (Tuesday 08:00 to 10:00), nothing at the arrival: the second anchor.
+        let nowOnly = makeRig()
+        addRepeat(nowOnly, weekday: Self.tuesday, from: 8 * 60, to: 10 * 60, first: Self.firstTuesday, place: DeliveryToolFixture.corner)
+        await nowOnly.hold()
+        let nowAddress = try address(nowOnly.order().card)
+        XCTAssertEqual(nowAddress.text, "Corner Cafe", "the occurrence in progress now is the suggestion")
+        XCTAssertEqual(nowAddress.source, .inferred)
+
+        // Entries at the arrival that differ give none, and the later anchor is not used.
+        let differ = makeRig()
+        differ.seed("Team dinner", "2026-10-28T19:00", "2026-10-28T21:00", place: DeliveryToolFixture.library)
+        differ.seed("Other", "2026-10-28T19:30", "2026-10-28T20:30", place: DeliveryToolFixture.restaurant)
+        addRepeat(differ, weekday: Self.tuesday, from: 8 * 60, to: 10 * 60, first: Self.firstTuesday, place: DeliveryToolFixture.corner)
+        await differ.hold()
+        let differAddress = try address(differ.order().card)
+        XCTAssertNil(differAddress.text, "two different places give none and the later anchor is not used")
+        XCTAssertEqual(differAddress.source, .blank)
+
+        // An occurrence that starts at the arrival minute counts.
+        let starts = makeRig()
+        addRepeat(starts, weekday: Self.wednesday, from: 19 * 60 + 40, to: 21 * 60, first: Self.firstWednesday, place: DeliveryToolFixture.library)
+        await starts.hold()
+        XCTAssertEqual(try address(starts.order().card).text, "9 Library Road", "an occurrence that starts at the arrival minute counts")
+
+        // One that ends at the arrival minute does not, and neither does one that ended a minute before it.
+        for end in [19 * 60 + 40, 19 * 60 + 39] {
+            let ends = makeRig()
+            addRepeat(ends, weekday: Self.wednesday, from: 18 * 60, to: end, first: Self.firstWednesday, place: DeliveryToolFixture.library)
+            await ends.hold()
+            let endsAddress = try address(ends.order().card)
+            XCTAssertNil(endsAddress.text, "an occurrence that ends at minute \(end) does not count")
+            XCTAssertEqual(endsAddress.source, .blank)
+        }
+
+        // One in progress at both anchors (now is 19:00 the same day) is suggested.
+        let both = makeRig()
+        both.clock.now = TestClock.date("2026-10-28T19:00")
+        addRepeat(both, weekday: Self.wednesday, from: 18 * 60, to: 21 * 60, first: Self.firstWednesday, place: DeliveryToolFixture.library)
+        await both.hold()
+        XCTAssertEqual(try address(both.order().card).text, "9 Library Road", "an occurrence in progress at both anchors is suggested")
+
+        // An arrival at the current minute: the interval is that minute alone, and the occurrence in progress is seen.
+        let same = makeRig()
+        addRepeat(same, weekday: Self.tuesday, from: 8 * 60, to: 10 * 60, first: Self.firstTuesday, place: DeliveryToolFixture.corner)
+        await same.hold()
+        let sameAddress = try address(same.order(["arrive_at": "2026-10-27T09:00"]).card)
+        XCTAssertEqual(sameAddress.text, "Corner Cafe")
+    }
+
+    // MARK: O41-O42 acting by kind
+
+    func testO41_AConfirmedOrderActsByKindTheEntryStartsAtTheCardsStartOneSpendOfTheMoneyItemAndATextItemTouchesNothingElse() async throws {
+        let partner = DeliveryToolPartner()
+        partner.extraResults = [["name": "Driver note", "kind": "text", "value": "SENTINEL-NOTE-1"]]
+        let rig = makeRig(partner: partner)
+        let card = try await readyCard(rig)
+        let start = TestClock.date("2026-10-28T20:15")
+        XCTAssertTrue(try model(card).chooseTime("meal_start", start))
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied")
+        XCTAssertEqual(card.mark, .confirmed)
+
+        // The text item is in the reply, in the partner's order beside the other items, and only there.
+        let reply = try XCTUnwrap(resolution.json?["results"] as? [[String: Any]])
+        XCTAssertEqual(reply.compactMap { $0["name"] as? String }, ["Arrival", "Estimated total", "Status", "Driver note"])
+        XCTAssertEqual(reply.compactMap { $0["kind"] as? String }, ["time", "money", "text", "text"])
+        XCTAssertEqual(reply.compactMap { $0["value"] as? String },
+                       [DeliveryToolFixture.arrival, "$40.00", "Preparing", "SENTINEL-NOTE-1"])
+
+        // The time item is the arrival; the meal entry starts at the card's Start and lasts 60 minutes.
+        let entry = try XCTUnwrap(mealEntry(rig))
+        XCTAssertEqual(entry.startDate, start)
+        XCTAssertEqual(entry.endDate, TestClock.date("2026-10-28T21:15"))
+        XCTAssertEqual(rig.orders.orders.first?.arrival, DeliveryToolFixture.arrival)
+
+        // The money item goes to the budget as one spend of its cents, in the week of the arrival.
+        XCTAssertEqual(rig.budgetPartner.requests.count, 1)
+        let spend = try XCTUnwrap(rig.budgetPartner.body())
+        XCTAssertEqual(spend["amount_cents"] as? Int, 4000)
+        XCTAssertEqual(spend["week_start"] as? String, BudgetToolFixture.week)
+        XCTAssertEqual(rig.ledger.spentCents(weekStart: BudgetToolFixture.week), 4000)
+
+        // The text item changes nothing but the reply: it is in no entry, request, record, ledger, packet or notice.
+        XCTAssertEqual(rig.store.activities.count, 2, "the seeded dinner and one meal entry")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        await rig.log.flush()
+        let elsewhere: [String] = [
+            String(decoding: try encoder.encode(entry), as: UTF8.self),
+            String(decoding: try XCTUnwrap(rig.budgetPartner.requests.first?.httpBody), as: UTF8.self),
+            String(decoding: try Data(contentsOf: rig.ordersFile), as: UTF8.self),
+            String(decoding: try Data(contentsOf: rig.ledgerFile), as: UTF8.self),
+            String(decoding: try Data(contentsOf: rig.folder.appendingPathComponent(ConnectionLog.fileName)), as: UTF8.self),
+            rig.log.packets.map(\.summary).joined(separator: "\n"),
+            resolution.notice ?? ""]
+        for text in elsewhere {
+            XCTAssertFalse(text.isEmpty)
+            XCTAssertFalse(text.contains("SENTINEL-NOTE"), text)
+        }
+
+        // The notice names the money item with the partner's own word, and the reply states that name.
+        let named = DeliveryToolPartner()
+        named.moneyName = "Order total"
+        let namedRig = makeRig(partner: named)
+        let namedResolution = try await confirm(try await readyCard(namedRig))
+        XCTAssertEqual(namedResolution.status, "applied")
+        XCTAssertEqual(namedResolution.notice, "Order total $40.00 sent to Example Budget (Simulated): $160.00 left this week.")
+        let namedResults = try XCTUnwrap(namedResolution.json?["results"] as? [[String: Any]])
+        XCTAssertEqual(namedResults.compactMap { $0["name"] as? String }, ["Arrival", "Order total", "Status"])
+        XCTAssertEqual(namedRig.budgetPartner.requests.count, 1)
+    }
+
+    func testO42_UnusableResultsGiveUnavailableAndWriteNothing() async throws {
+        // Premise: the same card with the Worker's three items is applied.
+        let good = makeRig()
+        let goodCard = try await readyCard(good)
+        XCTAssertTrue(try model(goodCard).isReady)
+        let goodResolution = try await confirm(goodCard)
+        XCTAssertEqual(goodResolution.status, "applied")
+        XCTAssertEqual(good.orders.orders.count, 1)
+        XCTAssertEqual((goodResolution.json?["results"] as? [[String: Any]])?.count, 3, "the reply states the three result items")
+
+        let defects: [(String, (DeliveryToolPartner) -> Void)] = [
+            ("a second money item", { $0.extraResults = [["name": "Tip", "kind": "money", "value": 100]] }),
+            ("a second time item", { $0.extraResults = [["name": "Pickup", "kind": "time", "value": DeliveryToolFixture.arrival]] }),
+            ("a time item that is not the requested arrival", { $0.timeItem = "2026-10-28T19:41" }),
+            ("a money item that is not the total", { $0.totalDelta = 1 })]
+        for (name, change) in defects {
+            let partner = DeliveryToolPartner()
+            change(partner)
+            let rig = makeRig(partner: partner)
+            let card = try await readyCard(rig)
+            XCTAssertTrue(try model(card).isReady, name)
+            let before = rig.snapshot
+            let resolution = try await confirm(card)
+            XCTAssertEqual(resolution.status, "unavailable", name)
+            XCTAssertEqual(resolution.message, AgentDelivery.unavailableMessage, name)
+            XCTAssertEqual(resolution.notice, "The delivery could not be ordered. Nothing was ordered.", name)
+            XCTAssertEqual(card.mark, .notApplied, name)
+            XCTAssertEqual(rig.partner.requests.count, 2, "\(name): the options request and the one order request")
+            XCTAssertEqual(rig.snapshot, before, name)
+            XCTAssertTrue(rig.orders.orders.isEmpty, name)
+            XCTAssertEqual(rig.budgetPartner.requests.count, 0, name)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: rig.ordersFile.path), name)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: rig.ledgerFile.path), name)
+        }
+    }
+
+    // MARK: O43 blanks
+
+    func testO43_ACardWithTheCardAndThePlaceBlankWaitsForBothAndTheChosenValuesReachTheOneRequest() async throws {
+        let rig = makeRig()
+        await rig.hold()
+        let card = try XCTUnwrap(rig.order(drop: ["card_id"]).card)
+        let fields = try model(card)
+        XCTAssertEqual(card.lines.count, 12, "premise: the full card")
+        XCTAssertFalse(fields.isReady)
+        XCTAssertFalse(card.canConfirm)
+        XCTAssertFalse(fields.chooseOption("card_id", "visa"), "only a card the partner lists can be chosen")
+        XCTAssertTrue(fields.chooseOption("card_id", "credit-1881"))
+        XCTAssertFalse(card.canConfirm, "the place is still blank")
+        XCTAssertTrue(fields.choosePlace("address", DeliveryToolFixture.corner))
+        XCTAssertTrue(card.canConfirm)
+        XCTAssertEqual(fields.source(of: "card_id"), .entered)
+        XCTAssertEqual(fields.source(of: "address"), .entered)
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied")
+        XCTAssertEqual(rig.partner.requests.count, 2, "the options request and one order request")
+        XCTAssertEqual(rig.partner.body(1)?["address"] as? String, "Corner Cafe")
+        XCTAssertEqual(rig.partner.body(1)?["card_id"] as? String, "credit-1881")
+        XCTAssertEqual(rig.orders.orders.first?.cardLabel, DeliveryToolPartner.cards[1].label)
+        XCTAssertEqual(resolution.json?["card"] as? String, DeliveryToolPartner.cards[1].label)
+    }
+
+    // MARK: O44 the edited Arrival
+
+    /// A ready card whose Arrival the user then dials to `local`.
+    private func dialled(_ local: String, _ over: [String: Any] = [:], file: StaticString = #filePath,
+                         line: UInt = #line) async throws -> (rig: DeliveryToolRig, card: AgentCard) {
+        let rig = makeRig()
+        let card = try await readyCard(rig, over)
+        let fields = try model(card, file: file, line: line)
+        XCTAssertTrue(fields.isReady, local, file: file, line: line)
+        XCTAssertTrue(fields.chooseTime("arrive_at", TestClock.date(local)), local, file: file, line: line)
+        XCTAssertEqual(fields.source(of: "arrive_at"), .entered, local, file: file, line: line)
+        return (rig, card)
+    }
+
+    func testO44_TheEditedArrivalDecidesTheWindowTheRequestTheRecordAndTheBudgetWeek() async throws {
+        // Premise: the same card with its own arrival is applied.
+        let untouched = makeRig()
+        let untouchedResolution = try await confirm(try await readyCard(untouched))
+        XCTAssertEqual(untouchedResolution.status, "applied")
+
+        // An Arrival dialled to a minute before the clock, and to day 367: rejected, nothing sent, written or recorded.
+        for (label, local) in [("a minute ago", "2026-10-27T08:59"), ("day 367", "2027-10-29T09:00")] {
+            let (rig, card) = try await dialled(local)
+            let before = rig.snapshot
+            let resolution = try await confirm(card)
+            XCTAssertEqual(resolution.status, "rejected", label)
+            XCTAssertEqual(resolution.message, Text.windowAtConfirm, label)
+            XCTAssertEqual(resolution.json?["arrive_at"] as? String, local, label)
+            XCTAssertEqual(resolution.notice, Text.notice, label)
+            XCTAssertEqual(card.mark, .notApplied, label)
+            XCTAssertEqual(rig.partner.requests.count, 1, "\(label): only the options request is on the partner")
+            XCTAssertEqual(rig.snapshot, before, label)
+            XCTAssertTrue(rig.orders.orders.isEmpty, label)
+            XCTAssertEqual(rig.budgetPartner.requests.count, 0, label)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: rig.ordersFile.path), label)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: rig.ledgerFile.path), label)
+            await rig.log.flush()
+            XCTAssertEqual(rig.log.packets.count, 2, "\(label): only the options exchange is on the log")
+        }
+
+        // Another valid time the same day: the request, the partner's time item, the record and the window all use it.
+        let (rig, card) = try await dialled("2026-10-28T20:15")
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied")
+        XCTAssertEqual(rig.partner.body(1)?["arrive_at"] as? String, "2026-10-28T20:15")
+        XCTAssertEqual(rig.orders.orders.first?.arrival, "2026-10-28T20:15")
+        XCTAssertEqual(rig.budgetPartner.body()?["week_start"] as? String, BudgetToolFixture.week)
+        XCTAssertEqual(try XCTUnwrap(mealEntry(rig)).startDate, arrivalDate, "Start does not follow an edited Arrival")
+
+        // An Arrival dialled into the next week spends in that week.
+        let (next, nextCard) = try await dialled("2026-11-02T19:40", ["deliver_to": "p2"])
+        let nextResolution = try await confirm(nextCard)
+        XCTAssertEqual(nextResolution.status, "applied")
+        XCTAssertEqual(next.partner.body(1)?["arrive_at"] as? String, "2026-11-02T19:40")
+        XCTAssertEqual(next.budgetPartner.body()?["week_start"] as? String, "2026-11-02")
+        XCTAssertEqual(next.ledger.spentCents(weekStart: "2026-11-02"), 4000)
+        XCTAssertEqual(next.ledger.spentCents(weekStart: BudgetToolFixture.week), 0)
+        XCTAssertEqual(next.orders.orders.first?.arrival, "2026-11-02T19:40")
+
+        // An Arrival outside the partner's hours is sent and declined.
+        let (late, lateCard) = try await dialled("2026-10-28T23:30")
+        let lateResolution = try await confirm(lateCard)
+        XCTAssertEqual(lateResolution.status, "declined")
+        XCTAssertEqual(late.partner.requests.count, 2)
+        XCTAssertEqual(late.partner.body(1)?["arrive_at"] as? String, "2026-10-28T23:30")
+        XCTAssertTrue(late.orders.orders.isEmpty)
+    }
+
+    // MARK: O45 the search wiring
+
+    func testO45_TheCardsPlaceSearchReadsTheDeviceOnlyWhenASearchFiresAndSendsItOnlyToPlaces() async throws {
+        let places = PlacesTransportStub.answering(with: PlaceFixture.data("places-search-three"))
+        let rig = makeRig(placesTransport: places)
+        let card = try await readyCard(rig)
+        let fields = try model(card)
+        // Building the card reads the device position 0 times and calls no provider.
+        XCTAssertEqual(rig.reads.count, 0)
+        XCTAssertEqual(places.callCount, 0)
+
+        // A search that fires after the debounce reaches the provider once, with the trimmed query, and reads the origin once.
+        fields.search("address", "  Tartine  ")
+        XCTAssertEqual(places.callCount, 0, "nothing is searched before the debounce")
+        XCTAssertEqual(rig.reads.count, 0)
+        try await Task.sleep(nanoseconds: 800_000_000)
+        XCTAssertEqual(places.callCount, 1)
+        XCTAssertEqual(rig.reads.count, 1)
+        let body = PlaceBody.json(places.requests.first)
+        XCTAssertEqual(body?["textQuery"] as? String, "Tartine")
+        let center = try XCTUnwrap(PlaceBody.biasCenter(body))
+        XCTAssertEqual(center.latitude, DeliveryToolFixture.device.latitude)
+        XCTAssertEqual(center.longitude, DeliveryToolFixture.device.longitude)
+        guard case .results(let found)? = fields.field("address")?.lookup else { return XCTFail("the row holds the results") }
+        XCTAssertEqual(found.count, 3)
+
+        // Pick a result and confirm: the device position is in the Places request and nowhere else.
+        XCTAssertTrue(fields.choosePlace("address", found[2]))
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied")
+        XCTAssertEqual(rig.partner.body(1)?["address"] as? String, found[2].address)
+        let placesText = PlaceBody.text(places.requests.first)
+        for number in ["37.7", "-122.3"] { XCTAssertTrue(placesText.contains(number), "positive control: \(number)") }
+        let packets = await rig.packets()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let entry = try XCTUnwrap(mealEntry(rig))
+        let elsewhere: [(String, String)] = [
+            ("order request", String(decoding: try XCTUnwrap(rig.partner.requests.dropFirst().first?.httpBody), as: UTF8.self)),
+            ("options request", String(decoding: try XCTUnwrap(rig.partner.requests.first?.httpBody), as: UTF8.self)),
+            ("budget request", String(decoding: try XCTUnwrap(rig.budgetPartner.requests.first?.httpBody), as: UTF8.self)),
+            ("order record", String(decoding: try Data(contentsOf: rig.ordersFile), as: UTF8.self)),
+            ("connections file", String(decoding: try Data(contentsOf: rig.folder.appendingPathComponent(ConnectionLog.fileName)), as: UTF8.self)),
+            ("packet summaries", packets.map(\.summary).joined(separator: "\n")),
+            ("store entry", String(decoding: try encoder.encode(entry), as: UTF8.self)),
+            ("result", resolution.result),
+            ("notice", resolution.notice ?? ""),
+            ("card", card.lines.joined(separator: "\n"))]
+        for (name, text) in elsewhere {
+            XCTAssertFalse(text.isEmpty, name)
+            for number in ["37.7", "-122.3", "SENTINEL-HOME"] { XCTAssertFalse(text.contains(number), "\(name) holds \(number)") }
+        }
+
+        // The Places packet is the provider's own and shares no flow id with the order.
+        let searchPacket = try XCTUnwrap(packets.first { $0.kind == .placeSearch })
+        XCTAssertEqual(searchPacket.summary, "Searched \u{201C}Tartine\u{201D} \u{00B7} 3 results")
+        XCTAssertNil(searchPacket.flowID)
+        let orderFlows = Set(packets.filter { $0.kind == .delivery || $0.kind == .budget }.compactMap(\.flowID))
+        XCTAssertFalse(orderFlows.isEmpty)
+        XCTAssertFalse(orderFlows.contains { $0 == searchPacket.flowID })
+        XCTAssertEqual(rig.reads.count, 1, "Confirm reads the position no more")
     }
 }
