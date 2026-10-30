@@ -784,6 +784,44 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertEqual(typed.values.int("schedule-length"), 90)
         XCTAssertNotNil(typed.field("schedule-length"))
     }
+
+    // MARK: M18 the rows besir added itself leave a card that ended without an answer
+
+    func testM18_RemovingTheOwnRowsDropsEachSwitchWithItsDependentsAndKeepsEveryPartnerRow() throws {
+        let length = AgentFieldSpec(key: "len", kind: .number, label: "Length (min)", limit: 3, range: 5...720)
+        let signed = AgentFieldSpec.onOff(key: "signed", label: "Signature", on: "Needed", off: "Not needed")
+        let model = make([.field(noteSpec, value: .text("Keep dry"), source: .stated),
+                          .field(signed, value: .flag(false), source: .stated),
+                          .field(pay, value: .option("debit"), source: .stated),
+                          .switchField(mealSwitch, value: .flag(true), source: .inferred, dependents: [
+                              .field(mealTitle, value: .text("Dinner"), source: .inferred),
+                              .field(length, value: .number(60), source: .inferred)]),
+                          .line("Example Delivery - Simulated")])
+        // Before: every row is on the card, the app's own rows included.
+        XCTAssertEqual(keys(model), ["note", "signed", "card_id", "meal", "meal_title", "len", "0"])
+        let before = model.lines
+        XCTAssertTrue(before.contains("Add to schedule: Add"), "\(before)")
+        XCTAssertTrue(before.contains("Length (min): 60"), "\(before)")
+
+        model.removeOwnRows()
+        // After: the switch and its dependents are gone, the partner's own on_off, chip, text and the read-only row stay.
+        XCTAssertEqual(keys(model), ["note", "signed", "card_id", "0"])
+        XCTAssertEqual(model.lines, ["Order delivery", "Note: Keep dry", "Signature: Not needed", "Pay with: Debit one",
+                                     "Example Delivery - Simulated"])
+        XCTAssertNil(model.field("meal"))
+        XCTAssertNil(model.field("meal_title"))
+        XCTAssertNil(model.field("len"))
+        XCTAssertNotNil(model.field("signed"))
+
+        // A switch that was turned off already had no dependents on the card; the same rows leave, and calling twice changes nothing.
+        let off = make([.field(noteSpec, value: .text("x"), source: .stated),
+                        .switchField(mealSwitch, value: .flag(false), source: .entered, dependents: [
+                            .field(mealTitle, value: .text("Dinner"), source: .inferred)])])
+        XCTAssertEqual(keys(off), ["note", "meal"])
+        off.removeOwnRows()
+        off.removeOwnRows()
+        XCTAssertEqual(keys(off), ["note"])
+    }
 }
 
 /// A search that answers when the test says so: the closure waits for `answer`.

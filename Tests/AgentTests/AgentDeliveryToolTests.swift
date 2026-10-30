@@ -2138,4 +2138,59 @@ final class AgentDeliveryToolTests: XCTestCase {
         XCTAssertFalse(orderFlows.contains { $0 == searchPacket.flowID })
         XCTAssertEqual(rig.reads.count, 1, "Confirm reads the position no more")
     }
+
+    // MARK: O46 to O48 the rows of the app's own meal choice and the typed rows (repairs after the walk)
+
+    func testO46_TheTypedRowsOfTheCardShowNoPlaceholderAndThePlaceAndTimeRowsKeepTheirWording() async throws {
+        let rig = makeRig()
+        let fields = try model(try await readyCard(rig))
+        XCTAssertEqual(fields.field("meal_title")?.placeholder, "", "the meal title is a typed row of the card")
+        XCTAssertNil(fields.field("address")?.placeholder, "a place row keeps its search wording")
+        XCTAssertNil(fields.field("arrive_at")?.placeholder, "a time row keeps the view's own wording")
+        XCTAssertNil(fields.field("card_id")?.placeholder)
+        XCTAssertNil(fields.field("meal")?.placeholder)
+    }
+
+    func testO47_ACardThatEndedWithoutAnOrderShowsNoMealRowsAndKeepsThePartnersRows() async throws {
+        let mealKeys = ["meal", "meal_title", "meal_start"]
+        func assertOrderRowsOnly(_ card: AgentCard, _ note: String) throws {
+            let fields = try model(card)
+            XCTAssertEqual(fields.card.fields.map(\.key).filter { mealKeys.contains($0) }, [], note)
+            let text = card.lines.joined(separator: "\n")
+            XCTAssertFalse(text.contains("Add to schedule"), "\(note): \(text)")
+            XCTAssertFalse(text.contains("Meal title"), "\(note): \(text)")
+            for key in ["arrive_at", "address", "card_id"] { XCTAssertNotNil(fields.field(key), "\(note): \(key)") }
+        }
+        for how in [AgentCardResolution.cancel, .dismiss] {
+            let rig = makeRig()
+            let card = try await readyCard(rig)
+            XCTAssertTrue(card.lines.joined(separator: "\n").contains("Add to schedule: Add"), "premise")
+            _ = await card.resolve(how)
+            try assertOrderRowsOnly(card, "\(how)")
+        }
+        // The partner declines an arrival outside its hours.
+        let (_, declined) = try await dialled("2026-10-28T23:30")
+        let declinedResolution = try await confirm(declined)
+        XCTAssertEqual(declinedResolution.status, "declined")
+        XCTAssertEqual(declined.mark, .notApplied)
+        try assertOrderRowsOnly(declined, "declined")
+    }
+
+    func testO48_AConfirmedCardKeepsItsMealRowsAsTheyWere() async throws {
+        let added = makeRig()
+        let addedCard = try await readyCard(added)
+        let resolution = try await confirm(addedCard)
+        XCTAssertEqual(resolution.status, "applied")
+        XCTAssertEqual(addedCard.mark, .confirmed)
+        XCTAssertTrue(addedCard.lines.contains("Add to schedule: Add"), "\(addedCard.lines)")
+        XCTAssertTrue(addedCard.lines.contains { $0.hasPrefix("Meal title:") }, "\(addedCard.lines)")
+
+        let skipped = makeRig()
+        let skippedCard = try await readyCard(skipped)
+        XCTAssertTrue(try model(skippedCard).chooseOption("meal", "false"))
+        _ = try await confirm(skippedCard)
+        XCTAssertEqual(skippedCard.mark, .confirmed)
+        XCTAssertTrue(skippedCard.lines.contains("Add to schedule: Don't Add"), "\(skippedCard.lines)")
+        XCTAssertFalse(skippedCard.lines.contains { $0.hasPrefix("Meal title:") })
+    }
 }

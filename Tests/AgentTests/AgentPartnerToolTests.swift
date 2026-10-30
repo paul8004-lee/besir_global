@@ -1546,4 +1546,49 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertTrue(shownLines(skippedCard).contains("Add to schedule: Don't Add"))
         XCTAssertFalse(shownLines(skippedCard).contains("Length (min)"), "the length row is gone with the switch off")
     }
+
+    func testPARTNER_T18_ACardThatEndedWithoutAConfirmationKeepsThePartnersOwnSwitchAndChipFields() async throws {
+        // The first partner also lists an on_off field and a pick_one field of its own beside the app's schedule switch.
+        var shape = StubPartner.Shape.tables()
+        shape.fields.append(StubPartner.field("rush", "on_off", "Rush", options: [("true", "Rush it"), ("false", "Normal")]))
+        shape.fields.append(StubPartner.field("seat", "pick_one", "Seat", options: [("in", "Inside"), ("out", "Outside")]))
+        for how in [AgentCardResolution.cancel, .dismiss] {
+            let stub = StubPartner()
+            stub.shapes = [shape]
+            let rig = makeRig(partner: stub)
+            let card = try await built(rig)
+            let fields = try model(card)
+            XCTAssertTrue(fields.chooseOption("rush", "true"))
+            XCTAssertTrue(fields.chooseOption("seat", "out"))
+            // Before the end the card holds the app's switch with its length row and the partner's own fields.
+            XCTAssertEqual(fields.card.fields.map(\.key),
+                           ["restaurant", "party_size", "start", "name", "note", "rush", "seat", "add-to-schedule", "schedule-length", "0"])
+            XCTAssertTrue(shownLines(card).contains("Add to schedule: Add"))
+            _ = await card.resolve(how)
+            XCTAssertEqual(card.mark, .cancelled)
+            XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "party_size", "start", "name", "note", "rush", "seat", "0"], "\(how)")
+            let text = shownLines(card)
+            XCTAssertTrue(text.contains("Rush: Rush it"), "the partner's on_off field stays: \(text)")
+            XCTAssertTrue(text.contains("Seat: Outside"), "the partner's pick_one field stays: \(text)")
+            XCTAssertFalse(text.contains("Add to schedule"), text)
+            XCTAssertFalse(text.contains("Length (min)"), text)
+        }
+    }
+
+    func testPARTNER_T19_ARejectedTokenAndACancelledTaskAlsoLeaveACardWithoutTheScheduleRows() async throws {
+        let ends: [(String, (StubPartner) -> Void)] = [
+            ("token", { $0.mode = .status(401, #"{"error":"unauthorized"}"#) }),
+            ("cancelled task", { $0.mode = .cancel }),
+        ]
+        for (name, arrange) in ends {
+            let rig = makeRig()
+            let card = try await built(rig)
+            XCTAssertTrue(shownLines(card).contains("Length (min): 60"), "premise: \(name)")
+            arrange(rig.partner)
+            let resolution = await Task { await card.resolve(.confirm) }.value
+            XCTAssertEqual(resolution?.status, "unavailable", name)
+            XCTAssertEqual(card.mark, .notApplied, name)
+            try assertNoOwnRows(card, name)
+        }
+    }
 }
