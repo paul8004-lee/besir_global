@@ -274,6 +274,44 @@ final class DayPlanSessionTests: XCTestCase {
         }.joined(separator: "\n")
     }
 
+    // MARK: SPEC-CANCELREPLY-001
+
+    /// What the model reads after Cancel or a closed sheet on the day-plan card, typed out on purpose.
+    private static let cancelledAnswer = #"{"message":"The user cancelled the plan and nothing was added to the schedule. Do not plan again unless the user asks. When you reply about the plan, say that it was cancelled and nothing was added, and do not call any event planned, scheduled or added.","status":"declined"}"#
+
+    @MainActor
+    func testCANCELREPLY_T3_cancelCardRecordsTheSentenceAndTheClosingRequestFollows() async throws {
+        let rig = try await startCleanSession(sentinels: true)
+        XCTAssertEqual(rig.fake.requests.count, 5, "the card waits after five requests")
+        await rig.session.cancelCard()
+        await rig.session.settle()
+        XCTAssertEqual(rig.fake.requests.count, 6, "one request follows Cancel, as before")
+        let last = try XCTUnwrap(callOutputs(rig.session.history).last)
+        XCTAssertEqual(last.callID, "c5")
+        XCTAssertEqual(last.result, Self.cancelledAnswer)
+        XCTAssertFalse(last.result.contains("SNTL-"), "the answer repeats no shared or calendar value")
+        XCTAssertEqual(PairingValidator.problems(in: rig.session.history), [])
+        XCTAssertTrue(flatten(rig.fake.request(6)).contains(Self.cancelledAnswer), "the closing request carries the answer")
+        XCTAssertEqual(rig.session.assistantTexts, ["Done."])
+        XCTAssertTrue(rig.store.activities.isEmpty)
+    }
+
+    @MainActor
+    func testCANCELREPLY_T4_closingTheSheetRecordsTheSentenceWithoutARequest() async throws {
+        let rig = try await startCleanSession()
+        let card = try XCTUnwrap(rig.session.pendingCard)
+        await rig.session.sheetDismissed()
+        XCTAssertEqual(rig.fake.requests.count, 5, "closing the sheet starts no request")
+        guard case .callOutput(let callID, let result)? = rig.session.history.last else {
+            return XCTFail("the history does not end with the answer")
+        }
+        XCTAssertEqual(callID, "c5")
+        XCTAssertEqual(result, Self.cancelledAnswer)
+        XCTAssertEqual(PairingValidator.problems(in: rig.session.history), [])
+        XCTAssertEqual(card.mark, .cancelled)
+        XCTAssertNil(rig.session.pendingCard)
+    }
+
     // MARK: T52
 
     @MainActor
