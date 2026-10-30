@@ -293,6 +293,7 @@ final class AgentDeliveryToolTests: XCTestCase {
         static let time = "Ask the user when the food is to arrive, then call order_delivery again. Do not guess it."
         static let timeForm = "Call order_delivery again with arrive_at as a local date-time in the form YYYY-MM-DDTHH:MM, or ask the user."
         static let window = "Nothing was ordered. Tell the user the arrival time is out of range and ask for a new time, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
+        static let windowAtConfirm = "Nothing was ordered. Tell the user nothing was ordered because the arrival time given in the arrive_at key of this result is out of range, and ask for a new time, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
         static let optionsFirst = "Call get_delivery_options first, then call order_delivery again with items taken from its answer."
         static let items = "Ask the user what to order, then call order_delivery again with items as comma-separated pairs of an item id from the get_delivery_options answer and a quantity from 1 to 9, 1 to 6 pairs, no spaces, no id repeated. Do not guess it."
         static let itemUnknown = "Call order_delivery again with items that use only item ids from the get_delivery_options answer, or ask the user what to order."
@@ -942,7 +943,9 @@ final class AgentDeliveryToolTests: XCTestCase {
         let resolved = await card.resolve(.confirm)
         let resolution = try XCTUnwrap(resolved)
         XCTAssertEqual(resolution.status, "rejected")
-        XCTAssertEqual(resolution.message, Text.window)
+        XCTAssertEqual(resolution.message, Text.windowAtConfirm)
+        // The result carries the time the user chose, as a key, so the model does not repeat the time it first asked for.
+        XCTAssertEqual(resolution.json?["arrive_at"] as? String, "2026-10-28T19:40")
         XCTAssertEqual(resolution.notice, Text.notice)
         XCTAssertEqual(card.mark, .notApplied)
         XCTAssertEqual(rig.partner.requests.count, sent, "nothing is sent")
@@ -2031,7 +2034,8 @@ final class AgentDeliveryToolTests: XCTestCase {
             let before = rig.snapshot
             let resolution = try await confirm(card)
             XCTAssertEqual(resolution.status, "rejected", label)
-            XCTAssertEqual(resolution.message, Text.window, label)
+            XCTAssertEqual(resolution.message, Text.windowAtConfirm, label)
+            XCTAssertEqual(resolution.json?["arrive_at"] as? String, local, label)
             XCTAssertEqual(resolution.notice, Text.notice, label)
             XCTAssertEqual(card.mark, .notApplied, label)
             XCTAssertEqual(rig.partner.requests.count, 1, "\(label): only the options request is on the partner")
