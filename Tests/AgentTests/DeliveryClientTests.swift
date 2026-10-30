@@ -900,6 +900,41 @@ final class DeliveryClientTests: XCTestCase {
         XCTAssertEqual(stale, .failure(.other))
     }
 
+    // MARK: C19 the delivery adapter stays closed to the booking grammar
+
+    func testC19_AnOptionsAnswerWithAnOptionalFieldOrANumberFieldIsRefused() async {
+        // Positive first: the valid options answer decodes.
+        XCTAssertEqual(DeliveryClient.optionsAnswer(from: Data(optionsObject().utf8)), options)
+
+        // `optional: true` on each of the three known fields, alone and together, makes the whole answer unusable. The reader
+        // accepts the marker, so only the adapter rule refuses it: this part is red between the reader change and the adapter change.
+        let arrive: [String: Any] = ["key": "arrive_at", "kind": "time", "label": "Arrival"]
+        let address: [String: Any] = ["key": "address", "kind": "place", "label": "Delivery place"]
+        let card = orderFields()[2]
+        func marked(_ field: [String: Any]) -> [String: Any] { field.merging(["optional": true]) { _, new in new } }
+        func listed(_ fields: [[String: Any]]) -> String { optionsObject { $0["order_fields"] = fields } }
+        let optionalBodies = [
+            listed([marked(arrive), address, card]), listed([arrive, marked(address), card]), listed([arrive, address, marked(card)]),
+            listed([marked(arrive), marked(address), marked(card)]),
+        ]
+        assertOptionsRefused(optionalBodies)
+
+        // A field of kind `number` on each known key makes it unusable. This part is green throughout: the adapter's kind map
+        // (`knownFields[$0.key] == $0.kind`) already fails a `number` field on a known key.
+        func number(_ key: String, _ label: String) -> [String: Any] { ["key": key, "kind": "number", "label": label] }
+        let numberBodies = [
+            listed([number("arrive_at", "Arrival"), address, card]), listed([arrive, number("address", "Delivery place"), card]),
+            listed([arrive, address, number("card_id", "Pay with")]),
+        ]
+        assertOptionsRefused(numberBodies)
+
+        // Each refusal is `other` through the client too.
+        for text in optionalBodies + numberBodies {
+            let viaClient = await fetchOptions(BookingSendRecorder(body: text))
+            XCTAssertEqual(viaClient, .failure(.other), text)
+        }
+    }
+
     // MARK: P01-P06 the order packets
 
     func testP01_AConfirmationRecordsTwoPacketsInOrderWithOneFlow() async {
