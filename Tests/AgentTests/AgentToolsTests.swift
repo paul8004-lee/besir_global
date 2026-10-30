@@ -33,7 +33,7 @@ final class AgentToolsTests: XCTestCase {
         "get_budget_left": [],
         "record_spend": ["amount"],
         "get_delivery_options": [],
-        "order_delivery": ["place_id", "arrive_at", "items", "card_id"],
+        "order_delivery": ["place_id", "arrive_at", "items"],
     ]
 
     private func declarations() -> [[String: Any]] {

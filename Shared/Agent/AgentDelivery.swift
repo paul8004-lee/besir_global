@@ -4,31 +4,36 @@ import Foundation
 /// is testable without the toolbox. Money is whole cents (`Int`) everywhere; dollars appear only in text, through `AgentBudget`.
 enum AgentDelivery {
     static let maxDeliveryText = 120
-    static let maxMealTitle = 40
     /// A meal entry lasts 60 minutes.
     static let mealMinutes = 60
     static let maxItemLines = 6
 
-    // MARK: The four controls of the card
+    // MARK: The field card (SPEC-CHOICECARD-001)
 
-    /// The labels of the card's controls are fixed words, not captions; the card view uses these constants.
-    static let deliveryPlaceLabel = "Delivery place"
+    /// The labels of the app's own rows are fixed words, not captions. The partner's fields carry their own labels.
     static let mealSwitchLabel = "Add to schedule"
     static let mealTitleLabel = "Meal title"
     static let mealStartLabel = "Start"
-    static let controlLabels = [deliveryPlaceLabel, mealSwitchLabel, mealTitleLabel, mealStartLabel]
+    /// The header of the order card and the keys of the three rows that are the app's own (the partner's fields have its keys).
+    static let cardHeader = "Order delivery"
+    static let mealSwitchKey = "meal"
+    static let mealTitleKey = "meal_title"
+    static let mealStartKey = "meal_start"
+    /// The two chips of the meal switch. The card model holds no chip word, so the words come from here, in the seed.
+    static let mealOnWord = "Add"
+    static let mealOffWord = "Don't Add"
 
     // MARK: Fixed texts
 
-    static let optionsMessage = "State the items with their estimated prices, the estimated delivery fee and the cards as facts, and say the delivery app is simulated and every price an estimate. Ask the user what to order, when it is to arrive and which card to pay with. Give no advice."
+    static let optionsMessage = "State the items with their estimated prices, the estimated delivery fee and the cards as facts, and say the delivery app is simulated and every price an estimate. Ask the user what to order and when it is to arrive. Do not ask which card or where to deliver: the user chooses them on the order card. Give no advice."
     static let optionsUnavailableMessage = "The simulated delivery app could not be reached. Tell the user the delivery options are not available right now."
-    static let appliedMessage = "Tell the user the delivery is ordered with a simulated delivery app. Give the order id, the arrival time, the items, the delivery place (the address field) and the estimated total as facts, and say the total is an estimate. Give no advice."
+    static let appliedMessage = "Tell the user the delivery is ordered with a simulated delivery app. Give the order id, the items, the delivery place (the address field) and each result item as a fact, and say any amount is an estimate. Give no advice."
     static let mealAddedSentence = "Say the meal entry was added to the schedule."
     static let mealMissedSentence = "Say the meal entry could not be added to the schedule."
     static let declinedMessage = "The simulated delivery app could not take the order. Tell the user that the simulated delivery app could not take the order and that nothing was ordered, and ask what they want to do next."
     static let unavailableMessage = "The simulated delivery order could not be made. Tell the user nothing was ordered."
     static let unavailableNotice = "The delivery could not be ordered. Nothing was ordered."
-    static let editRejectedMessage = "The delivery place or the meal title was empty. Tell the user nothing was ordered."
+    static let editRejectedMessage = "A required value of the order card was empty. Tell the user nothing was ordered."
     static let budgetRecordedSentence = "Tell the user the estimated total was sent to the simulated budget app and the amount left or over, as facts and as estimates. Do not call record_spend for this order."
     static let budgetUnavailableSentence = "The estimated total could not be sent to the simulated budget app. Tell the user so, and do not call record_spend for this order."
     static let budgetFailureNotice = "The estimated total could not be sent to \(AgentBudget.partnerLabel)."
@@ -132,33 +137,8 @@ enum AgentDelivery {
 
     // MARK: The card
 
-    /// The meal line of the card: the title as the entry carries it, the start time as text, and whether the card still shows the
-    /// app's own suggestion.
-    struct CardMeal: Equatable {
-        let title: String
-        let time: String
-        let isSuggested: Bool
-    }
-
     /// `Estimated total $40.00`.
     static func estimatedTotalLine(cents: Int) -> String { "Estimated total \(AgentBudget.dollars(cents: cents))" }
-
-    /// The lines of the confirmation card, in order: the heading, the place, the arrival, one line for each item, the delivery
-    /// text (marked while it is the app's suggestion), the card, the estimated total, the meal entry while it is on (marked
-    /// while it is the app's suggestion) and the partner line.
-    static func cardLines(placeName: String, arrives: String, items: [(name: String, quantity: Int)], deliveryText: String,
-                          deliveryIsSuggested: Bool, cardLabel: String, totalCents: Int, meal: CardMeal?) -> [String] {
-        var lines = ["Order delivery", placeName, "Arrives \(arrives)"]
-        lines += items.map { "\($0.quantity) x \($0.name)" }
-        lines.append("To \(deliveryText)" + (deliveryIsSuggested ? " (suggested from your schedule)" : ""))
-        lines.append("Pay with \(cardLabel)")
-        lines.append(estimatedTotalLine(cents: totalCents))
-        if let meal {
-            lines.append("Add to schedule: \(meal.title) at \(meal.time)" + (meal.isSuggested ? " (suggested)" : ""))
-        }
-        lines.append(partnerLine)
-        return lines
-    }
 
     // MARK: Results
 
@@ -222,20 +202,20 @@ enum AgentDelivery {
             }
         }
 
-        /// The one notice line of the order, or nil.
-        func notice(totalCents: Int) -> String? {
+        /// The one notice line of the order, or nil. `moneyName` is the name of the partner's money item.
+        func notice(moneyName: String, totalCents: Int) -> String? {
             switch self {
             case .recorded(let standing, let week):
-                return AgentDelivery.budgetNotice(totalCents: totalCents, standing: standing, week: week)
+                return AgentDelivery.budgetNotice(moneyName: moneyName, totalCents: totalCents, standing: standing, week: week)
             case .unavailable(let notify):
                 return notify ? AgentDelivery.budgetFailureNotice : nil
             }
         }
     }
 
-    /// `Estimated total $40.00 sent to Example Budget (Simulated): $160.00 left this week.` or, over, `$25.00 over the budget
-    /// for the week of Nov 2.`
-    static func budgetNotice(totalCents: Int, standing: BudgetStanding, week: String) -> String {
+    /// `<money item name> $40.00 sent to Example Budget (Simulated): $160.00 left this week.` or, over, `$25.00 over the budget
+    /// for the week of Nov 2.` The Worker names its money item `Estimated total`.
+    static func budgetNotice(moneyName: String, totalCents: Int, standing: BudgetStanding, week: String) -> String {
         let fields = AgentBudget.standingFields(standing)
         let standingText: String
         if let left = fields["left"] as? String {
@@ -243,23 +223,34 @@ enum AgentDelivery {
         } else {
             standingText = "\(fields["over_by"] as? String ?? "") over the budget \(AgentBudget.inWeek(week))"
         }
-        return "\(estimatedTotalLine(cents: totalCents)) sent to \(AgentBudget.partnerLabel): \(standingText)."
+        return "\(moneyName) \(AgentBudget.dollars(cents: totalCents)) sent to \(AgentBudget.partnerLabel): \(standingText)."
+    }
+
+    /// The result items for the model, each `{name, kind, value}` in the partner's order: a time as its text, money in dollars
+    /// through `AgentBudget`, a text as it is.
+    static func resultFields(_ results: [PartnerResultItem]) -> [[String: Any]] {
+        results.map { item in
+            let value: String
+            switch item.value {
+            case .time(let text), .text(let text): value = text
+            case .money(let cents): value = AgentBudget.dollars(cents: cents)
+            }
+            return ["name": item.name, "kind": item.kind.rawValue, "value": value]
+        }
     }
 
     /// The fields of the `applied` result. `meal` is nil when the entry was off at Confirm; the message carries the meal
-    /// sentence only when the entry was on.
-    static func appliedFields(orderID: String, restaurant: String, arrival: String, items: [(name: String, quantity: Int)],
-                              address: String, cardLabel: String, totalCents: Int, meal: AppliedMeal?,
+    /// sentence only when the entry was on. Every result item of the partner is stated in `results`.
+    static func appliedFields(orderID: String, restaurant: String, items: [(name: String, quantity: Int)],
+                              address: String, cardLabel: String, results: [PartnerResultItem], meal: AppliedMeal?,
                               budget: BudgetHandOff) -> [String: Any] {
         var message = appliedMessage
         if let meal { message += " " + meal.sentence }
         message += " " + budget.sentence
         var object: [String: Any] = [
             "status": "applied", "partner": DeliveryClient.partnerName, "simulated": true, "order_id": orderID,
-            "restaurant": restaurant, "arrival_estimate": arrival,
-            "items": items.map { ["name": $0.name, "quantity": $0.quantity] as [String: Any] }, "address": address,
-            "card": cardLabel, "estimated_total": AgentBudget.dollars(cents: totalCents), "estimate": true,
-            "message": message, "budget": budget.block]
+            "restaurant": restaurant, "items": items.map { ["name": $0.name, "quantity": $0.quantity] as [String: Any] },
+            "address": address, "card": cardLabel, "results": resultFields(results), "message": message, "budget": budget.block]
         if let meal { object["meal"] = meal.block }
         return object
     }
