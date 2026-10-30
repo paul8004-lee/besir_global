@@ -16,6 +16,7 @@ final class AgentChatHolder {
 struct AgentChatView: View {
     @ObservedObject var session: AgentSession
     @State private var draft = ""
+    @FocusState private var composerFocused: Bool
 
     private static let bottomID = "chat-bottom"
 
@@ -29,6 +30,8 @@ struct AgentChatView: View {
         }
         .background(Theme.bg)
         .environment(\.locale, Locale(identifier: "en_US"))
+        .onChange(of: session.pendingCard != nil) { _, _ in composerFocused = false }
+        .presentationDragIndicator(.visible)
     }
 
     // MARK: Pieces
@@ -142,6 +145,7 @@ struct AgentChatView: View {
         HStack(alignment: .bottom, spacing: 12) {
             TextField("Message", text: $draft, axis: .vertical)
                 .lineLimit(1...5)
+                .focused($composerFocused)
                 .disabled(!session.canSend)
             Button("Send", action: sendDraft)
                 .disabled(!session.canSend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
