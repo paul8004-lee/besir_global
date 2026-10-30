@@ -292,7 +292,7 @@ final class AgentDeliveryToolTests: XCTestCase {
         static let place = "Call search_places to find the restaurant, then call order_delivery again with the place_id it returns."
         static let time = "Ask the user when the food is to arrive, then call order_delivery again. Do not guess it."
         static let timeForm = "Call order_delivery again with arrive_at as a local date-time in the form YYYY-MM-DDTHH:MM, or ask the user."
-        static let window = "Ask the user to confirm the date, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
+        static let window = "Nothing was ordered. Tell the user the arrival time is out of range and ask for a new time, then call order_delivery again. The arrive_at time must be a time that has not passed and be within the next 366 days."
         static let optionsFirst = "Call get_delivery_options first, then call order_delivery again with items taken from its answer."
         static let items = "Ask the user what to order, then call order_delivery again with items as comma-separated pairs of an item id from the get_delivery_options answer and a quantity from 1 to 9, 1 to 6 pairs, no spaces, no id repeated. Do not guess it."
         static let itemUnknown = "Call order_delivery again with items that use only item ids from the get_delivery_options answer, or ask the user what to order."
