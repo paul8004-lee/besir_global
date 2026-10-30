@@ -30,7 +30,13 @@ struct AgentChatView: View {
         }
         .background(Theme.bg)
         .environment(\.locale, Locale(identifier: "en_US"))
-        .onChange(of: session.pendingCard != nil) { _, _ in composerFocused = false }
+        .onChange(of: session.canSend) { _, canSend in
+            guard canSend else { return }
+            composerFocused = false
+            #if os(iOS)
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            #endif
+        }
         .presentationDragIndicator(.visible)
     }
 
