@@ -3597,4 +3597,149 @@ final class RepeatSeriesStoreTests: XCTestCase {
         XCTAssertEqual(back.travelSeconds, 1200)
         XCTAssertEqual(store.drvTravelLookupCount, lookups)
     }
+
+    // MARK: SPEC-SERIESDRAG-001 (card t83) - a drag that changes the start date is cancelled
+
+    /// An occurrence of a repeating activity the way the drag holds it: a series id, 30 minutes long unless given.
+    private func repeating(_ start: Date, end: Date? = nil) -> ActivityBlock {
+        ActivityBlock(title: "Standup", location: nil, startDate: start,
+                      endDate: end ?? start.addingTimeInterval(1800), recurrenceId: UUID())
+    }
+
+    private func outcome(_ block: ActivityBlock, _ minutes: Int, _ calendar: Calendar? = nil)
+        -> Store.SeriesDragOutcome {
+        Store.seriesDragOutcome(for: block, deltaMinutes: minutes, calendar: calendar ?? cal)
+    }
+
+    private func zoneCalendar(_ id: String) -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: id)!
+        return calendar
+    }
+
+    /// AC-001: each drag below puts the activity's own start on another day.
+    func testSERIESDRAG_StartDateChangeCancels() {
+        // 1. Lands exactly at 00:00 of the next day.
+        let late = repeating(at(2026, 11, 2, 23))
+        XCTAssertEqual(outcome(late, 60), .cancel)
+        // 2. A request of 23:55 is rounded up to 00:00 of the next day by the grid (a tie rounds up).
+        let snapped = Store.gridSnappedDelta(from: late.startDate, requestedMinutes: 55, calendar: cal)
+        XCTAssertEqual(snapped, 60)
+        XCTAssertEqual(outcome(late, snapped), .cancel)
+        // 3. Earlier day: 00:30 moved up to 23:50 of the day before, and the request -36 snaps to -40.
+        let early = repeating(at(2026, 11, 2, 0, 30))
+        XCTAssertEqual(outcome(early, -40), .cancel)
+        let snappedUp = Store.gridSnappedDelta(from: early.startDate, requestedMinutes: -36, calendar: cal)
+        XCTAssertEqual(snappedUp, -40)
+        XCTAssertEqual(outcome(early, snappedUp), .cancel)
+        // 4. Whole days: the helper has no limit of its own.
+        let noon = repeating(at(2026, 11, 2, 9))
+        for minutes in [1440, -1440, 3000] { XCTAssertEqual(outcome(noon, minutes), .cancel, "\(minutes)") }
+        // 5. An overnight activity is decided by its start: 23:00 to 01:00 moved by +60 starts on the next day.
+        let overnight = repeating(at(2026, 11, 2, 23), end: at(2026, 11, 3, 1))
+        XCTAssertEqual(outcome(overnight, 60), .cancel)
+    }
+
+    /// AC-002: each drag below keeps the activity's own start on its day, so today's dialog and preview stay.
+    func testSERIESDRAG_StartDateKeptAsksAsToday() {
+        // 1. The case of the issue's second comment: 00:30 moved to 00:10. The helper takes no legs and no Store,
+        //    so an outbound leg that leaves at 23:50 the day before cannot matter; this activity has no leg at all.
+        let early = repeating(at(2026, 11, 3, 0, 30))
+        XCTAssertEqual(outcome(early, -20), .askThisOrSeries)
+        // 2. Lands exactly at 00:00 of the same day; the request -35 snaps to -30 (the tie rounds up).
+        XCTAssertEqual(outcome(early, -30), .askThisOrSeries)
+        let snappedUp = Store.gridSnappedDelta(from: early.startDate, requestedMinutes: -35, calendar: cal)
+        XCTAssertEqual(snappedUp, -30)
+        XCTAssertEqual(outcome(early, snappedUp), .askThisOrSeries)
+        // 3. Late evening: the request +54 snaps to 50 (23:50) and +59 is 23:59, both on the day.
+        let late = repeating(at(2026, 11, 3, 23))
+        let snappedDown = Store.gridSnappedDelta(from: late.startDate, requestedMinutes: 54, calendar: cal)
+        XCTAssertEqual(snappedDown, 50)
+        XCTAssertEqual(outcome(late, snappedDown), .askThisOrSeries)
+        XCTAssertEqual(outcome(late, 59), .askThisOrSeries)
+        // 4. An overnight activity keeps its start day for +30 and -60.
+        let overnight = repeating(at(2026, 11, 3, 23), end: at(2026, 11, 4, 1))
+        XCTAssertEqual(outcome(overnight, 30), .askThisOrSeries)
+        XCTAssertEqual(outcome(overnight, -60), .askThisOrSeries)
+        // 5. Offset 0 is a definition (the drag end filters it before the decision).
+        XCTAssertEqual(outcome(early, 0), .askThisOrSeries)
+    }
+
+    /// AC-003: only the start date and the offset count, and a call changes nothing in a Store.
+    func testSERIESDRAG_DecisionReadsOnlyTheStartAndLeavesTheStoreAlone() {
+        let store = fixtureStore()
+        XCTAssertTrue(store.addSeries(standup()))
+        let start = at(2026, 11, 23, 23)
+        var withPlace = repeating(start)
+        withPlace.location = office
+        var retitled = repeating(start)
+        retitled.title = "Something else"
+        var series = repeating(start)
+        series.recurrenceId = store.series[0].id
+        let variants = [repeating(start), repeating(start, end: at(2026, 11, 24, 3)), withPlace, retitled, series]
+        for (index, block) in variants.enumerated() {
+            XCTAssertEqual(outcome(block, 60), .cancel, "variant \(index) +60")
+            XCTAssertEqual(outcome(block, -20), .askThisOrSeries, "variant \(index) -20")
+        }
+        // The calls are static and take no Store; this reads the Store around them as a tripwire for a changed signature.
+        func snapshot() -> [String] {
+            let first = store.series[0]
+            return [store.activities.map { "\($0.id) \($0.startDate) \($0.endDate)" }.joined(separator: ";"),
+                    "\(store.activities.count) \(store.events.count) \(store.series.count)",
+                    "\(first.startMinute) \(first.endMinute) \(first.endDayDistance)"]
+        }
+        let before = snapshot()
+        for minutes in [-1440, -40, -20, 0, 30, 60, 1440] { _ = outcome(variants[0], minutes) }
+        XCTAssertEqual(snapshot(), before)
+    }
+
+    /// AC-004: the calendar decides, including on the two daylight-saving transition days of Los Angeles.
+    func testSERIESDRAG_CalendarParameterAndDSTDays() {
+        // 1. The same instant, 2026-06-10 23:30 UTC, is 00:30 on June 11 in UTC and 08:30 on June 11 in Seoul.
+        let utc = zoneCalendar("UTC")
+        let seoul = zoneCalendar("Asia/Seoul")
+        let instant = utc.date(from: DateComponents(year: 2026, month: 6, day: 10, hour: 23, minute: 30))!
+        let block = repeating(instant)
+        XCTAssertEqual(outcome(block, 60, utc), .cancel)
+        XCTAssertEqual(outcome(block, 60, seoul), .askThisOrSeries)
+        // 2. Fall-back day, 2026-11-01, 25 hours long. The offset is elapsed minutes.
+        let la = zoneCalendar("America/Los_Angeles")
+        func local(_ y: Int, _ m: Int, _ d: Int, _ h: Int, _ min: Int = 0) -> Date {
+            la.date(from: DateComponents(year: y, month: m, day: d, hour: h, minute: min))!
+        }
+        let fallLate = repeating(local(2026, 11, 1, 23))
+        XCTAssertEqual(outcome(fallLate, 60, la), .cancel)
+        XCTAssertEqual(outcome(fallLate, 50, la), .askThisOrSeries)
+        let fallEarly = repeating(local(2026, 11, 1, 0, 30))
+        XCTAssertEqual(outcome(fallEarly, 1450, la), .askThisOrSeries, "lands 23:40 on Nov 1")
+        XCTAssertEqual(outcome(fallEarly, 1470, la), .cancel, "lands 00:00 on Nov 2")
+        // 3. Spring-forward day, 2026-03-08, 23 hours long.
+        let springLate = repeating(local(2026, 3, 8, 22, 30))
+        XCTAssertEqual(outcome(springLate, 80, la), .askThisOrSeries, "lands 23:50")
+        XCTAssertEqual(outcome(springLate, 90, la), .cancel, "lands 00:00 on Mar 9")
+        let springEarly = repeating(local(2026, 3, 8, 1))
+        XCTAssertEqual(outcome(springEarly, 1330, la), .cancel, "lands 00:10 on Mar 9")
+    }
+
+    /// AC-006: the Store paths keep moving across days, so the rule belongs to the drag end and not to the Store.
+    func testSERIESDRAG_StoreMovePathsStillMoveAcrossDays() throws {
+        // 1. A stored non-repeating activity moved by 25 hours lands on another day (the drag of a plain block).
+        let store = fixtureStore()
+        let plain = ActivityBlock(title: "Late", location: nil, startDate: at(2026, 11, 2, 23),
+                                  endDate: at(2026, 11, 2, 23, 30))
+        store.activities.append(plain)
+        store.moveActivity(plain, byMinutes: 1500, wholeSeries: false)
+        let moved = try XCTUnwrap(store.activity(id: plain.id))
+        XCTAssertEqual(moved.startDate, at(2026, 11, 4, 0))
+        XCTAssertEqual(moved.endDate, at(2026, 11, 4, 0, 30))
+        // 2. The edit path moves one occurrence of a series to another day and the occurrence leaves the series.
+        let edit = fixtureStore()
+        let standupSeries = standup()
+        XCTAssertTrue(edit.addSeries(standupSeries))
+        let nov23 = standupSeries.occurrenceID(dayKey: 20261123)
+        XCTAssertTrue(edit.modifyActivity(id: nov23, newStart: at(2026, 11, 24, 9)))
+        let edited = try XCTUnwrap(edit.activity(id: nov23))
+        XCTAssertEqual(edited.startDate, at(2026, 11, 24, 9))
+        XCTAssertNil(edited.recurrenceId)
+    }
 }
