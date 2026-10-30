@@ -255,10 +255,13 @@ final class AgentCard {
             fieldCard?.freeze()
             let (resolution, result) = await onConfirm()
             mark = result
+            // A card that ended without an applied answer no longer shows the rows besir added itself.
+            if result != .confirmed { fieldCard?.removeOwnRows() }
             return resolution
         case .cancel, .dismiss:
             fieldCard?.freeze()
             mark = .cancelled
+            fieldCard?.removeOwnRows()
             return AgentResolution(result: cancelResult ?? AgentToolbox.declinedResult, notice: nil)
         }
     }

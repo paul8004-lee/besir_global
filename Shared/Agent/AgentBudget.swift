@@ -8,14 +8,14 @@ enum AgentBudget {
 
     // MARK: Fixed result texts
 
-    static let leftMessage = "State the amount left or over as a fact and say it comes from a simulated budget app. If includes_estimate is true, say it includes estimated spending. Give no advice."
+    static let leftMessage = "State the amount left or over and say it comes from a simulated budget app. If includes_estimate is true, say it includes estimated spending. Give no advice."
     static let leftUnavailableMessage = "The simulated budget app could not be reached. Tell the user the budget left is not available right now."
-    static let spendMessage = "State the amount recorded and the amount left or over as facts in one line and say it comes from a simulated budget app. If includes_estimate is true, say it includes estimated spending. Give no advice."
+    static let spendMessage = "State the amount recorded and the amount left or over in one line and say it comes from a simulated budget app. If includes_estimate is true, say it includes estimated spending. Give no advice."
     static let spendUnavailableMessage = "The simulated budget app could not record the spend. Tell the user the spend could not be recorded and that nothing was added."
 
     // MARK: Partner request hook texts
 
-    static let bookingRecordedSentence = "Tell the user the estimated spend sent to the simulated budget app and the amount left or over, as facts and as estimates. Do not call record_spend for this request."
+    static let bookingRecordedSentence = "Tell the user the estimated spend that was sent to the simulated budget app, and that the amount left or over comes from the simulated budget app, not from the partner. Do not call record_spend for this request."
     static let bookingUnavailableSentence = "The estimated spend could not be sent to the simulated budget app. Tell the user so, and do not call record_spend for this request."
     static let bookingFailureNotice = "The estimated spend could not be sent to \(partnerLabel)."
     static let spendFailureNotice = "The spend could not be recorded in \(partnerLabel)."

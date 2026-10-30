@@ -380,6 +380,16 @@ indirect enum AgentFieldRow {
         debouncer.cancelAll()
     }
 
+    /// The rows besir added itself (each switch with its dependents) leave the card: a card that ended without an applied answer
+    /// must not read as if they had taken effect. The partner's own rows stay.
+    func removeOwnRows() {
+        let owned = keys(in: layout.filter { node in
+            if case .group = node { return true }
+            return false
+        })
+        card.fields.removeAll { owned.contains($0.key) }
+    }
+
     // MARK: Building
 
     private func nodes(for rows: [AgentFieldRow], lines: inout Int) -> [Node] {
@@ -450,7 +460,7 @@ indirect enum AgentFieldRow {
         switch spec.kind {
         case .text, .number:
             return EditField(key: key, kind: .title, label: spec.label, options: [], allowsCustom: true,
-                             chosen: chosen.map { $0.trimmingCharacters(in: .whitespaces) })
+                             chosen: chosen.map { $0.trimmingCharacters(in: .whitespaces) }, placeholder: String())
         case .place:
             return EditField(key: key, kind: .place, label: spec.label, options: favoriteOptions, allowsCustom: true, chosen: chosen)
         case .time:

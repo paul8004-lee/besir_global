@@ -394,7 +394,6 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertEqual(result["message"] as? String, AgentBudget.leftMessage)
         let message = (result["message"] as? String ?? "").lowercased()
         XCTAssertTrue(message.contains("simulated"))
-        XCTAssertTrue(message.contains("fact"))
         XCTAssertTrue(message.contains("no advice"))
         XCTAssertTrue(message.contains("estimated spending"))
         let sent = try XCTUnwrap(rig.partner.body())
