@@ -116,10 +116,10 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertEqual(placeRow.options.first?.place, home.place)
         XCTAssertTrue(placeRow.placeSpecials.isEmpty)
 
-        // The five wire words map to the five kinds; any other word maps to none.
-        XCTAssertEqual(["text", "place", "time", "pick_one", "on_off"].map(AgentFieldKind.init(wire:)),
-                       [.text, .place, .time, .pickOne, .onOff])
-        XCTAssertNil(AgentFieldKind(wire: "number"))
+        // The six wire words map to the six kinds; any other word maps to none.
+        XCTAssertEqual(["text", "place", "time", "pick_one", "on_off", "number"].map(AgentFieldKind.init(wire:)),
+                       [.text, .place, .time, .pickOne, .onOff, .number])
+        XCTAssertNil(AgentFieldKind(wire: "integer"))
         // A seed made from the partner's field keeps its key, label and chips.
         let fromPartner = AgentFieldSpec(PartnerField(key: "door", kind: .onOff, label: "Leave at door",
                                                       options: [PartnerOption(id: "true", label: "Leave"), PartnerOption(id: "false", label: "Hand over")]))

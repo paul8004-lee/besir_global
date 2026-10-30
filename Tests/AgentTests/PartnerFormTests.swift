@@ -95,7 +95,7 @@ final class PartnerFormTests: XCTestCase {
             ("not an array", ["key": "a", "kind": "text", "label": "A"]), ("a string", "a"), ("null", NSNull()), ("zero fields", [Any]()),
             ("nine fields", (0..<9).map { field(String(repeating: "a", count: $0 + 1), "text", "L") }),
             ("an element that is not an object", ["a"]),
-            ("unknown kind", [field("a", "number", "A")]), ("kind in upper case", [field("a", "Text", "A")]),
+            ("unknown kind", [field("a", "integer", "A")]), ("kind in upper case", [field("a", "Text", "A")]),
             ("kind with a dash", [field("a", "pick-one", "A", options: [option("x", "X")])]), ("kind not a string", [["key": "a", "kind": 1, "label": "A"]]),
             ("duplicate key", [field("a", "text", "A"), field("a", "place", "B")]),
             ("key of 33 characters", [field(String(repeating: "a", count: 33), "text", "A")]),
