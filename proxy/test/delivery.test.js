@@ -231,12 +231,20 @@ test("AC-DELIVERY-002 D07: the answer depends on the request alone and the order
   assert.equal(changed.order_id, a.order_id);
   const upper = await (await call(valid({ request_id: ID.toUpperCase() }))).json();
   assert.equal(upper.order_id, a.order_id);
-  // The order id differs from the table code of the booking route for the same request id.
+  // The order id differs from the reservation number of the booking route for the same request id.
   const table = await (
-    await call({ request_id: ID, restaurant: "Test Cafe", party_size: 2, start: "2026-11-02T19:40" }, { path: "/booking" })
+    await call(
+      {
+        op: "submit",
+        request_id: ID,
+        values: { restaurant: "Test Cafe", party_size: 2, start: "2026-11-02T19:40", name: "Sam" },
+      },
+      { path: "/booking" },
+    )
   ).json();
-  assert.match(table.reservation_code, /^EX-[A-Z0-9]{6}$/);
-  assert.notEqual(table.reservation_code.slice(3), a.order_id.slice(3));
+  const reservation = table.results.find((item) => item.name === "Reservation number");
+  assert.match(reservation.value, /^EX-[A-Z0-9]{6}$/);
+  assert.notEqual(reservation.value.slice(3), a.order_id.slice(3));
 });
 
 test("AC-DELIVERY-001 D08: the order and words of the faults", async () => {

@@ -365,20 +365,20 @@ final class AgentDeliveryToolTests: XCTestCase {
 
     // MARK: O01 the declarations
 
-    func testO01_ThirteenDeclarationsTheNewTwoSitBeforeRequestBookingAndAreStrict() throws {
+    func testO01_FourteenDeclarationsTheDeliveryTwoSitBeforeTheLastTwoAndAreStrict() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(decls.count, 14)
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places",
                         "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend",
-                        "get_delivery_options", "order_delivery", "request_booking"])
+                        "get_delivery_options", "order_delivery", "get_partners", "request_partner"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 13)
+        XCTAssertEqual(recorded.count, 14)
         for index in decls.indices {
             XCTAssertTrue((decls[index] as AnyObject).isEqual(recorded[index]), "declaration \(index) differs from the fixture")
         }
-        XCTAssertEqual(decls.last?["name"] as? String, "request_booking")
+        XCTAssertEqual(decls.last?["name"] as? String, "request_partner")
 
         let options = decls[10]
         XCTAssertEqual(options["type"] as? String, "function")
@@ -841,14 +841,14 @@ final class AgentDeliveryToolTests: XCTestCase {
                 XCTAssertTrue(declared.contains(word) || toolNames.contains(word), "\(message) names \(word)")
             }
             for other in ["list_activities", "create_activity", "update_activity", "delete_activity", "get_travel_time", "check_day_plan",
-                          "show_day_plan", "request_booking", "get_budget_left", "record_spend", "address", "meal"] {
+                          "show_day_plan", "request_partner", "get_budget_left", "record_spend", "address", "meal"] {
                 XCTAssertFalse(message.contains(other), "\(message) names \(other)")
             }
         }
         // The strings of the older tools are unchanged.
         let booking = DeliveryToolRig()
-        XCTAssertEqual(booking.call("request_booking", ["place_id": "p99", "start": "x", "party_size": "2"]).message,
-                       "Call search_places to find the place, then call request_booking again with the place_id it returns.")
+        XCTAssertEqual(booking.call("request_partner", ["partner": "p99"]).message,
+                       "Call get_partners first, then call request_partner again with a partner id from its answer.")
         XCTAssertEqual(booking.call("record_spend", ["amount": 5]).message,
                        "Tell the user the budget is not available right now. Do not call get_budget_left or record_spend again.")
         XCTAssertEqual(booking.call("list_activities", ["from": 5]).message, ToolText.wrongType("list_activities", "from"))
@@ -1412,8 +1412,8 @@ final class AgentDeliveryToolTests: XCTestCase {
         XCTAssertEqual([AgentDelivery.mealSwitchLabel, AgentDelivery.mealTitleLabel, AgentDelivery.mealStartLabel],
                        ["Add to schedule", "Meal title", "Start"])
         // The model-facing texts that the field card changed, word for word.
-        XCTAssertEqual(AgentDelivery.optionsMessage, "State the items with their estimated prices, the estimated delivery fee and the cards as facts, and say the delivery app is simulated and every price an estimate. Ask the user what to order and when it is to arrive. Do not ask which card or where to deliver: the user chooses them on the order card. Give no advice.")
-        XCTAssertEqual(AgentDelivery.appliedMessage, "Tell the user the delivery is ordered with a simulated delivery app. Give the order id, the items, the delivery place (the address field) and each result item as a fact, and say any amount is an estimate. Give no advice.")
+        XCTAssertEqual(AgentDelivery.optionsMessage, "State the items with their estimated prices, the estimated delivery fee and the cards, and say the delivery app is simulated and every price an estimate. Ask the user what to order and when it is to arrive. Do not ask which card or where to deliver: the user chooses them on the order card. Give no advice.")
+        XCTAssertEqual(AgentDelivery.appliedMessage, "Tell the user the delivery is ordered with a simulated delivery app. Give the order id, the items, the delivery place (the address field) and each result item, and say any amount is an estimate. Give no advice.")
         XCTAssertEqual(AgentDelivery.editRejectedMessage, "A required value of the order card was empty. Tell the user nothing was ordered.")
 
         // The texts a run produces: the card, the results, the notices and the refusals.
@@ -2137,5 +2137,60 @@ final class AgentDeliveryToolTests: XCTestCase {
         XCTAssertFalse(orderFlows.isEmpty)
         XCTAssertFalse(orderFlows.contains { $0 == searchPacket.flowID })
         XCTAssertEqual(rig.reads.count, 1, "Confirm reads the position no more")
+    }
+
+    // MARK: O46 to O48 the rows of the app's own meal choice and the typed rows (repairs after the walk)
+
+    func testO46_TheTypedRowsOfTheCardShowNoPlaceholderAndThePlaceAndTimeRowsKeepTheirWording() async throws {
+        let rig = makeRig()
+        let fields = try model(try await readyCard(rig))
+        XCTAssertEqual(fields.field("meal_title")?.placeholder, "", "the meal title is a typed row of the card")
+        XCTAssertNil(fields.field("address")?.placeholder, "a place row keeps its search wording")
+        XCTAssertNil(fields.field("arrive_at")?.placeholder, "a time row keeps the view's own wording")
+        XCTAssertNil(fields.field("card_id")?.placeholder)
+        XCTAssertNil(fields.field("meal")?.placeholder)
+    }
+
+    func testO47_ACardThatEndedWithoutAnOrderShowsNoMealRowsAndKeepsThePartnersRows() async throws {
+        let mealKeys = ["meal", "meal_title", "meal_start"]
+        func assertOrderRowsOnly(_ card: AgentCard, _ note: String) throws {
+            let fields = try model(card)
+            XCTAssertEqual(fields.card.fields.map(\.key).filter { mealKeys.contains($0) }, [], note)
+            let text = card.lines.joined(separator: "\n")
+            XCTAssertFalse(text.contains("Add to schedule"), "\(note): \(text)")
+            XCTAssertFalse(text.contains("Meal title"), "\(note): \(text)")
+            for key in ["arrive_at", "address", "card_id"] { XCTAssertNotNil(fields.field(key), "\(note): \(key)") }
+        }
+        for how in [AgentCardResolution.cancel, .dismiss] {
+            let rig = makeRig()
+            let card = try await readyCard(rig)
+            XCTAssertTrue(card.lines.joined(separator: "\n").contains("Add to schedule: Add"), "premise")
+            _ = await card.resolve(how)
+            try assertOrderRowsOnly(card, "\(how)")
+        }
+        // The partner declines an arrival outside its hours.
+        let (_, declined) = try await dialled("2026-10-28T23:30")
+        let declinedResolution = try await confirm(declined)
+        XCTAssertEqual(declinedResolution.status, "declined")
+        XCTAssertEqual(declined.mark, .notApplied)
+        try assertOrderRowsOnly(declined, "declined")
+    }
+
+    func testO48_AConfirmedCardKeepsItsMealRowsAsTheyWere() async throws {
+        let added = makeRig()
+        let addedCard = try await readyCard(added)
+        let resolution = try await confirm(addedCard)
+        XCTAssertEqual(resolution.status, "applied")
+        XCTAssertEqual(addedCard.mark, .confirmed)
+        XCTAssertTrue(addedCard.lines.contains("Add to schedule: Add"), "\(addedCard.lines)")
+        XCTAssertTrue(addedCard.lines.contains { $0.hasPrefix("Meal title:") }, "\(addedCard.lines)")
+
+        let skipped = makeRig()
+        let skippedCard = try await readyCard(skipped)
+        XCTAssertTrue(try model(skippedCard).chooseOption("meal", "false"))
+        _ = try await confirm(skippedCard)
+        XCTAssertEqual(skippedCard.mark, .confirmed)
+        XCTAssertTrue(skippedCard.lines.contains("Add to schedule: Don't Add"), "\(skippedCard.lines)")
+        XCTAssertFalse(skippedCard.lines.contains { $0.hasPrefix("Meal title:") })
     }
 }

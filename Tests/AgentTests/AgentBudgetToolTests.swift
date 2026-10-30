@@ -61,7 +61,7 @@ final class BudgetToolRig {
     let store: Store
     let clock: MutableClock
     let partner: BudgetToolPartner
-    let tables: EchoPartner
+    let tables: StubPartner
     let log: ConnectionLog
     let ledger: BudgetLedger
     let box: BookingConfigBox
@@ -71,7 +71,7 @@ final class BudgetToolRig {
     var ledgerFile: URL { folder.appendingPathComponent(BudgetLedger.fileName) }
 
     init(config: AppConfig = BudgetToolFixture.config, partner: BudgetToolPartner = BudgetToolPartner(),
-         tables: EchoPartner = EchoPartner(), places: [Place] = [BookingFixture.place], injectBudget: Bool = true) {
+         tables: StubPartner = StubPartner(), places: [Place] = [BookingFixture.place], injectBudget: Bool = true) {
         let store = EmptyStore.make()
         store.config = AppConfig()
         let clock = MutableClock()
@@ -84,7 +84,7 @@ final class BudgetToolRig {
         let budget: (() -> BudgetClient)? = injectBudget
             ? { BudgetClient(config: box.config, ledger: ledger, send: partner.send, connections: log) } : nil
         let toolbox = AgentToolbox(store: store, now: { clock.now }, timeZone: { clock.zone },
-                                   booking: { BookingClient(config: box.config, send: tables.send, connections: log) },
+                                   partners: { PartnerClient(config: box.config, send: tables.send, connections: log) },
                                    budget: budget)
         _ = toolbox.registry.register(places)
         self.store = store
@@ -148,11 +148,11 @@ final class BudgetToolRig {
     }
 }
 
-/// SPEC-BUDGET-001 AC-BUDGET-006 to 010: the two tools, the gate, the lookups and the booking hook.
+/// SPEC-BUDGET-001 AC-BUDGET-006 to 010: the two tools, the gate, the lookups and the partner request hook.
 @MainActor
 final class AgentBudgetToolTests: XCTestCase {
     private func makeRig(config: AppConfig = BudgetToolFixture.config, partner: BudgetToolPartner = BudgetToolPartner(),
-                         tables: EchoPartner = EchoPartner(), places: [Place] = [BookingFixture.place],
+                         tables: StubPartner = StubPartner(), places: [Place] = [BookingFixture.place],
                          injectBudget: Bool = true) -> BudgetToolRig {
         let rig = BudgetToolRig(config: config, partner: partner, tables: tables, places: places, injectBudget: injectBudget)
         let folder = rig.folder
@@ -196,19 +196,19 @@ final class AgentBudgetToolTests: XCTestCase {
 
     // MARK: G01 the declarations
 
-    func testBUDGET_G01_ElevenDeclarationsTheNewTwoSitBeforeRequestBookingAndAreStrict() throws {
+    func testBUDGET_G01_FourteenDeclarationsTheBudgetTwoSitBeforeTheLastTwoAndAreStrict() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(decls.count, 14)
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places",
-                        "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "get_delivery_options", "order_delivery", "request_booking"])
+                        "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "get_delivery_options", "order_delivery", "get_partners", "request_partner"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 13)
+        XCTAssertEqual(recorded.count, 14)
         for index in decls.indices {
             XCTAssertTrue((decls[index] as AnyObject).isEqual(recorded[index]), "declaration \(index) differs from the fixture")
         }
-        XCTAssertEqual(decls.last?["name"] as? String, "request_booking")
+        XCTAssertEqual(decls.last?["name"] as? String, "request_partner")
 
         let left = decls[8]
         XCTAssertEqual(left["type"] as? String, "function")
@@ -346,7 +346,7 @@ final class AgentBudgetToolTests: XCTestCase {
         messages.append(try XCTUnwrap(unconfigured.spend("18").message))
 
         let others = ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places", "get_travel_time",
-                      "check_day_plan", "show_day_plan", "request_booking", "place_id", "party_size", "route_id", "plan_id", "stops",
+                      "check_day_plan", "show_day_plan", "request_partner", "place_id", "party_size", "route_id", "plan_id", "stops",
                       "origin_place_id", "arrive_by"]
         for message in messages {
             for other in others { XCTAssertFalse(message.contains(other), "\(message) names \(other)") }
@@ -362,12 +362,12 @@ final class AgentBudgetToolTests: XCTestCase {
                        ToolText.wrongType("create_activity", "title"))
         XCTAssertEqual(harness.call("update_activity", ["id": 5]).message, ToolText.wrongType("update_activity", "id"))
         XCTAssertEqual(harness.call("list_activities", ["from": 5, "to": "x"]).message, ToolText.wrongType("list_activities", "from"))
-        let booking = makeRig()
-        XCTAssertEqual(booking.call("request_booking", ["place_id": "p1", "start": BookingFixture.start, "party_size": 5]).message,
-                       "Call request_booking again with party_size as a string. If you do not have it, ask the user; do not guess it.")
+        let partner = makeRig()
+        XCTAssertEqual(partner.call("request_partner", ["partner": 5]).message,
+                       "Call request_partner again with partner as a string, an id from the get_partners answer.")
         let noProxy = makeRig(config: BudgetToolFixture.unconfigured)
-        XCTAssertEqual(noProxy.call("request_booking", ["place_id": "p1", "start": BookingFixture.start, "party_size": "2"]).message,
-                       "Tell the user booking is not available right now. Do not call request_booking again.")
+        XCTAssertEqual(noProxy.call("get_partners").message,
+                       "Tell the user partners are not available right now. Do not call get_partners or request_partner again.")
     }
 
     // MARK: G09-G14 get_budget_left
@@ -394,7 +394,6 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertEqual(result["message"] as? String, AgentBudget.leftMessage)
         let message = (result["message"] as? String ?? "").lowercased()
         XCTAssertTrue(message.contains("simulated"))
-        XCTAssertTrue(message.contains("fact"))
         XCTAssertTrue(message.contains("no advice"))
         XCTAssertTrue(message.contains("estimated spending"))
         let sent = try XCTUnwrap(rig.partner.body())
@@ -655,10 +654,17 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertTrue(packets.isEmpty)
     }
 
-    // MARK: G21-G32 the booking hook
+    // MARK: G21-G32 the partner request hook
 
-    private func bookingCard(_ rig: BudgetToolRig, party: String = "2", start: String = BookingFixture.start) throws -> AgentCard {
-        try XCTUnwrap(rig.call("request_booking", ["place_id": "p1", "start": start, "party_size": party]).card)
+    /// The card of a partner request: the chat line is set as the user's, `get_partners` runs, then `request_partner` is called
+    /// with the party and the start (and a restaurant and a name), each with a quote.
+    private func partnerCard(_ rig: BudgetToolRig, party: String = "2", start: String = BookingFixture.start,
+                             restaurant: String = "Pasta Palace", name: String = "Sam") async throws -> AgentCard {
+        let fill = PartnerRig.Fill(restaurant: restaurant, party: Int(party), start: start, name: name)
+        let line = PartnerRig.parts(fill).line
+        rig.tools.userLines = { [line] }
+        _ = try await rig.runJSON(rig.call("get_partners"))
+        return try XCTUnwrap(rig.call("request_partner", PartnerRig.arguments(fill)).card)
     }
 
     private func confirmed(_ card: AgentCard) async throws -> AgentResolution {
@@ -672,9 +678,9 @@ final class AgentBudgetToolTests: XCTestCase {
 
     func testBUDGET_G21_AConfirmedBookingSendsItsEstimatedSpendUnderTheBookingsFlow() async throws {
         let rig = makeRig()
-        let resolution = try await confirmed(try bookingCard(rig))
+        let resolution = try await confirmed(try await partnerCard(rig))
         XCTAssertEqual(resolution.status, "applied")
-        XCTAssertEqual(rig.tables.requests.count, 1)
+        XCTAssertEqual(rig.tables.requests.count, 3, "the directory, the form and the submit")
         XCTAssertEqual(rig.partner.requests.count, 1)
         let sent = try XCTUnwrap(rig.partner.body())
         XCTAssertEqual(Set(sent.keys), ["op", "week_start", "spent_cents", "amount_cents", "request_id"])
@@ -690,16 +696,18 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertEqual(entries[0]["weekStart"] as? String, BudgetToolFixture.week)
 
         let packets = await rig.packets()
-        XCTAssertEqual(packets.map(\.summary), ["Table for 2 requested", "Reservation confirmed", "Spend sent", "Spend recorded"])
-        XCTAssertEqual(Set(packets.map(\.flowID)).count, 1)
+        XCTAssertEqual(packets.map(\.summary), ["Partners requested", "Partners received", "Example Tables: Fields requested",
+                                               "Example Tables: Fields received", "Example Tables: Request sent",
+                                               "Example Tables: Request confirmed", "Spend sent", "Spend recorded"])
+        XCTAssertEqual(Set(packets.map(\.flowID)).count, 2, "the lookup's flow and the request's flow")
         XCTAssertNotNil(packets.first?.flowID)
         let flows = ConnectionFlows.group(packets)
-        XCTAssertEqual(flows.count, 1)
-        XCTAssertEqual(flows.first?.chain, [.besir, .bookingPartner, .besir, .budgetPartner, .besir])
+        XCTAssertEqual(flows.count, 2)
+        XCTAssertEqual(flows.first?.chain, [.besir, .partner, .besir, .budgetPartner, .besir])
 
         // A table in the next week is counted there.
         let next = makeRig()
-        _ = try await confirmed(try bookingCard(next, start: "2026-11-02T19:00"))
+        _ = try await confirmed(try await partnerCard(next, start: "2026-11-02T19:00"))
         XCTAssertEqual(next.partner.body()?["week_start"] as? String, "2026-11-02")
         XCTAssertEqual(next.ledger.spentCents(weekStart: "2026-11-02"), 6000)
         XCTAssertEqual(next.ledger.spentCents(weekStart: BudgetToolFixture.week), 0)
@@ -707,14 +715,15 @@ final class AgentBudgetToolTests: XCTestCase {
 
     func testBUDGET_G22_TheBookingResultGainsTheBudgetBlockAndTheSentenceAndTheNoticeIsTheWithinForm() async throws {
         let rig = makeRig()
-        let card = try bookingCard(rig)
+        let card = try await partnerCard(rig)
         let resolution = try await confirmed(card)
         XCTAssertEqual(card.mark, .confirmed)
         XCTAssertEqual(resolution.status, "applied")
         XCTAssertEqual(rig.store.activities.count, 1)
         XCTAssertEqual(resolution.notice, "Estimated spend $60.00 sent to Example Budget (Simulated): $140.00 left this week.")
         let json = try XCTUnwrap(resolution.json)
-        XCTAssertEqual(json["reservation_code"] as? String, "EX-AB12CD")
+        let items = try XCTUnwrap(json["results"] as? [[String: String]])
+        XCTAssertEqual(items.first { $0["name"] == "Reservation number" }?["value"], "EX-AB12CD")
         XCTAssertEqual(json["partner"] as? String, "Example Tables")
         let block = try XCTUnwrap(json["budget"] as? [String: Any])
         XCTAssertEqual(Set(block.keys), ["simulated", "status", "estimated_spend", "week", "includes_estimate", "left"])
@@ -723,16 +732,16 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertEqual(block["week"] as? String, "this week")
         XCTAssertEqual(block["includes_estimate"] as? Bool, true)
         XCTAssertEqual(block["left"] as? String, "$140.00")
-        XCTAssertEqual(json["message"] as? String, AgentBooking.appliedMessage + " " + AgentBudget.bookingRecordedSentence)
+        XCTAssertEqual(json["message"] as? String, AgentPartner.appliedMessage + " " + AgentBudget.bookingRecordedSentence)
         let sentence = AgentBudget.bookingRecordedSentence.lowercased()
-        XCTAssertTrue(sentence.contains("estimate") && sentence.contains("simulated") && sentence.contains("fact"))
-        XCTAssertTrue(sentence.contains("do not call record_spend for this table"))
+        XCTAssertTrue(sentence.contains("estimate") && sentence.contains("simulated"))
+        XCTAssertTrue(sentence.contains("do not call record_spend for this request"))
     }
 
     func testBUDGET_G23_TheOverNoticeAndTheForTheWeekOfFormForAnotherWeek() async throws {
         let over = makeRig()
         over.hold(19000)
-        let first = try await confirmed(try bookingCard(over))
+        let first = try await confirmed(try await partnerCard(over))
         XCTAssertEqual(first.notice, "Estimated spend $60.00 sent to Example Budget (Simulated): $50.00 over the budget this week.")
         let overBlock = try XCTUnwrap(first.json?["budget"] as? [String: Any])
         XCTAssertEqual(Set(overBlock.keys), ["simulated", "status", "estimated_spend", "week", "includes_estimate", "over_by"])
@@ -740,13 +749,13 @@ final class AgentBudgetToolTests: XCTestCase {
         XCTAssertNil(overBlock["left"])
 
         let next = makeRig()
-        let second = try await confirmed(try bookingCard(next, start: "2026-11-02T19:00"))
+        let second = try await confirmed(try await partnerCard(next, start: "2026-11-02T19:00"))
         XCTAssertEqual(second.notice, "Estimated spend $60.00 sent to Example Budget (Simulated): $140.00 left for the week of Nov 2.")
         XCTAssertEqual((second.json?["budget"] as? [String: Any])?["week"] as? String, "week of Nov 2")
 
         let nextOver = makeRig()
         nextOver.hold(19000, week: "2026-11-02")
-        let third = try await confirmed(try bookingCard(nextOver, start: "2026-11-02T19:00"))
+        let third = try await confirmed(try await partnerCard(nextOver, start: "2026-11-02T19:00"))
         XCTAssertEqual(third.notice,
                        "Estimated spend $60.00 sent to Example Budget (Simulated): $50.00 over the budget for the week of Nov 2.")
         XCTAssertEqual(AgentBudget.weekPhrase(weekStart: "2026-11-02", currentWeekStart: "2026-11-02"), "this week")
@@ -755,24 +764,24 @@ final class AgentBudgetToolTests: XCTestCase {
 
     func testBUDGET_G24_ADeclinedAFailedAndACancelledBookingSendNoBudgetRequest() async throws {
         let declined = makeRig()
-        let declinedResolution = try await confirmed(try bookingCard(declined, party: "9"))
+        let declinedResolution = try await confirmed(try await partnerCard(declined, party: "9"))
         XCTAssertEqual(declinedResolution.status, "declined")
         XCTAssertNil(declinedResolution.notice)
 
         let failed = makeRig()
+        let failedCard = try await partnerCard(failed)
         failed.tables.mode = .status(500, "oops")
-        let failedCard = try bookingCard(failed)
         let failedResolution = try await confirmed(failedCard)
         XCTAssertEqual(failedResolution.status, "unavailable")
-        XCTAssertEqual(failedResolution.notice, AgentBooking.unavailableNotice)
+        XCTAssertEqual(failedResolution.notice, AgentPartner.unavailableNotice)
 
         let cancelled = makeRig()
-        let cancelledCard = try bookingCard(cancelled)
+        let cancelledCard = try await partnerCard(cancelled)
         let cancelledResolution = await cancelledCard.resolve(.cancel)
         XCTAssertEqual(cancelledResolution?.status, "declined")
 
         let late = makeRig()
-        let lateCard = try bookingCard(late)
+        let lateCard = try await partnerCard(late)
         late.clock.now = TestClock.date("2026-10-28T19:01")
         let lateResolution = try await confirmed(lateCard)
         XCTAssertEqual(lateResolution.status, "rejected")
@@ -793,19 +802,19 @@ final class AgentBudgetToolTests: XCTestCase {
         for (name, mode) in modes {
             let rig = makeRig()
             rig.partner.mode = mode
-            let card = try bookingCard(rig)
+            let card = try await partnerCard(rig)
             let resolution = try await confirmed(card)
             XCTAssertEqual(resolution.status, "applied", name)
             XCTAssertEqual(card.mark, .confirmed, name)
             XCTAssertEqual(rig.store.activities.count, 1, name)
             XCTAssertEqual(resolution.notice, "The estimated spend could not be sent to Example Budget (Simulated).", name)
             let json = try XCTUnwrap(resolution.json, name)
-            XCTAssertEqual(json["reservation_code"] as? String, "EX-AB12CD", name)
+            XCTAssertEqual((json["results"] as? [[String: String]])?.first { $0["name"] == "Reservation number" }?["value"], "EX-AB12CD", name)
             let block = try XCTUnwrap(json["budget"] as? [String: Any], name)
             XCTAssertEqual(Set(block.keys), ["simulated", "status"], name)
             XCTAssertEqual(block["status"] as? String, "unavailable", name)
             XCTAssertEqual(block["simulated"] as? Bool, true, name)
-            XCTAssertEqual(json["message"] as? String, AgentBooking.appliedMessage + " " + AgentBudget.bookingUnavailableSentence, name)
+            XCTAssertEqual(json["message"] as? String, AgentPartner.appliedMessage + " " + AgentBudget.bookingUnavailableSentence, name)
             XCTAssertTrue(rig.entries.isEmpty, name)
             XCTAssertEqual(rig.ledger.spentCents(weekStart: BudgetToolFixture.week), 0, name)
             let lines = await rig.lines()
@@ -816,32 +825,36 @@ final class AgentBudgetToolTests: XCTestCase {
     func testBUDGET_G26_WithNoProxyTheBookingResultIsTheBaseResultWithNoNoticeAndNoBudgetPacket() async throws {
         // No budget client is injected: the default one is built from the Store's configuration, which has no proxy.
         let rig = makeRig(injectBudget: false)
-        let resolution = try await confirmed(try bookingCard(rig))
+        let resolution = try await confirmed(try await partnerCard(rig))
         let entry = try XCTUnwrap(rig.store.activities.first)
-        let expected: [String: Any] = ["status": "applied", "partner": "Example Tables", "simulated": true,
-                                       "reservation_code": "EX-AB12CD", "id": entry.id.uuidString, "title": entry.title,
-                                       "start": BookingFixture.start, "end": TestClock.local(entry.endDate),
-                                       "message": AgentBooking.appliedMessage, "location": "Pasta Palace"]
+        let results: [[String: Any]] = [["name": "Booking time", "kind": "time", "value": BookingFixture.start],
+                                        ["name": "Reservation number", "kind": "text", "value": "EX-AB12CD"],
+                                        ["name": "Estimated cost", "kind": "money", "value": "$60.00"],
+                                        ["name": "Partner note", "kind": "text", "value": "Table held for 15 minutes"]]
+        let expected: [String: Any] = ["status": "applied", "partner": "Example Tables", "simulated": true, "results": results,
+                                       "id": entry.id.uuidString, "title": entry.title, "start": BookingFixture.start,
+                                       "end": TestClock.local(entry.endDate), "message": AgentPartner.appliedMessage]
         XCTAssertEqual(resolution.result, AgentToolbox.encode(expected))
         XCTAssertNil(resolution.json?["budget"])
         XCTAssertNil(resolution.notice)
-        XCTAssertEqual(rig.tables.requests.count, 1)
+        XCTAssertEqual(rig.tables.requests.count, 3)
         XCTAssertEqual(rig.partner.requests.count, 0)
         let packets = await budgetPackets(rig)
         XCTAssertTrue(packets.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: rig.ledgerFile.path))
         let lines = await rig.lines()
-        XCTAssertEqual(lines, ["besir>bookingPartner booking ok Table for 2 requested", "bookingPartner>besir booking ok Reservation confirmed"])
+        XCTAssertEqual(lines, ["besir>partner partner ok Partners requested", "partner>besir partner ok Partners received",
+                               "besir>partner partner ok Example Tables: Fields requested", "partner>besir partner ok Example Tables: Fields received",
+                               "besir>partner partner ok Example Tables: Request sent", "partner>besir partner ok Example Tables: Request confirmed"])
     }
 
     func testBUDGET_G27_APartyOfEightSendsTwentyFourThousandCents() async throws {
         let rig = makeRig()
-        let resolution = try await confirmed(try bookingCard(rig, party: "8"))
+        let resolution = try await confirmed(try await partnerCard(rig, party: "8"))
         XCTAssertEqual(resolution.status, "applied")
         XCTAssertEqual(rig.partner.body()?["amount_cents"] as? Int, 24000)
         XCTAssertEqual(resolution.notice, "Estimated spend $240.00 sent to Example Budget (Simulated): $40.00 over the budget this week.")
         XCTAssertEqual((resolution.json?["budget"] as? [String: Any])?["estimated_spend"] as? String, "$240.00")
-        XCTAssertEqual(AgentBudget.estimatePerPersonCents, 3000)
     }
 
     func testBUDGET_G28_EveryFixedTextIsEnglishHoldsNoAdviceWordAndMarksSimulatedAndEstimates() async throws {
@@ -859,7 +872,7 @@ final class AgentBudgetToolTests: XCTestCase {
             let rig = makeRig()
             rig.partner.mode = mode
             if hold > 0 { rig.hold(hold) }
-            let resolution = try await confirmed(try bookingCard(rig, start: start))
+            let resolution = try await confirmed(try await partnerCard(rig, start: start))
             notices.append(try XCTUnwrap(resolution.notice))
         }
         XCTAssertEqual(notices.count, 4)
@@ -879,7 +892,7 @@ final class AgentBudgetToolTests: XCTestCase {
         for message in models { XCTAssertTrue(message.lowercased().contains("simulated"), message) }
         XCTAssertTrue(AgentBudget.leftMessage.contains("estimated spending"))
         XCTAssertTrue(AgentBudget.spendMessage.contains("estimated spending"))
-        XCTAssertTrue(AgentBudget.bookingRecordedSentence.contains("estimates"))
+        XCTAssertTrue(AgentBudget.bookingRecordedSentence.contains("estimated spend"))
 
         var texts = notices + models
         texts += [AgentBudget.leftMessage, AgentBudget.leftUnavailableMessage, AgentBudget.spendMessage, AgentBudget.spendUnavailableMessage,
@@ -898,16 +911,17 @@ final class AgentBudgetToolTests: XCTestCase {
         }
     }
 
-    func testBUDGET_G29_ThePlaceTheTitleTheTimeAndTheCodeNeverReachTheBudgetRequestAPacketOrTheFile() async throws {
-        let place = Place(name: "Sentinel Bistro Zq9", address: "9 Zq Street", latitude: 1, longitude: 2)
-        let rig = makeRig(places: [place])
-        let resolution = try await confirmed(try bookingCard(rig))
-        // The sentinels exist where they are allowed to be.
-        let title = try XCTUnwrap(rig.store.activities.first?.title)
-        XCTAssertTrue(title.contains("Sentinel Bistro Zq9"))
+    func testBUDGET_G29_TheFieldValuesAndThePartnersReplyNeverReachTheBudgetRequestAPacketOrTheFile() async throws {
+        let rig = makeRig()
+        let card = try await partnerCard(rig, restaurant: "Sentinel Bistro Zq9", name: "Sentinel Name Zq9")
+        let resolution = try await confirmed(card)
+        // The sentinels exist where they are allowed to be: in the submit body, and the partner's reply in the result.
+        let submit = String(decoding: try XCTUnwrap(rig.tables.requests.last?.httpBody), as: UTF8.self)
+        XCTAssertTrue(submit.contains("Sentinel Bistro Zq9"))
+        XCTAssertTrue(submit.contains("Sentinel Name Zq9"))
         XCTAssertTrue(resolution.result.contains("EX-AB12CD"))
-        XCTAssertTrue(resolution.result.contains("Sentinel Bistro Zq9"))
         XCTAssertTrue(resolution.result.contains(BookingFixture.start))
+        XCTAssertFalse(try XCTUnwrap(rig.store.activities.first?.title).contains("Zq9"), "the entry title holds no field value")
 
         let left = try await rig.runJSON(rig.call("get_budget_left"))
         let spent = try await rig.runJSON(rig.spend("18.50"))
@@ -924,7 +938,7 @@ final class AgentBudgetToolTests: XCTestCase {
         seen.append(try XCTUnwrap(resolution.notice))
         seen.append(AgentToolbox.encode(left))
         seen.append(AgentToolbox.encode(spent))
-        for word in ["Sentinel", "Bistro", "Zq9", "Table for", "EX-AB12CD", "19:00", "2026-10-28", "Pasta"] {
+        for word in ["Sentinel", "Bistro", "Zq9", "EX-AB12CD", "19:00", "2026-10-28"] {
             for text in seen { XCTAssertFalse(text.contains(word), "\(word) in \(text)") }
         }
     }
@@ -954,7 +968,7 @@ final class AgentBudgetToolTests: XCTestCase {
     func testBUDGET_G31_ATaskCancelledWhileTheBudgetRequestIsInFlightLeavesTheBookingApplied() async throws {
         let rig = makeRig()
         rig.partner.duringSend = { withUnsafeCurrentTask { $0?.cancel() } }
-        let card = try bookingCard(rig)
+        let card = try await partnerCard(rig)
         let resolved = await Task { await card.resolve(.confirm) }.value
         let resolution = try XCTUnwrap(resolved)
         XCTAssertEqual(rig.partner.requests.count, 1, "the budget stub answered a valid spend")
@@ -968,7 +982,9 @@ final class AgentBudgetToolTests: XCTestCase {
         let packets = await budgetPackets(rig)
         XCTAssertTrue(packets.isEmpty)
         let lines = await rig.lines()
-        XCTAssertEqual(lines, ["besir>bookingPartner booking ok Table for 2 requested", "bookingPartner>besir booking ok Reservation confirmed"])
+        XCTAssertEqual(lines, ["besir>partner partner ok Partners requested", "partner>besir partner ok Partners received",
+                               "besir>partner partner ok Example Tables: Fields requested", "partner>besir partner ok Example Tables: Fields received",
+                               "besir>partner partner ok Example Tables: Request sent", "partner>besir partner ok Example Tables: Request confirmed"])
     }
 
     func testBUDGET_G32_TheBookingBudgetBlockHoldsSimulatedAndExactlyTheKeysOfEachForm() async throws {
@@ -994,7 +1010,7 @@ final class AgentBudgetToolTests: XCTestCase {
 
         // The same forms in a live result.
         let rig = makeRig()
-        let live = try await confirmed(try bookingCard(rig))
+        let live = try await confirmed(try await partnerCard(rig))
         let block = try XCTUnwrap(live.json?["budget"] as? [String: Any])
         XCTAssertEqual(NSDictionary(dictionary: block), NSDictionary(dictionary: recorded))
         XCTAssertEqual(AgentBudget.dollars(cents: 123_450), "$1,234.50")

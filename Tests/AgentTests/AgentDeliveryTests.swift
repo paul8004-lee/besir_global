@@ -261,7 +261,7 @@ final class AgentDeliveryTests: XCTestCase {
                   AgentDelivery.mealOnWord, AgentDelivery.mealOffWord]
         // The result items as the model reads them: every name and value is a fact in plain English.
         for item in resultList { texts += item.values.compactMap { $0 as? String } }
-        XCTAssertTrue(message.contains("each result item as a fact"), message)
+        XCTAssertTrue(message.contains("and each result item, and say any amount is an estimate"), message)
         for text in texts {
             XCTAssertFalse(text.isEmpty)
             XCTAssertFalse(hasHangul(text), text)

@@ -445,6 +445,7 @@ struct EditCardView: View {
     /// 장소 줄은 예시를 붙이지 않는다 — 입력하면 목록이 뜬다는 걸 화면이 스스로 보여주므로 예시는
     /// 부연 설명이 된다(REQ-011 G2).
     private func placeholder(for field: EditField) -> String {
+        if let custom = field.placeholder { return custom }
         // '반복' 줄은 제목 줄과 같은 .title 칸이라 Kind로는 갈리지 않는다 — 열쇠로 먼저 가른다(새 Kind 없음, L-33).
         if field.key == RecurrenceLine.key { return RecurrenceLine.placeholder }
         switch field.kind {

@@ -6,9 +6,9 @@ import Foundation
 
 /// The kind of one field, as the partner's form names it (`PartnerFieldKind`) or as the app's own row says it.
 enum AgentFieldKind: Equatable {
-    case text, place, time, pickOne, onOff
+    case text, place, time, pickOne, onOff, number
 
-    /// The five wire words; nil for any other word.
+    /// The six wire words; nil for any other word.
     init?(wire: String) {
         guard let kind = PartnerFieldKind(rawValue: wire) else { return nil }
         self.init(kind)
@@ -21,6 +21,7 @@ enum AgentFieldKind: Equatable {
         case .time: self = .time
         case .pickOne: self = .pickOne
         case .onOff: self = .onOff
+        case .number: self = .number
         }
     }
 }
@@ -40,6 +41,8 @@ enum AgentFieldValue: Equatable {
     case option(String)
     /// The chosen side of an `on_off` field.
     case flag(Bool)
+    /// The whole number of a `number` field.
+    case number(Int)
 }
 
 /// One chip of a `pick_one` or `on_off` field.
@@ -57,13 +60,20 @@ struct AgentFieldSpec: Equatable {
     var options: [AgentFieldOption] = []
     /// Text only: the most characters the field holds. Without one the field holds `AgentDelivery.maxDeliveryText`.
     var limit: Int?
+    /// True when the card may leave the field blank.
+    var isOptional = false
+    /// Number only: the values the field may hold. Only a seed besir writes itself sets one.
+    var range: ClosedRange<Int>?
 
-    init(key: String, kind: AgentFieldKind, label: String, options: [AgentFieldOption] = [], limit: Int? = nil) {
+    init(key: String, kind: AgentFieldKind, label: String, options: [AgentFieldOption] = [], limit: Int? = nil,
+         isOptional: Bool = false, range: ClosedRange<Int>? = nil) {
         self.key = key
         self.kind = kind
         self.label = label
         self.options = options
         self.limit = limit
+        self.isOptional = isOptional
+        self.range = range
     }
 
     /// The seed of a field the partner named; nil when its chips do not fit its kind.
@@ -72,9 +82,10 @@ struct AgentFieldSpec: Equatable {
         switch kind {
         case .pickOne: guard !field.options.isEmpty else { return nil }
         case .onOff: guard field.options.count == 2 else { return nil }
-        case .text, .place, .time: break
+        case .text, .place, .time, .number: break
         }
-        self.init(key: field.key, kind: kind, label: field.label, options: field.options.map { AgentFieldOption(id: $0.id, label: $0.label) })
+        self.init(key: field.key, kind: kind, label: field.label, options: field.options.map { AgentFieldOption(id: $0.id, label: $0.label) },
+                  isOptional: field.isOptional)
     }
 
     /// The two sides of an `on_off` field are the values the edit card's own toggles hold, whatever the chip words.
@@ -137,6 +148,12 @@ indirect enum AgentFieldRow {
             if case .flag(let on)? = entry(key)?.value { return on }
             return nil
         }
+
+        /// The whole number of a number field.
+        func int(_ key: String) -> Int? {
+            if case .number(let number)? = entry(key)?.value { return number }
+            return nil
+        }
     }
 
     private struct Slot {
@@ -180,7 +197,15 @@ indirect enum AgentFieldRow {
 
     // MARK: Reading
 
-    var isReady: Bool { card.isReady }
+    /// Every row on the card is chosen except the optional ones, and no number lies outside its range. A row that is off the card
+    /// (the dependents of a switch that is off) is not looked at. A number outside its range is never ready, optional or not.
+    var isReady: Bool {
+        card.fields.allSatisfy { field in
+            guard let slot = slots[field.key] else { return field.chosen != nil }
+            if case .number(let number)? = slot.value, let range = slot.spec.range, !range.contains(number) { return false }
+            return slot.spec.isOptional || field.chosen != nil
+        }
+    }
 
     var values: Snapshot {
         Snapshot(entries: card.fields.compactMap { field in
@@ -245,7 +270,7 @@ indirect enum AgentFieldRow {
         case .onOff:
             guard value == AgentFieldSpec.onValue || value == AgentFieldSpec.offValue else { return false }
             slot.value = .flag(value == AgentFieldSpec.onValue)
-        case .text, .place, .time:
+        case .text, .place, .time, .number:
             return false
         }
         slot.source = .entered
@@ -270,17 +295,37 @@ indirect enum AgentFieldRow {
     }
 
     /// Types text: hidden characters go, the text is cut at the field's limit, nothing is trimmed, and a blank text clears the
-    /// value. The view passes the whole draft each time.
+    /// value. The view passes the whole draft each time. A number field keeps only ASCII digits, cut at its limit (at most
+    /// `maxNumberDigits`), holds the whole number they make (so leading zeros go) and reads empty as blank.
     @discardableResult
     func setText(_ key: String, _ text: String) -> Bool {
-        guard !isFrozen, let index = index(of: key), var slot = slots[key], slot.spec.kind == .text else { return false }
-        let cleaned = AgentDelivery.cleanedTyped(text, limit: slot.spec.limit ?? AgentDelivery.maxDeliveryText)
-        card.setTitleText(field: card.fields[index].id, text: cleaned)
-        let blank = cleaned.trimmingCharacters(in: .whitespaces).isEmpty
-        slot.value = blank ? nil : .text(cleaned)
-        slot.source = blank ? .blank : .entered
+        guard !isFrozen, let index = index(of: key), var slot = slots[key] else { return false }
+        switch slot.spec.kind {
+        case .text:
+            let cleaned = AgentDelivery.cleanedTyped(text, limit: slot.spec.limit ?? AgentDelivery.maxDeliveryText)
+            card.setTitleText(field: card.fields[index].id, text: cleaned)
+            let blank = cleaned.trimmingCharacters(in: .whitespaces).isEmpty
+            slot.value = blank ? nil : .text(cleaned)
+            slot.source = blank ? .blank : .entered
+        case .number:
+            let number = Self.number(from: text, upTo: slot.spec.limit)
+            card.setTitleText(field: card.fields[index].id, text: number.map { String($0) } ?? String())
+            slot.value = number.map { AgentFieldValue.number($0) }
+            slot.source = number == nil ? .blank : .entered
+        default:
+            return false
+        }
         slots[key] = slot
         return true
+    }
+
+    static let maxNumberDigits = 9
+
+    /// The ASCII digits of `text`, the first `limit` of them (never more than `maxNumberDigits`), as one whole number; nil
+    /// when there is none.
+    private static func number(from text: String, upTo limit: Int?) -> Int? {
+        let digits = text.unicodeScalars.filter { (0x30...0x39).contains($0.value) }.prefix(min(limit ?? maxNumberDigits, maxNumberDigits))
+        return Int(String(String.UnicodeScalarView(digits)))
     }
 
     /// Chooses a time. The `Date` is kept as picked; the edit card's text is written from it and never read back.
@@ -335,6 +380,16 @@ indirect enum AgentFieldRow {
         debouncer.cancelAll()
     }
 
+    /// The rows besir added itself (each switch with its dependents) leave the card: a card that ended without an applied answer
+    /// must not read as if they had taken effect. The partner's own rows stay.
+    func removeOwnRows() {
+        let owned = keys(in: layout.filter { node in
+            if case .group = node { return true }
+            return false
+        })
+        card.fields.removeAll { owned.contains($0.key) }
+    }
+
     // MARK: Building
 
     private func nodes(for rows: [AgentFieldRow], lines: inout Int) -> [Node] {
@@ -374,6 +429,8 @@ indirect enum AgentFieldRow {
             kept = spec.options.contains { $0.id == id } ? value : nil
         case (.onOff, .flag?):
             kept = value
+        case (.number, .number(let number)?):
+            kept = number >= 0 && String(number).count <= min(spec.limit ?? Self.maxNumberDigits, Self.maxNumberDigits) ? value : nil
         default:
             kept = nil
         }
@@ -401,9 +458,9 @@ indirect enum AgentFieldRow {
         let spec = slot.spec
         let chosen = chosenText(slot.value)
         switch spec.kind {
-        case .text:
+        case .text, .number:
             return EditField(key: key, kind: .title, label: spec.label, options: [], allowsCustom: true,
-                             chosen: chosen.map { $0.trimmingCharacters(in: .whitespaces) })
+                             chosen: chosen.map { $0.trimmingCharacters(in: .whitespaces) }, placeholder: String())
         case .place:
             return EditField(key: key, kind: .place, label: spec.label, options: favoriteOptions, allowsCustom: true, chosen: chosen)
         case .time:
@@ -427,6 +484,7 @@ indirect enum AgentFieldRow {
         case .time(let date)?: return BesirTime.isoFormatter.string(from: date)
         case .option(let id)?: return id
         case .flag(let on)?: return on ? AgentFieldSpec.onValue : AgentFieldSpec.offValue
+        case .number(let number)?: return String(number)
         case nil: return nil
         }
     }

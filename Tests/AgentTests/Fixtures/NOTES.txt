@@ -15,3 +15,4 @@ Text was normalized to ASCII (typographic quotes and dashes replaced by plain on
 
 Top-level keys of the recorded stateless replay request (r10-c.req.json) minus model and reasoning, which the comparison excludes (the recorded requests measure the default effort and the Worker defaults the model, while the app always sends reasoning):
 REQUEST_KEYS_STATELESS: include,input,instructions,parallel_tool_calls,tools
+tools.json, SPEC-BOOKCARD-001: amended to fourteen declarations; request_booking left and get_partners and request_partner were appended after order_delivery, so request_partner is last and the first twelve keep their places.

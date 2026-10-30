@@ -1,0 +1,956 @@
+import XCTest
+@testable import besir
+
+/// Hands out a scripted answer and remembers every request, so no test touches the network.
+final class BookingSendRecorder {
+    private(set) var requests: [URLRequest] = []
+    var result: Result<(Data, Int), Error>
+    /// Runs inside the send call, before the answer is handed back (for a task cancelled in flight).
+    var duringSend: (() -> Void)?
+
+    init(status: Int = 200, body: String = "") {
+        result = .success((Data(body.utf8), status))
+    }
+
+    init(error: Error) {
+        result = .failure(error)
+    }
+
+    var send: PartnerClient.Send {
+        { [self] request in
+            requests.append(request)
+            duringSend?()
+            switch result {
+            case .success(let (data, status)):
+                let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+                return (data, response)
+            case .failure(let error):
+                throw error
+            }
+        }
+    }
+}
+
+/// Answers by path, so one client can be driven through the directory and several routes. A path with no script gives 404.
+final class PartnerRouteRecorder {
+    private(set) var requests: [URLRequest] = []
+    var bodies: [String: String]
+
+    init(_ bodies: [String: String]) {
+        self.bodies = bodies
+    }
+
+    var send: PartnerClient.Send {
+        { [self] request in
+            requests.append(request)
+            let path = request.url?.path ?? String()
+            let text = bodies[path]
+            let response = HTTPURLResponse(url: request.url!, statusCode: text == nil ? 404 : 200, httpVersion: nil, headerFields: nil)!
+            return (Data((text ?? "{}").utf8), response)
+        }
+    }
+
+    func bodyText(_ index: Int) -> String {
+        String(decoding: requests[index].httpBody ?? Data(), as: UTF8.self)
+    }
+}
+
+/// SPEC-BOOKCARD-001 AC-006 to AC-009: one client for every partner; the directory and the form are read from the proxy, only an
+/// exact answer is accepted, and the exchange is drawn as packets that hold fixed words and the partner's name only. Every log is
+/// built with a temporary file.
+@MainActor
+final class PartnerClientTests: XCTestCase {
+    private let token = "partner-token-0001"
+    private let host = "partner-host.invalid"
+    private let flow = UUID()
+    private var config: AppConfig { AppConfig(kakaoJsKey: "", proxyBaseURL: "https://\(host)", appToken: token) }
+
+    private let entry = PartnerEntry(id: "booking", name: "Example Tables", title: "Reserve a table",
+                                     summary: "Reserves a table at a restaurant.", route: "/booking")
+    private let second = PartnerEntry(id: "second", name: "Second Partner", title: "Second request",
+                                      summary: "Takes a second kind of request.", route: "/second")
+
+    /// The form the sample partner announces: four required fields and one optional one.
+    private var fieldList: [PartnerField] {
+        [PartnerField(key: "restaurant", kind: .text, label: "Restaurant", options: []),
+         PartnerField(key: "party_size", kind: .number, label: "Party size", options: []),
+         PartnerField(key: "start", kind: .time, label: "Time", options: []),
+         PartnerField(key: "name", kind: .text, label: "Name", options: []),
+         PartnerField(key: "note", kind: .text, label: "Note", options: [], isOptional: true)]
+    }
+
+    private var announced: [PartnerResultSpec] {
+        [PartnerResultSpec(name: "Booking time", kind: .time), PartnerResultSpec(name: "Reservation number", kind: .text),
+         PartnerResultSpec(name: "Estimated cost", kind: .money), PartnerResultSpec(name: "Partner note", kind: .text)]
+    }
+
+    private var spec: PartnerSpec { PartnerSpec(entry: entry, fields: fieldList, results: announced) }
+
+    private var items: [PartnerResultItem] {
+        [PartnerResultItem(name: "Booking time", value: .time("2026-11-02T19:00")),
+         PartnerResultItem(name: "Reservation number", value: .text("EX-AB12CD")),
+         PartnerResultItem(name: "Estimated cost", value: .money(6000)),
+         PartnerResultItem(name: "Partner note", value: .text("Table held for 15 minutes"))]
+    }
+
+    private var sample: PartnerRequest {
+        PartnerRequest(requestID: "3F2B8C1E-5D4A-4E7B-9A60-1C2D3E4F5A6B",
+                       values: [.init(key: "restaurant", value: .text("Test Cafe")), .init(key: "party_size", value: .number(2)),
+                                .init(key: "start", value: .text("2026-11-02T19:00")), .init(key: "name", value: .text("Sam"))])
+    }
+
+    // MARK: Helpers
+
+    private func makeLog(failing: Bool = false) -> (log: ConnectionLog, file: URL) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("partner-\(UUID().uuidString)", isDirectory: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent(ConnectionLog.fileName)
+        if failing { return (ConnectionLog(fileURL: file, write: { _, _ in throw WriteFailure() }), file) }
+        return (ConnectionLog(fileURL: file, secrets: { [self] in [token, host] }), file)
+    }
+
+    private struct WriteFailure: Error {}
+
+    private func client(_ send: @escaping PartnerClient.Send, log: ConnectionLog? = nil, config: AppConfig? = nil) -> PartnerClient {
+        PartnerClient(config: config ?? self.config, send: send, connections: log ?? makeLog().log)
+    }
+
+    private func submit(_ recorder: BookingSendRecorder, request: PartnerRequest? = nil, log: ConnectionLog? = nil,
+                        config: AppConfig? = nil) async -> Result<PartnerAnswer, PartnerFailure> {
+        await client(recorder.send, log: log, config: config).submit(request ?? sample, to: spec, flow: flow)
+    }
+
+    private func json(_ value: Any) -> String {
+        let data = (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func resultObjects() -> [[String: Any]] {
+        [["name": "Booking time", "kind": "time", "value": "2026-11-02T19:00"],
+         ["name": "Reservation number", "kind": "text", "value": "EX-AB12CD"],
+         ["name": "Estimated cost", "kind": "money", "value": 6000],
+         ["name": "Partner note", "kind": "text", "value": "Table held for 15 minutes"]]
+    }
+
+    /// The submit answer the sample partner gives; `mutate` bends it.
+    private func object(_ mutate: (inout [String: Any]) -> Void = { _ in }, declined: Bool = false) -> String {
+        var fields: [String: Any] = ["status": declined ? "declined" : "confirmed", "partner": "Example Tables", "simulated": true]
+        if declined { fields["reason"] = "no_table" } else { fields["results"] = resultObjects() }
+        mutate(&fields)
+        return json(fields)
+    }
+
+    private func fieldObject(_ field: PartnerField) -> [String: Any] {
+        var object: [String: Any] = ["key": field.key, "kind": field.kind.rawValue, "label": field.label]
+        if field.kind.hasOptions { object["options"] = field.options.map { ["id": $0.id, "label": $0.label] } }
+        if field.isOptional { object["optional"] = true }
+        return object
+    }
+
+    /// The form answer of a route; `mutate` bends it.
+    private func formObject(partner: String = "Example Tables", fields: [PartnerField]? = nil,
+                            _ mutate: (inout [String: Any]) -> Void = { _ in }) -> String {
+        var answer: [String: Any] = ["partner": partner, "simulated": true, "fields": (fields ?? fieldList).map(fieldObject),
+                                     "result_fields": announced.map { ["name": $0.name, "kind": $0.kind.rawValue] }]
+        mutate(&answer)
+        return json(answer)
+    }
+
+    private func entryObject(_ entry: PartnerEntry, _ mutate: (inout [String: Any]) -> Void = { _ in }) -> [String: Any] {
+        var object: [String: Any] = ["id": entry.id, "name": entry.name, "title": entry.title, "summary": entry.summary, "route": entry.route]
+        mutate(&object)
+        return object
+    }
+
+    private func directoryObject(_ entries: [[String: Any]]) -> String { json(["partners": entries]) }
+
+    private func body(of request: URLRequest) throws -> [String: Any] {
+        let data = try XCTUnwrap(request.httpBody)
+        return try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    private func lines(_ log: ConnectionLog) -> [String] {
+        log.packets.map { "\($0.from.rawValue)>\($0.to.rawValue) \($0.kind.rawValue) \($0.status.rawValue) \($0.summary)" }
+    }
+
+    private func assertOther(_ bodies: [String], file: StaticString = #filePath, line: UInt = #line) async {
+        for text in bodies {
+            let result = await submit(BookingSendRecorder(body: text))
+            XCTAssertEqual(result, .failure(.other), text, file: file, line: line)
+        }
+    }
+
+    // MARK: F01 the directory and form requests
+
+    func testPARTNER_F01_TheDirectoryAndFormRequestsAreFixedPostsAndNoProxyGivesNotSetUp() async throws {
+        let recorder = PartnerRouteRecorder(["/partners": directoryObject([entryObject(entry), entryObject(second)]),
+                                             "/booking": formObject(), "/second": formObject(partner: "Second Partner")])
+        let (log, _) = makeLog()
+        let partners = client(recorder.send, log: log)
+        let listed = await partners.directory(flow: flow)
+        XCTAssertEqual(listed, .success([entry, second]))
+        let first = await partners.form(of: entry, flow: flow)
+        XCTAssertEqual(first, .success(spec))
+        let other = await partners.form(of: second, flow: flow)
+        XCTAssertEqual(other, .success(PartnerSpec(entry: second, fields: fieldList, results: announced)))
+
+        guard recorder.requests.count == 3 else { return XCTFail("expected three requests, saw \(recorder.requests.count)") }
+        for (index, (path, text)) in [("/partners", #"{"op":"list"}"#), ("/booking", #"{"op":"fields"}"#), ("/second", #"{"op":"fields"}"#)].enumerated() {
+            let sent = recorder.requests[index]
+            XCTAssertEqual(sent.httpMethod, "POST")
+            XCTAssertEqual(sent.url?.path, path)
+            XCTAssertEqual(sent.value(forHTTPHeaderField: "x-besir-token"), token)
+            XCTAssertEqual(sent.value(forHTTPHeaderField: "Content-Type"), "application/json")
+            XCTAssertEqual(recorder.bodyText(index), text)
+            XCTAssertEqual(sent.timeoutInterval, 20)
+        }
+        await log.flush()
+        XCTAssertEqual(lines(log), ["besir>partner partner ok Partners requested", "partner>besir partner ok Partners received",
+                                    "besir>partner partner ok Example Tables: Fields requested",
+                                    "partner>besir partner ok Example Tables: Fields received",
+                                    "besir>partner partner ok Second Partner: Fields requested",
+                                    "partner>besir partner ok Second Partner: Fields received"])
+        XCTAssertEqual(Set(log.packets.map(\.flowID)), [flow])
+
+        // No proxy: nothing is called and nothing is recorded.
+        let (quiet, _) = makeLog()
+        for blank in [AppConfig(), AppConfig(kakaoJsKey: "", proxyBaseURL: "https://\(host)", appToken: ""),
+                      AppConfig(kakaoJsKey: "", proxyBaseURL: "", appToken: token)] {
+            let idle = PartnerRouteRecorder(["/partners": directoryObject([entryObject(entry)]), "/booking": formObject()])
+            let unset = client(idle.send, log: quiet, config: blank)
+            let listing = await unset.directory(flow: flow)
+            let form = await unset.form(of: entry, flow: flow)
+            XCTAssertEqual(listing, .failure(.notSetUp))
+            XCTAssertEqual(form, .failure(.notSetUp))
+            XCTAssertTrue(idle.requests.isEmpty)
+        }
+        await quiet.flush()
+        XCTAssertTrue(quiet.packets.isEmpty)
+    }
+
+    // MARK: F02 the directory answer
+
+    func testPARTNER_F02_OnlyTheExactDirectoryAnswerIsAcceptedAndOneDefectFailsTheWholeDirectory() async throws {
+        func listed(_ entries: [[String: Any]]) -> Data { Data(directoryObject(entries).utf8) }
+        let many = (0..<8).map { index in
+            entryObject(PartnerEntry(id: "p\(index)", name: "Partner \(index)", title: "Title \(index)", summary: "Summary \(index)", route: "/r\(index)"))
+        }
+        // Positive first: one entry and eight entries decode, in the proxy's order.
+        XCTAssertEqual(PartnerEntry.list(from: listed([entryObject(entry)])), [entry])
+        XCTAssertEqual(PartnerEntry.list(from: listed(many))?.map(\.id), (0..<8).map { "p\($0)" })
+        // The edges: a 33-character route, a 24-character id, a 40-character name and title, a 120-character summary.
+        let edge = PartnerEntry(id: "a" + String(repeating: "b", count: 23), name: String(repeating: "N", count: 40),
+                                title: String(repeating: "T", count: 40), summary: String(repeating: "S", count: 120),
+                                route: "/a" + String(repeating: "b", count: 31))
+        XCTAssertEqual(edge.route.count, 33)
+        XCTAssertEqual(PartnerEntry.list(from: listed([entryObject(edge)])), [edge])
+        XCTAssertEqual(PartnerEntry.list(from: listed([entryObject(entry) { $0["route"] = "/a-b-9" }]))?.first?.route, "/a-b-9")
+
+        func with(_ key: String, _ value: Any) -> [String: Any] { entryObject(entry) { $0[key] = value } }
+        let hidden = ["A\tB", "A\nB", "A\u{200B}B", "A\u{2028}B", "A\u{2029}B", "A\u{202E}B"]
+        var cases: [(String, Data)] = [
+            ("a second key", Data(json(["partners": [entryObject(entry)], "more": 1]).utf8)),
+            ("no partners key", Data(json(["list": [entryObject(entry)]]).utf8)),
+            ("partners not a list", Data(json(["partners": entryObject(entry)]).utf8)),
+            ("zero entries", listed([])),
+            ("nine entries", listed(many + [entryObject(PartnerEntry(id: "p8", name: "Partner 8", title: "T", summary: "S", route: "/r8"))])),
+            ("a repeated id", listed([entryObject(entry), entryObject(second) { $0["id"] = "booking" }])),
+            ("a repeated route", listed([entryObject(entry), entryObject(second) { $0["route"] = "/booking" }])),
+            ("the route of the directory", listed([with("route", "/partners")])),
+            ("a route with an upper-case letter", listed([with("route", "/Booking")])),
+            ("a route with no slash", listed([with("route", "booking")])),
+            ("a route of 34 characters", listed([with("route", "/a" + String(repeating: "b", count: 32))])),
+            ("a route that is only a slash", listed([with("route", "/")])),
+            ("a route starting with a digit", listed([with("route", "/1abc")])),
+            ("a route with a space", listed([with("route", "/a b")])),
+            ("a route with a second slash", listed([with("route", "/a/b")])),
+            ("a route with a dot", listed([with("route", "/a.b")])),
+            ("a route not a string", listed([with("route", 5)])),
+            ("an id with an upper-case letter", listed([with("id", "Booking")])),
+            ("an id of 25 characters", listed([with("id", "a" + String(repeating: "b", count: 24))])),
+            ("an empty id", listed([with("id", "")])), ("an id starting with a digit", listed([with("id", "1abc")])),
+            ("an id with a dash", listed([with("id", "a-b")])), ("an id not a string", listed([with("id", 1)])),
+            ("a name of 41 characters", listed([with("name", String(repeating: "N", count: 41))])),
+            ("an empty name", listed([with("name", "")])),
+            ("a non-ASCII name", listed([with("name", "Caf\u{00E9}")])), ("a name with a newline", listed([with("name", "A\nB")])),
+            ("a name not a string", listed([with("name", 7)])),
+            ("a title of 41 characters", listed([with("title", String(repeating: "T", count: 41))])),
+            ("an empty title", listed([with("title", "")])),
+            ("a summary of 121 characters", listed([with("summary", String(repeating: "S", count: 121))])),
+            ("an empty summary", listed([with("summary", "")])),
+            ("an extra key in an entry", listed([with("hint", "x")])),
+            ("a missing key in an entry", listed([entryObject(entry) { $0.removeValue(forKey: "summary") }])),
+            ("an entry that is not an object", Data(json(["partners": ["booking"]]).utf8)),
+            ("one bad entry among good ones", listed([entryObject(entry), with("route", "/Bad"), entryObject(second)])),
+            ("not JSON", Data("not json".utf8)), ("an empty body", Data()), ("an array", Data("[]".utf8)),
+        ]
+        for text in hidden {
+            cases.append(("a title with a hidden character", listed([with("title", text)])))
+            cases.append(("a summary with a hidden character", listed([with("summary", text)])))
+        }
+        for (name, data) in cases { XCTAssertNil(PartnerEntry.list(from: data), name) }
+
+        // Through the client a defect is `other` and records one failed packet.
+        for (name, data) in cases.prefix(8) {
+            let (log, _) = makeLog()
+            let result = await client(BookingSendRecorder(body: String(decoding: data, as: UTF8.self)).send, log: log).directory(flow: flow)
+            XCTAssertEqual(result, .failure(.other), name)
+            await log.flush()
+            XCTAssertEqual(lines(log), ["besir>partner partner failed Request failed"], name)
+        }
+        let accepted = await client(BookingSendRecorder(body: directoryObject([entryObject(entry)])).send).directory(flow: flow)
+        XCTAssertEqual(accepted, .success([entry]))
+    }
+
+    // MARK: F03 the form answer is accepted whatever the shape
+
+    func testPARTNER_F03_AFormAnswerOfAnyShapeIsAcceptedWhenItObeysTheGrammar() async throws {
+        let (log, _) = makeLog()
+        func read(_ fields: [PartnerField], _ mutate: (inout [String: Any]) -> Void = { _ in }) async -> Result<PartnerSpec, PartnerFailure> {
+            await client(BookingSendRecorder(body: formObject(fields: fields, mutate)).send, log: log).form(of: entry, flow: flow)
+        }
+        let all = fieldList
+        // The sample form, a reordered list, a shorter one, one with no `time` field, one with a `place` field, one with a
+        // `number` field and an `optional` field.
+        let place = PartnerField(key: "where_to", kind: .place, label: "Where", options: [])
+        let pick = PartnerField(key: "size", kind: .pickOne, label: "Size", options: [PartnerOption(id: "small", label: "Small")], isOptional: true)
+        let shapes: [[PartnerField]] = [all, all.reversed(), [all[0]], all.filter { $0.kind != .time }, [place] + all, [all[1], all[4]], [pick, place]]
+        for shape in shapes {
+            let result = await read(shape)
+            XCTAssertEqual(result, .success(PartnerSpec(entry: entry, fields: shape, results: announced)), shape.map(\.key).joined(separator: ","))
+        }
+        let sized = await read([all[1], all[4]])
+        XCTAssertEqual(try sized.get().fields.map(\.kind), [.number, .text])
+        XCTAssertEqual(try sized.get().fields.map(\.isOptional), [false, true])
+        await log.flush()
+        XCTAssertEqual(lines(log).count, shapes.count * 2 + 2)
+        XCTAssertEqual(Array(lines(log).prefix(2)), ["besir>partner partner ok Example Tables: Fields requested",
+                                                     "partner>besir partner ok Example Tables: Fields received"])
+        XCTAssertTrue(lines(log).allSatisfy { $0.hasPrefix("besir>partner partner ok Example Tables: Fields") || $0.hasPrefix("partner>besir partner ok Example Tables: Fields") })
+    }
+
+    // MARK: F04 a defect makes a form unusable
+
+    func testPARTNER_F04_EachFormDefectMakesTheFormUnusableAndAFailingEntryIsLeftOutOfTheOthers() async throws {
+        // Positive first.
+        let good = await client(BookingSendRecorder(body: formObject()).send).form(of: entry, flow: flow)
+        XCTAssertEqual(good, .success(spec))
+
+        let nine = (0..<9).map { ["name": "N\($0)", "kind": "text"] }
+        let bodies: [(String, String)] = [
+            ("no field list", formObject { $0.removeValue(forKey: "fields") }),
+            ("no result list", formObject { $0.removeValue(forKey: "result_fields") }),
+            ("an extra top-level key", formObject { $0["more"] = 1 }),
+            ("a field defect: optional false", formObject { $0["fields"] = [["key": "a", "kind": "text", "label": "A", "optional": false]] }),
+            ("a field defect: optional on a switch", formObject {
+                $0["fields"] = [["key": "a", "kind": "on_off", "label": "A", "options": [["id": "true", "label": "On"], ["id": "false", "label": "Off"]],
+                                 "optional": true]]
+            }),
+            ("a field defect: a number with options", formObject {
+                $0["fields"] = [["key": "a", "kind": "number", "label": "A", "options": [["id": "x", "label": "X"]]]]
+            }),
+            ("a field defect: zero fields", formObject { $0["fields"] = [Any]() }),
+            ("a result defect: nine items", formObject { $0["result_fields"] = nine }),
+            ("a result defect: a value key", formObject { $0["result_fields"] = [["name": "A", "kind": "text", "value": "x"]] }),
+            ("a result defect: a second time", formObject { $0["result_fields"] = [["name": "A", "kind": "time"], ["name": "B", "kind": "time"]] }),
+            ("a result defect: zero items", formObject { $0["result_fields"] = [Any]() }),
+            ("simulated false", formObject { $0["simulated"] = false }),
+            ("simulated missing", formObject { $0.removeValue(forKey: "simulated") }),
+            ("a wrong partner name", formObject(partner: "Real Tables")),
+            ("a partner name in another case", formObject(partner: "example tables")),
+            ("a missing partner name", formObject { $0.removeValue(forKey: "partner") }),
+            ("not JSON", "not json"), ("an array", "[]"),
+        ]
+        for (name, text) in bodies {
+            let (log, _) = makeLog()
+            let result = await client(BookingSendRecorder(body: text).send, log: log).form(of: entry, flow: flow)
+            XCTAssertEqual(result, .failure(.other), name)
+            await log.flush()
+            XCTAssertEqual(lines(log), ["besir>partner partner failed Request failed"], name)
+        }
+        for status in [201, 400, 404, 500] {
+            let result = await client(BookingSendRecorder(status: status, body: formObject()).send).form(of: entry, flow: flow)
+            XCTAssertEqual(result, .failure(.other), "status \(status)")
+        }
+
+        // A failing entry among good ones is left out and the others are kept: the lookup keeps the forms that came back.
+        let third = PartnerEntry(id: "third", name: "Third Partner", title: "Third request", summary: "Takes a third kind.", route: "/third")
+        let recorder = PartnerRouteRecorder(["/booking": formObject(), "/second": formObject(partner: "Wrong Name"),
+                                             "/third": formObject(partner: "Third Partner")])
+        let partners = client(recorder.send)
+        var kept: [PartnerSpec] = []
+        for candidate in [entry, second, third] {
+            if case .success(let form) = await partners.form(of: candidate, flow: flow) { kept.append(form) }
+        }
+        XCTAssertEqual(kept.map(\.entry.id), ["booking", "third"])
+    }
+
+    // MARK: F05 the submit request
+
+    func testPARTNER_F05_TheSubmitBodyIsTheThreeKeysWithEachValueTypedByItsKindAndNoPacketHoldsAValue() async throws {
+        let request = PartnerRequest(requestID: "3F2B8C1E-5D4A-4E7B-9A60-1C2D3E4F5A6B", values: [
+            .init(key: "restaurant", value: .text("SENTINEL-TEXT-731")), .init(key: "party_size", value: .number(4)),
+            .init(key: "start", value: .text("2031-02-03T04:05")), .init(key: "size", value: .text("sentinel-option-731")),
+            .init(key: "door", value: .flag(true)), .init(key: "where_to", value: .text("SENTINEL-PLACE-731"))])
+        let (log, file) = makeLog()
+        let recorder = BookingSendRecorder(body: object())
+        let result = await client(recorder.send, log: log).submit(request, to: spec, flow: flow)
+        XCTAssertEqual(result, .success(.confirmed(results: items)))
+        let sent = try XCTUnwrap(recorder.requests.first)
+        XCTAssertEqual(sent.httpMethod, "POST")
+        XCTAssertEqual(sent.url?.path, "/booking")
+        let text = String(decoding: try XCTUnwrap(sent.httpBody), as: UTF8.self)
+        let sentBody = try body(of: sent)
+        XCTAssertEqual(Set(sentBody.keys), ["op", "request_id", "values"])
+        XCTAssertEqual(sentBody["op"] as? String, "submit")
+        XCTAssertEqual(sentBody["request_id"] as? String, request.requestID)
+        let values = try XCTUnwrap(sentBody["values"] as? [String: Any])
+        XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "size", "door", "where_to"])
+        XCTAssertEqual(values["restaurant"] as? String, "SENTINEL-TEXT-731")
+        XCTAssertEqual(values["where_to"] as? String, "SENTINEL-PLACE-731")
+        XCTAssertEqual(values["start"] as? String, "2031-02-03T04:05")
+        XCTAssertEqual(values["size"] as? String, "sentinel-option-731")
+        // A number and a boolean are JSON numbers and booleans, not text.
+        XCTAssertTrue(text.contains(#""party_size":4"#), text)
+        XCTAssertTrue(text.contains(#""door":true"#), text)
+
+        // A blank optional field has no entry: the sample request holds no `note`.
+        let plain = BookingSendRecorder(body: object())
+        _ = await submit(plain)
+        let plainValues = try XCTUnwrap(body(of: XCTUnwrap(plain.requests.first))["values"] as? [String: Any])
+        XCTAssertNil(plainValues["note"])
+        XCTAssertEqual(Set(plainValues.keys), ["restaurant", "party_size", "start", "name"])
+
+        // The packets are the partner's name and fixed words; no value is in any of them or in the file.
+        await log.flush()
+        XCTAssertEqual(lines(log), ["besir>partner partner ok Example Tables: Request sent", "partner>besir partner ok Example Tables: Request confirmed"])
+        let stored = try String(contentsOf: file, encoding: .utf8).lowercased()
+        for secret in ["sentinel", "2031", "04:05", "4:05", "party_size", "door", "where_to", token, host, request.requestID.lowercased()] {
+            XCTAssertFalse(stored.contains(secret), "connections.json holds \(secret)")
+            XCTAssertFalse(lines(log).joined().lowercased().contains(secret), "a packet holds \(secret)")
+        }
+    }
+
+    // MARK: F06 the submit answer is checked against the announcement
+
+    func testPARTNER_F06_TheSubmitAnswerIsAcceptedOnlyWhenItMatchesTheAnnouncementAndTheEntry() async throws {
+        // Positive first: the announced items, and a declined answer, are accepted.
+        let confirmed = await submit(BookingSendRecorder(body: object()))
+        XCTAssertEqual(confirmed, .success(.confirmed(results: items)))
+        let declined = await submit(BookingSendRecorder(body: object(declined: true)))
+        XCTAssertEqual(declined, .success(.declined))
+
+        func results(_ mutate: (inout [[String: Any]]) -> Void) -> String {
+            object { fields in
+                var list = resultObjects()
+                mutate(&list)
+                fields["results"] = list
+            }
+        }
+        let confirmedBodies: [(String, String)] = [
+            ("another partner name", object { $0["partner"] = "Second Partner" }),
+            ("simulated false", object { $0["simulated"] = false }),
+            ("a different count: three items", results { $0.removeLast() }),
+            ("a different count: five items", results { $0.append(["name": "Extra", "kind": "text", "value": "x"]) }),
+            ("a different order", results { $0.swapAt(0, 1) }),
+            ("a different name", results { $0[1]["name"] = "Confirmation number" }),
+            ("a different kind", results { $0[3]["kind"] = "text"; $0[0]["kind"] = "text" }),
+            ("a second money item", results { $0.append(["name": "Tip", "kind": "money", "value": 300]) }),
+            ("the time item as text", results { $0[0] = ["name": "Booking time", "kind": "text", "value": "tonight"] }),
+            ("a money value of zero", results { $0[2]["value"] = 0 }),
+            ("a time that is not real", results { $0[0]["value"] = "2026-02-31T19:00" }),
+            ("nine items", object { $0["results"] = (0..<9).map { ["name": "N\($0)", "kind": "text", "value": "x"] } }),
+            ("a missing results list", object { $0.removeValue(forKey: "results") }),
+            ("an empty results list", object { $0["results"] = [Any]() }),
+            ("a code key", object { $0["reservation_code"] = "EX-AB12CD" }),
+            ("a reason key beside results", object { $0["reason"] = "no_table" }),
+        ]
+        let declinedBodies: [(String, String)] = [
+            ("another partner name", object({ $0["partner"] = "Second Partner" }, declined: true)),
+            ("simulated false", object({ $0["simulated"] = false }, declined: true)),
+            ("results on a decline", object({ $0["results"] = resultObjects() }, declined: true)),
+            ("a missing reason", object({ $0.removeValue(forKey: "reason") }, declined: true)),
+            ("a reason in upper case", object({ $0["reason"] = "NO_TABLE" }, declined: true)),
+            ("a reason with a dash", object({ $0["reason"] = "no-table" }, declined: true)),
+            ("a reason with a digit", object({ $0["reason"] = "full2" }, declined: true)),
+            ("an empty reason", object({ $0["reason"] = "" }, declined: true)),
+            ("a reason of 41 characters", object({ $0["reason"] = String(repeating: "a", count: 41) }, declined: true)),
+            ("a reason that is not a string", object({ $0["reason"] = 1 }, declined: true)),
+        ]
+        for (name, text) in confirmedBodies + declinedBodies {
+            let (log, _) = makeLog()
+            let result = await submit(BookingSendRecorder(body: text), log: log)
+            XCTAssertEqual(result, .failure(.other), name)
+            await log.flush()
+            XCTAssertEqual(lines(log), ["besir>partner partner failed Request failed"], name)
+        }
+        // The decline reason is a word of `a-z` and `_`, 1 to 40 characters; any such word is accepted and then dropped.
+        for reason in ["closed", "no_table", "a", "full_for_the_evening", String(repeating: "z", count: 40)] {
+            let result = await submit(BookingSendRecorder(body: object({ $0["reason"] = reason }, declined: true)))
+            XCTAssertEqual(result, .success(.declined), reason)
+        }
+    }
+
+    // MARK: C01-C04 the request
+
+    func testPARTNER_C01_RequestIsAPostToTheEntrysRouteWithTokenAndJson() async throws {
+        let recorder = BookingSendRecorder(body: object())
+        _ = await submit(recorder)
+        let sent = try XCTUnwrap(recorder.requests.first)
+        XCTAssertEqual(recorder.requests.count, 1)
+        XCTAssertEqual(sent.httpMethod, "POST")
+        XCTAssertEqual(sent.url?.path, "/booking")
+        XCTAssertEqual(sent.value(forHTTPHeaderField: "x-besir-token"), token)
+        XCTAssertEqual(sent.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        // Another entry's route is the path it is sent to.
+        let other = BookingSendRecorder(body: object())
+        _ = await client(other.send).submit(sample, to: PartnerSpec(entry: second, fields: fieldList, results: announced), flow: flow)
+        XCTAssertEqual(other.requests.first?.url?.path, "/second")
+    }
+
+    func testPARTNER_C02_BodyHasExactlyTheThreeKeysAndTheRequestValues() async throws {
+        let recorder = BookingSendRecorder(body: object())
+        let result = await submit(recorder)
+        XCTAssertEqual(result, .success(.confirmed(results: items)))
+        let sent = try body(of: XCTUnwrap(recorder.requests.first))
+        XCTAssertEqual(Set(sent.keys), ["op", "request_id", "values"])
+        XCTAssertEqual(sent["op"] as? String, "submit")
+        XCTAssertEqual(sent["request_id"] as? String, sample.requestID)
+        let values = try XCTUnwrap(sent["values"] as? [String: Any])
+        XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
+        XCTAssertEqual(values["restaurant"] as? String, "Test Cafe")
+        XCTAssertEqual(values["party_size"] as? Int, 2)
+        XCTAssertEqual(values["start"] as? String, "2026-11-02T19:00")
+        XCTAssertEqual(values["name"] as? String, "Sam")
+    }
+
+    func testPARTNER_C03_BodyHoldsNothingFromTheConfigurationAndNoKeyBeyondTheThree() async throws {
+        var loud = config
+        loud.proxyBaseURL = "https://sentinel-host-777.invalid"
+        loud.appToken = "sentinel-token-777"
+        loud.kakaoJsKey = "sentinel-kakao-777"
+        let recorder = BookingSendRecorder(body: object())
+        let result = await submit(recorder, config: loud)
+        XCTAssertEqual(result, .success(.confirmed(results: items)))
+        let data = try XCTUnwrap(recorder.requests.first?.httpBody)
+        let text = String(decoding: data, as: UTF8.self).lowercased()
+        for word in ["sentinel", "latitude", "longitude", "timezone", "place_id", "placeid", "address", "phone", "email"] {
+            XCTAssertFalse(text.contains(word), "the body holds \(word)")
+        }
+        XCTAssertEqual(Set(try body(of: XCTUnwrap(recorder.requests.first)).keys).count, 3)
+    }
+
+    func testPARTNER_C04_NoProxyGivesNotSetUpWithoutACallOrAPacket() async {
+        let (log, _) = makeLog()
+        for blank in [AppConfig(), AppConfig(kakaoJsKey: "", proxyBaseURL: "https://\(host)", appToken: ""),
+                      AppConfig(kakaoJsKey: "", proxyBaseURL: "", appToken: token)] {
+            let recorder = BookingSendRecorder(body: object())
+            let result = await submit(recorder, log: log, config: blank)
+            XCTAssertEqual(result, .failure(.notSetUp))
+            XCTAssertTrue(recorder.requests.isEmpty)
+        }
+        XCTAssertFalse(client(BookingSendRecorder().send, config: AppConfig()).isConfigured)
+        XCTAssertTrue(client(BookingSendRecorder().send).isConfigured)
+        await log.flush()
+        XCTAssertTrue(log.packets.isEmpty)
+    }
+
+    // MARK: C05-C14 the answer is checked
+
+    func testPARTNER_C05_AConfirmedAnswerGivesTheAnnouncedItems() async {
+        let result = await submit(BookingSendRecorder(body: object()))
+        XCTAssertEqual(result, .success(.confirmed(results: items)))
+        if case .success(.confirmed(let got)) = result {
+            XCTAssertEqual(got.map(\.name), announced.map(\.name))
+            XCTAssertEqual(got.map(\.kind), announced.map(\.kind))
+            XCTAssertEqual(got.moneyCents, 6000)
+        } else {
+            XCTFail("not confirmed")
+        }
+    }
+
+    func testPARTNER_C06_ADeclinedAnswerGivesDeclined() async {
+        let result = await submit(BookingSendRecorder(body: object(declined: true)))
+        XCTAssertEqual(result, .success(.declined))
+    }
+
+    func testPARTNER_C07_AConfirmedAnswerThatDeviatesIsOther() async {
+        let accepted = await submit(BookingSendRecorder(body: object()))
+        XCTAssertEqual(accepted, .success(.confirmed(results: items)))
+        var bodies: [String] = []
+        bodies.append(object { $0["results"] = "EX-AB12CD" })
+        bodies.append(object { $0["results"] = NSNull() })
+        bodies.append(object { $0["reservation_code"] = "EX-AB12CD" })
+        bodies.append(object { $0["reason"] = "no_table" })
+        bodies.append(object { $0["status"] = "pending" })
+        bodies.append(object { $0["status"] = "CONFIRMED" })
+        bodies.append(object { $0.removeValue(forKey: "status") })
+        bodies.append(object { $0["status"] = true })
+        bodies.append(object { $0["results"] = [["name": "Booking time", "kind": "time"]] })
+        bodies.append(object { var list = self.resultObjects(); list[2]["value"] = "6000"; $0["results"] = list })
+        await assertOther(bodies)
+    }
+
+    func testPARTNER_C08_ADeclinedAnswerThatDeviatesIsOther() async {
+        let accepted = await submit(BookingSendRecorder(body: object({ $0["reason"] = "closed" }, declined: true)))
+        XCTAssertEqual(accepted, .success(.declined))
+        var bodies: [String] = []
+        bodies.append(object({ $0["reservation_code"] = "EX-AB12CD" }, declined: true))
+        bodies.append(object({ $0.removeValue(forKey: "reason") }, declined: true))
+        bodies.append(object({ $0["reason"] = "NO_TABLE" }, declined: true))
+        bodies.append(object({ $0["reason"] = 1 }, declined: true))
+        bodies.append(object({ $0["reason"] = "no table" }, declined: true))
+        await assertOther(bodies)
+    }
+
+    func testPARTNER_C09_APartnerThatIsWrongOrMissingIsOther() async {
+        await assertOther([
+            object { $0["partner"] = "Real Tables" },
+            object { $0["partner"] = "example tables" },
+            object { $0["partner"] = "Example Tables " },
+            object { $0.removeValue(forKey: "partner") },
+            object { $0["partner"] = 5 },
+        ])
+    }
+
+    func testPARTNER_C10_SimulatedThatIsNotTrueIsOther() async {
+        await assertOther([
+            object { $0["simulated"] = false },
+            object { $0.removeValue(forKey: "simulated") },
+            object { $0["simulated"] = "true" },
+            object { $0["simulated"] = 1 },
+            object { $0["simulated"] = NSNull() },
+        ])
+    }
+
+    func testPARTNER_C11_AMissingKeyOrAWrongTypeAmongTheFourKeysIsOther() async {
+        let accepted = await submit(BookingSendRecorder(body: object()))
+        XCTAssertEqual(accepted, .success(.confirmed(results: items)))
+        await assertOther([
+            object { $0.removeValue(forKey: "status") },
+            object { $0.removeValue(forKey: "partner") },
+            object { $0.removeValue(forKey: "simulated") },
+            object { $0.removeValue(forKey: "results") },
+            object { $0["status"] = 7 },
+            object { $0["partner"] = NSNull() },
+            object { $0["simulated"] = "yes" },
+            object { $0["results"] = 4 },
+            object { $0["results"] = ["name": "Booking time"] },
+        ])
+    }
+
+    func testPARTNER_C13_AnExtraKeyIsOther() async {
+        let accepted = await submit(BookingSendRecorder(body: object()))
+        XCTAssertEqual(accepted, .success(.confirmed(results: items)))
+        await assertOther([
+            object { $0["name"] = "x" },
+            object { $0["note"] = NSNull() },
+            object({ $0["extra"] = 1 }, declined: true),
+        ])
+    }
+
+    func testPARTNER_C14_ANonObjectBodyOrAStatusOtherThan200IsOther() async {
+        await assertOther(["[]", "null", "\"confirmed\"", "5", "", "not json", "{}"])
+        for status in [201, 202, 204, 302, 400, 404, 500, 503] {
+            let result = await submit(BookingSendRecorder(status: status, body: object()))
+            XCTAssertEqual(result, .failure(.other), "status \(status)")
+        }
+        // Positive counterpart: the same body at 200 is accepted.
+        let accepted = await submit(BookingSendRecorder(status: 200, body: object()))
+        XCTAssertEqual(accepted, .success(.confirmed(results: items)))
+    }
+
+    // MARK: C15-C20 failures
+
+    func testPARTNER_C15_ATokenRejectionIsOnlyTheWorkersOwnBody() async {
+        let own = await submit(BookingSendRecorder(status: 401, body: #"{"error":"unauthorized"}"#))
+        XCTAssertEqual(own, .failure(.tokenRejected))
+        for text in [#"{"error":"nope"}"#, #"{"error":"unauthorized","x":1}"#, "", "unauthorized", "[]"] {
+            let other = await submit(BookingSendRecorder(status: 401, body: text))
+            XCTAssertEqual(other, .failure(.other), text)
+        }
+        // The same handling serves the directory and the form.
+        let listing = await client(BookingSendRecorder(status: 401, body: #"{"error":"unauthorized"}"#).send).directory(flow: flow)
+        XCTAssertEqual(listing, .failure(.tokenRejected))
+        let form = await client(BookingSendRecorder(status: 401, body: #"{"error":"unauthorized"}"#).send).form(of: entry, flow: flow)
+        XCTAssertEqual(form, .failure(.tokenRejected))
+    }
+
+    func testPARTNER_C16_A404AndA500AreOther() async {
+        for status in [404, 500] {
+            let result = await submit(BookingSendRecorder(status: status, body: #"{"error":"not_found"}"#))
+            XCTAssertEqual(result, .failure(.other), "status \(status)")
+        }
+    }
+
+    func testPARTNER_C17_AnOfflineErrorIsOfflineAndAnotherErrorIsOther() async {
+        for code in [URLError.Code.notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed] {
+            let result = await submit(BookingSendRecorder(error: URLError(code)))
+            XCTAssertEqual(result, .failure(.offline), "\(code)")
+        }
+        for error in [URLError(.badServerResponse), URLError(.timedOut), URLError(.cancelled), WriteFailure()] as [Error] {
+            let result = await submit(BookingSendRecorder(error: error))
+            XCTAssertEqual(result, .failure(.other), "\(error)")
+        }
+    }
+
+    func testPARTNER_C18_TheTimeoutIsTwentySeconds() async throws {
+        let recorder = BookingSendRecorder(body: object())
+        _ = await submit(recorder)
+        XCTAssertEqual(try XCTUnwrap(recorder.requests.first).timeoutInterval, 20)
+    }
+
+    func testPARTNER_C19_ACancelledTaskReturnsAndRecordsNothing() async {
+        // Cancelled before the call: nothing is sent.
+        let (before, _) = makeLog()
+        let early = BookingSendRecorder(body: object())
+        let earlyResult = await Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await submit(early, log: before)
+        }.value
+        XCTAssertEqual(earlyResult, .failure(.other))
+        XCTAssertTrue(early.requests.isEmpty)
+        await before.flush()
+        XCTAssertTrue(before.packets.isEmpty)
+
+        // Cancelled while the request is in flight, with a valid confirmation coming back.
+        let (during, _) = makeLog()
+        let inFlight = BookingSendRecorder(body: object())
+        inFlight.duringSend = { withUnsafeCurrentTask { $0?.cancel() } }
+        let flightResult = await Task { await submit(inFlight, log: during) }.value
+        XCTAssertEqual(flightResult, .failure(.other))
+        XCTAssertEqual(inFlight.requests.count, 1)
+        await during.flush()
+        XCTAssertTrue(during.packets.isEmpty)
+    }
+
+    func testPARTNER_C20_AFailureHoldsNoTextOfTheAnswer() async {
+        let leak = "LEAK-SENTINEL-99"
+        let (log, file) = makeLog()
+        let deviating = object {
+            var list = self.resultObjects()
+            list[1]["value"] = leak
+            $0["results"] = list
+            $0["note"] = leak
+        }
+        for status in [200, 401, 404, 500] {
+            let result = await submit(BookingSendRecorder(status: status, body: deviating), log: log)
+            guard case .failure(let failure) = result else { return XCTFail("status \(status) is not a failure") }
+            XCTAssertEqual(String(describing: failure), "other", "a failure is a bare case")
+        }
+        await log.flush()
+        XCTAssertFalse(lines(log).joined().contains(leak))
+        XCTAssertFalse(((try? String(contentsOf: file, encoding: .utf8)) ?? "").contains(leak))
+    }
+
+    // MARK: L01-L02 the log cases
+
+    func testPARTNER_L01_ThePartnerCasesHaveEnglishNamesAndTheDefaultSummary() {
+        XCTAssertEqual(ConnectionParty.partner.rawValue, "partner")
+        XCTAssertEqual(ConnectionKind.partner.rawValue, "partner")
+        XCTAssertEqual(ConnectionParty.partner.displayName, "Partner (Simulated)")
+        XCTAssertEqual(ConnectionKind.partner.displayName, "Partner")
+        XCTAssertEqual(ConnectionKind.partner.defaultSummary, "Partner request")
+        for text in [ConnectionParty.partner.displayName, ConnectionKind.partner.displayName, ConnectionKind.partner.defaultSummary] {
+            XCTAssertFalse(text.isEmpty)
+            XCTAssertTrue(text.unicodeScalars.allSatisfy { $0.isASCII })
+        }
+        // The delivery and budget cases stay, and every earlier case keeps its raw value and name.
+        XCTAssertEqual(ConnectionParty.deliveryPartner.rawValue, "deliveryPartner")
+        XCTAssertEqual(ConnectionParty.budgetPartner.rawValue, "budgetPartner")
+        XCTAssertEqual(ConnectionKind.delivery.rawValue, "delivery")
+        XCTAssertEqual(ConnectionKind.budget.rawValue, "budget")
+        XCTAssertEqual(ConnectionParty.appleCalendar.rawValue, "appleCalendar")
+        XCTAssertEqual(ConnectionParty.museSpark.displayName, "Muse Spark")
+        XCTAssertEqual(ConnectionKind.calendarSave.defaultSummary, "Event saved")
+    }
+
+    func testPARTNER_L02_APartnerPacketLoadsAndTheRemovedAndUnknownCasesDropThatPacketAlone() throws {
+        let file = makeLog().file
+        func packet(_ at: Double, from: ConnectionParty = .besir, to: ConnectionParty = .partner) -> ConnectionPacket {
+            ConnectionPacket(id: UUID(), flowID: flow, at: Date(timeIntervalSince1970: at), from: from, to: to, kind: .partner,
+                             summary: "Example Tables: Request sent", status: .ok)
+        }
+        let good = packet(100)
+        var objects = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode([good, packet(200), packet(300), packet(400)])) as? [[String: Any]])
+        objects[1]["from"] = "bookingPartner"
+        objects[2]["kind"] = "booking"
+        objects[3]["from"] = "carrierPigeon"
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: objects).write(to: file)
+        let loaded = ConnectionLog(fileURL: file)
+        XCTAssertEqual(loaded.packets, [good])
+    }
+
+    // MARK: P01-P03, P05, P06, P08 the packets
+
+    func testPARTNER_P01_AConfirmationRecordsTwoPacketsInOrderWithOneFlow() async {
+        let (log, _) = makeLog()
+        _ = await submit(BookingSendRecorder(body: object()), log: log)
+        await log.flush()
+        XCTAssertEqual(lines(log), ["besir>partner partner ok Example Tables: Request sent",
+                                    "partner>besir partner ok Example Tables: Request confirmed"])
+        XCTAssertEqual(log.packets.map(\.flowID), [flow, flow])
+    }
+
+    func testPARTNER_P02_ADeclineRecordsRequestDeclinedAsDeclined() async {
+        let (log, _) = makeLog()
+        let big = PartnerRequest(requestID: sample.requestID, values: [.init(key: "party_size", value: .number(9))])
+        _ = await submit(BookingSendRecorder(body: object(declined: true)), request: big, log: log)
+        await log.flush()
+        XCTAssertEqual(lines(log), ["besir>partner partner ok Example Tables: Request sent",
+                                    "partner>besir partner declined Example Tables: Request declined"])
+    }
+
+    func testPARTNER_P03_AFailureRecordsOneRequestFailedPacket() async {
+        let failures: [BookingSendRecorder] = [BookingSendRecorder(error: URLError(.notConnectedToInternet)),
+                                               BookingSendRecorder(status: 404, body: "{}"),
+                                               BookingSendRecorder(status: 500, body: "oops"),
+                                               BookingSendRecorder(status: 401, body: #"{"error":"unauthorized"}"#),
+                                               BookingSendRecorder(body: "[]"),
+                                               BookingSendRecorder(body: object { $0["partner"] = "Real Tables" })]
+        for recorder in failures {
+            let (log, _) = makeLog()
+            _ = await submit(recorder, log: log)
+            await log.flush()
+            XCTAssertEqual(lines(log), ["besir>partner partner failed Request failed"])
+            XCTAssertEqual(log.packets.first?.flowID, flow)
+        }
+    }
+
+    private func makeRig(config: AppConfig = PlaceSentinel.config, partner: StubPartner = StubPartner(),
+                         failingLog: Bool = false) -> PartnerRig {
+        let rig = PartnerRig(config: config, partner: partner, failingLog: failingLog)
+        let folder = rig.folder
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        return rig
+    }
+
+    func testPARTNER_P04_CancelNoProxyAndACancelledTaskRecordNoRequestPacket() async throws {
+        // Cancel: the lookup's four packets exist, the request has none.
+        let cancelRig = makeRig()
+        let cancelCard = await cancelRig.card()
+        _ = await cancelCard?.resolve(.cancel)
+        // No proxy: the gate refuses before any card exists.
+        let blankRig = makeRig(config: PlaceSentinel.unconfigured)
+        let blankCard = await blankRig.card()
+        XCTAssertNil(blankCard)
+        // A task cancelled while the request is in flight.
+        let flightRig = makeRig()
+        let flightBuilt = await flightRig.card()
+        let card = try XCTUnwrap(flightBuilt)
+        flightRig.partner.mode = .cancel
+        _ = await Task { await card.resolve(.confirm) }.value
+        XCTAssertEqual(flightRig.partner.bodies(op: "submit").count, 1)
+        for rig in [cancelRig, flightRig] {
+            await rig.log.flush()
+            XCTAssertEqual(rig.log.packets.count, 4, "the lookup only")
+            XCTAssertEqual(rig.partner.requests.count, rig === flightRig ? 3 : 2)
+        }
+        await blankRig.log.flush()
+        XCTAssertTrue(blankRig.log.packets.isEmpty)
+        XCTAssertEqual(blankRig.partner.requests.count, 0)
+        // Positive counterpart: a confirmed request does record.
+        let doneRig = makeRig()
+        let doneCard = await doneRig.card()
+        _ = await doneCard?.resolve(.confirm)
+        await doneRig.log.flush()
+        XCTAssertEqual(doneRig.log.packets.count, 6)
+    }
+
+    func testPARTNER_P07_ALogThatCannotWriteChangesNothingTheUserOrTheModelSees() async throws {
+        /// Everything a request shows, except the random ids. `failure` is set after the card is built.
+        func shown(_ rig: PartnerRig, failure: Error? = nil) async throws -> String {
+            let built = await rig.card()
+            let card = try XCTUnwrap(built)
+            if let failure { rig.partner.mode = .error(failure) }
+            let resolved = await card.resolve(.confirm)
+            let resolution = try XCTUnwrap(resolved)
+            var json = resolution.json ?? [:]
+            json.removeValue(forKey: "id")
+            let result = String(decoding: (try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])) ?? Data(), as: UTF8.self)
+            let entries = rig.store.activities.map { "\($0.title)|\($0.startDate)|\($0.endDate)|\($0.location?.name ?? "")" }
+            return [result, card.mark?.rawValue ?? "pending", resolution.notice ?? "no notice"].joined(separator: "\n") + "\n" + entries.joined(separator: "\n")
+        }
+        let healthy = try await shown(makeRig())
+        let broken = try await shown(makeRig(failingLog: true))
+        XCTAssertEqual(healthy, broken)
+        XCTAssertTrue(healthy.contains("applied"))
+
+        let offline = URLError(.notConnectedToInternet)
+        let failedHealthy = try await shown(makeRig(), failure: offline)
+        let failedBroken = try await shown(makeRig(failingLog: true), failure: offline)
+        XCTAssertEqual(failedHealthy, failedBroken)
+        XCTAssertTrue(failedHealthy.contains("unavailable"))
+    }
+
+    func testPARTNER_P09_ARequestDoesNotChangeTheFlowOfTheAgentMessagePackets() async throws {
+        let rig = makeRig()
+        let first = Turns.call("get_partners", "{}", id: "c0")
+        let second = Turns.call("request_partner", PlaceTurns.arguments(PartnerRig.arguments()), id: "c1")
+        let fake = FakeTransport([.turn(Turns.turn(first)), .turn(Turns.turn(second)), .turn(Turns.text("Booked, and it is simulated."))])
+        let session = AgentSession(toolbox: rig.tools, transport: fake, connections: rig.log)
+        session.send(PartnerRig.parts(.init()).line)
+        await session.settle()
+        XCTAssertNotNil(session.pendingCard)
+        await session.confirmCard()
+        await session.settle()
+        await rig.log.flush()
+        let agentFlows = Set(rig.log.packets.filter { $0.kind == .agentMessage || $0.kind == .agentToolCall }.map(\.flowID))
+        let lookupFlows = Set(rig.log.packets.filter { $0.kind == .partner && !$0.summary.contains("Request") }.map(\.flowID))
+        let requestFlows = Set(rig.log.packets.filter { $0.kind == .partner && $0.summary.contains("Request") }.map(\.flowID))
+        XCTAssertEqual(agentFlows.count, 1, "the agent's packets stay in one flow")
+        XCTAssertNotNil(agentFlows.first ?? nil)
+        XCTAssertEqual(lookupFlows, agentFlows, "the lookup runs under the message's flow")
+        XCTAssertEqual(requestFlows.count, 1)
+        XCTAssertFalse(requestFlows.contains(nil))
+        XCTAssertTrue(agentFlows.isDisjoint(with: requestFlows), "a request is a flow of its own")
+        XCTAssertEqual(rig.log.packets.filter { $0.kind == .partner }.count, 6)
+        XCTAssertFalse(rig.log.packets.filter { $0.kind == .agentMessage }.isEmpty)
+    }
+
+    func testPARTNER_P05_TheFileHoldsNoValueTimeCodeTokenOrHost() async throws {
+        let place = "Pasta Palace Unique"
+        let start = "2026-11-02T19:00"
+        let specific = PartnerRequest(requestID: sample.requestID, values: [.init(key: "restaurant", value: .text(place)),
+                                                                          .init(key: "party_size", value: .number(2)),
+                                                                          .init(key: "start", value: .text(start))])
+        let reply = object()
+        let recorder = BookingSendRecorder(body: reply)
+        let (log, file) = makeLog()
+        let result = await client(recorder.send, log: log).submit(specific, to: spec, flow: flow)
+        // The name and the time exist in the request, and the code in the answer, so the checks below can fail.
+        let sent = String(decoding: try XCTUnwrap(recorder.requests.first?.httpBody), as: UTF8.self)
+        XCTAssertTrue(sent.contains(place))
+        XCTAssertTrue(sent.contains(start))
+        XCTAssertTrue(reply.contains("EX-AB12CD"))
+        XCTAssertEqual(result, .success(.confirmed(results: items)))
+        await log.flush()
+        let stored = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertTrue(stored.contains("Example Tables: Request sent"))
+        for secret in [place, "Pasta", start, "19:00", "7:00", "EX-AB12CD", "Table held", token, host, sample.requestID] {
+            XCTAssertFalse(stored.contains(secret), "connections.json holds \(secret)")
+        }
+    }
+
+    func testPARTNER_P06_TheFlowReadsBesirPartnerBesir() async {
+        let (log, _) = makeLog()
+        _ = await submit(BookingSendRecorder(body: object()), log: log)
+        await log.flush()
+        let flows = ConnectionFlows.group(log.packets)
+        XCTAssertEqual(flows.count, 1)
+        XCTAssertEqual(flows.map(ConnectionFlows.chainText), ["besir → Partner (Simulated) → besir"])
+    }
+
+    func testPARTNER_P08_TwoRequestsMakeTwoFlows() async {
+        let (log, _) = makeLog()
+        let first = UUID()
+        let second = UUID()
+        _ = await client(BookingSendRecorder(body: object()).send, log: log).submit(sample, to: spec, flow: first)
+        _ = await client(BookingSendRecorder(body: object()).send, log: log).submit(sample, to: spec, flow: second)
+        await log.flush()
+        XCTAssertEqual(log.packets.count, 4)
+        XCTAssertEqual(ConnectionFlows.group(log.packets).count, 2)
+        XCTAssertEqual(Set(log.packets.compactMap(\.flowID)), [first, second])
+    }
+}

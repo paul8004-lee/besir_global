@@ -561,6 +561,8 @@ enum PlaceLine {
     /// 잠긴다: 쓰다 만 글로 저장되면 고친 글과 다른 규칙(또는 한 번짜리)이 조용히 만들어진다. busy를 쓰지 않은 이유:
     /// busy는 줄 옆에 진행 표시를 띄우는 깃발이라 글자를 치는 동안 줄곧 돌게 된다. 다른 줄은 늘 false다.
     var pendingCommit: Bool = false
+    /// The text a typed row shows while empty; nil keeps the view's own wording for the row's kind.
+    var placeholder: String? = nil
 
     var chosenLabel: String? {
         guard let chosen else { return nil }

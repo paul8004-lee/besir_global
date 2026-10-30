@@ -2,7 +2,7 @@ import Foundation
 
 /// The word a partner uses for the kind of one field of its order form (SPEC-CHOICECARD-001 REQ-002).
 enum PartnerFieldKind: String, CaseIterable, Equatable {
-    case text, place, time
+    case text, place, time, number
     case pickOne = "pick_one"
     case onOff = "on_off"
 
@@ -23,6 +23,14 @@ struct PartnerField: Equatable {
     let label: String
     /// Empty for every kind but `pick_one` and `on_off`.
     let options: [PartnerOption]
+    /// True when the partner marked the field optional. Defaulted, so a field written without it is required.
+    var isOptional = false
+}
+
+/// One entry of the result-field list a partner announces before the card is drawn: the name and the kind of a result item.
+struct PartnerResultSpec: Equatable {
+    let name: String
+    let kind: PartnerResultKind
 }
 
 enum PartnerResultKind: String, Equatable {
@@ -67,7 +75,8 @@ enum PartnerForm {
 
     // MARK: The field list
 
-    /// 1 to 8 fields, each `key`, `kind`, `label` and, only for `pick_one` and `on_off`, `options`; keys unique.
+    /// 1 to 8 fields, each `key`, `kind`, `label`, then `options` for `pick_one` and `on_off` only, then `optional` (the boolean
+    /// `true`, on any kind but `on_off`) when the field is optional; keys unique.
     static func fields(from value: Any?) -> [PartnerField]? {
         guard let list = value as? [Any], (1...maxFields).contains(list.count) else { return nil }
         var fields: [PartnerField] = []
@@ -83,11 +92,20 @@ enum PartnerForm {
         guard let key = object["key"] as? String, isFieldKey(key),
               let word = object["kind"] as? String, let kind = PartnerFieldKind(rawValue: word),
               let label = object["label"] as? String, isLabel(label, upTo: maxFieldLabelLength) else { return nil }
-        guard kind.hasOptions else {
-            return object.count == 3 ? PartnerField(key: key, kind: kind, label: label, options: []) : nil
+        // `optional` is looked up as a key of the parsed dictionary, never as a position. Only the boolean `true` is a marker:
+        // `false`, a text, a number and null are refused, and so is the marker on a switch.
+        var optional = false
+        var keyCount = 3
+        if let marker = object["optional"] {
+            guard kind != .onOff, let flag = marker as? NSNumber, isBoolean(flag), flag.boolValue else { return nil }
+            optional = true
+            keyCount += 1
         }
-        guard object.count == 4, let listed = object["options"] as? [Any], let options = options(from: listed, kind: kind) else { return nil }
-        return PartnerField(key: key, kind: kind, label: label, options: options)
+        guard kind.hasOptions else {
+            return object.count == keyCount ? PartnerField(key: key, kind: kind, label: label, options: [], isOptional: optional) : nil
+        }
+        guard object.count == keyCount + 1, let listed = object["options"] as? [Any], let options = options(from: listed, kind: kind) else { return nil }
+        return PartnerField(key: key, kind: kind, label: label, options: options, isOptional: optional)
     }
 
     /// `pick_one`: 1 to 4 entries with unique ids of `a-z0-9-_`. `on_off`: exactly two, the ids `true` then `false`, two
@@ -139,6 +157,20 @@ enum PartnerForm {
             guard let text = object["value"] as? String, isLabel(text, upTo: maxTextLength) else { return nil }
             return PartnerResultItem(name: name, value: .text(text))
         }
+    }
+
+    /// The result fields a partner announces before the card is drawn: 1 to 8 objects of exactly `name` and `kind` (no `value`),
+    /// the name 1 to 40 printable ASCII characters, at most one `time` and one `money` item.
+    static func resultFields(from value: Any?) -> [PartnerResultSpec]? {
+        guard let list = value as? [Any], (1...maxItems).contains(list.count) else { return nil }
+        var specs: [PartnerResultSpec] = []
+        for element in list {
+            guard let object = element as? [String: Any], object.count == 2, let name = object["name"] as? String, isItemName(name),
+                  let word = object["kind"] as? String, let kind = PartnerResultKind(rawValue: word) else { return nil }
+            specs.append(PartnerResultSpec(name: name, kind: kind))
+        }
+        guard specs.filter({ $0.kind == .time }).count <= 1, specs.filter({ $0.kind == .money }).count <= 1 else { return nil }
+        return specs
     }
 
     // MARK: Shared reading rules
@@ -196,7 +228,7 @@ enum PartnerForm {
     }
 
     /// A result item name: 1 to 40 printable ASCII characters.
-    private static func isItemName(_ text: String) -> Bool {
+    static func isItemName(_ text: String) -> Bool {
         (1...maxNameLength).contains(text.unicodeScalars.count) && text.unicodeScalars.allSatisfy { (0x20...0x7E).contains($0.value) }
     }
 }

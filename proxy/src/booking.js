@@ -1,9 +1,35 @@
 // POST /booking: a simulated table-booking partner. It has no upstream, no storage and no log line:
 // the answer is computed from the request alone, so nothing personal can be kept.
+// Two requests: {"op":"fields"} names the form and the result items; {"op":"submit", request_id, values} acts on the form.
 const PARTNER = "Example Tables";
 const MAX_BODY_CHARS = 4096;
-const KEYS = ["request_id", "restaurant", "party_size", "start"];
+const ALL_KEYS = ["op", "request_id", "values"];
+const KEYS_BY_OP = {
+  fields: ["op"],
+  submit: ALL_KEYS,
+};
+const VALUE_KEYS = ["restaurant", "party_size", "start", "name", "note"];
+const REQUIRED_VALUE_KEYS = ["restaurant", "party_size", "start", "name"];
+// The form, in the order the app draws it. Only `note` is optional, and the marker is written last.
+const BOOKING_FIELDS = [
+  { key: "restaurant", kind: "text", label: "Restaurant" },
+  { key: "party_size", kind: "number", label: "Party size" },
+  { key: "start", kind: "time", label: "Time" },
+  { key: "name", kind: "text", label: "Name" },
+  { key: "note", kind: "text", label: "Note", optional: true },
+];
+// What a confirmed answer will hold, announced before the card is drawn; the answer repeats these names and kinds.
+const RESULT_FIELDS = [
+  { name: "Booking time", kind: "time" },
+  { name: "Reservation number", kind: "text" },
+  { name: "Estimated cost", kind: "money" },
+  { name: "Partner note", kind: "text" },
+];
 const LARGEST_PARTY_WE_SEAT = 8;
+const LARGEST_PARTY_ASKED = 12;
+const ESTIMATE_PER_PERSON_CENTS = 3000;
+const MAX_TEXT_CHARS = 120;
+const NOTE_TEXT = "Table held for 15 minutes";
 const UUID_FORM = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const START_FORM = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 const HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
@@ -16,34 +42,61 @@ function daysInMonth(year, month) {
   return [4, 6, 9, 11].includes(month) ? 30 : 31;
 }
 
-// The calendar is checked by arithmetic, so the route never reads a clock.
+// The calendar is checked by arithmetic, so the route never reads a clock. The years are 2000 to 2199.
 function isRealStart(text) {
   const parts = START_FORM.exec(text);
   if (!parts) return false;
   const [year, month, day, hour, minute] = parts.slice(1).map(Number);
-  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month) && hour <= 23 && minute <= 59;
+  return (
+    year >= 2000 &&
+    year <= 2199 &&
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth(year, month) &&
+    hour <= 23 &&
+    minute <= 59
+  );
 }
 
 // The value as sent may not hold a control, format or line-separator character; then it is trimmed and counted in code points.
-function cleanRestaurant(value) {
+function cleanText(value, longest) {
   if (typeof value !== "string" || HIDDEN_CHARACTER.test(value)) return null;
   const trimmed = value.trim();
   const length = [...trimmed].length;
-  return length >= 1 && length <= 80 ? trimmed : null;
+  return length >= 1 && length <= longest ? trimmed : null;
 }
 
-function valuesAreValid(value) {
+const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+
+// The values are valid when each one present has the type and range of its field; `note` may be absent.
+function valuesAreValid(values) {
   return (
-    typeof value.request_id === "string" &&
-    UUID_FORM.test(value.request_id) &&
-    cleanRestaurant(value.restaurant) !== null &&
-    typeof value.party_size === "number" &&
-    Number.isInteger(value.party_size) &&
-    value.party_size >= 1 &&
-    value.party_size <= 12 &&
-    typeof value.start === "string" &&
-    isRealStart(value.start)
+    cleanText(values.restaurant, MAX_TEXT_CHARS) !== null &&
+    typeof values.party_size === "number" &&
+    Number.isInteger(values.party_size) &&
+    values.party_size >= 1 &&
+    values.party_size <= LARGEST_PARTY_ASKED &&
+    typeof values.start === "string" &&
+    isRealStart(values.start) &&
+    cleanText(values.name, MAX_TEXT_CHARS) !== null &&
+    (!hasOwn(values, "note") || cleanText(values.note, MAX_TEXT_CHARS) !== null)
   );
+}
+
+function fieldsAnswer() {
+  return {
+    partner: PARTNER,
+    simulated: true,
+    fields: BOOKING_FIELDS.map((field) => ({ ...field })),
+    result_fields: RESULT_FIELDS.map((field) => ({ ...field })),
+  };
+}
+
+// An item of a confirmed answer: the name and kind come from the announced list, so the two cannot diverge.
+function resultItem(name, value) {
+  const announced = RESULT_FIELDS.find((field) => field.name === name);
+  return { name: announced.name, kind: announced.kind, value };
 }
 
 async function reservationCode(requestId) {
@@ -64,20 +117,39 @@ export async function handleBooking(request, { json }) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     return json(400, { error: "body_must_be_object" });
   }
-  const has = (key) => Object.prototype.hasOwnProperty.call(value, key);
-  if (Object.keys(value).some((key) => !KEYS.includes(key))) return json(400, { error: "unknown_field" });
-  if (!KEYS.every(has)) return json(400, { error: "missing_field" });
-  if (!valuesAreValid(value)) return json(400, { error: "invalid_field" });
+  const has = (key) => hasOwn(value, key);
+  // (1) a key outside the three, (2) an op that is neither fields nor submit, (3) no op or a key the op needs missing,
+  // (4) a key the op does not allow.
+  if (Object.keys(value).some((key) => !ALL_KEYS.includes(key))) return json(400, { error: "unknown_field" });
+  const knownOp = has("op") && (value.op === "fields" || value.op === "submit");
+  if (has("op") && !knownOp) return json(400, { error: "invalid_field" });
+  if (!knownOp || !KEYS_BY_OP[value.op].every(has)) return json(400, { error: "missing_field" });
+  if (Object.keys(value).some((key) => !KEYS_BY_OP[value.op].includes(key))) return json(400, { error: "invalid_field" });
 
-  const answer = {
+  if (value.op === "fields") return json(200, fieldsAnswer());
+
+  // (5) values is an object, (6) it holds only the five keys, (7) the four required keys, (8) types and ranges.
+  const values = value.values;
+  if (values === null || typeof values !== "object" || Array.isArray(values)) return json(400, { error: "invalid_field" });
+  if (Object.keys(values).some((key) => !VALUE_KEYS.includes(key))) return json(400, { error: "unknown_field" });
+  if (!REQUIRED_VALUE_KEYS.every((key) => hasOwn(values, key))) return json(400, { error: "missing_field" });
+  if (typeof value.request_id !== "string" || !UUID_FORM.test(value.request_id) || !valuesAreValid(values)) {
+    return json(400, { error: "invalid_field" });
+  }
+
+  if (values.party_size > LARGEST_PARTY_WE_SEAT) {
+    return json(200, { status: "declined", partner: PARTNER, simulated: true, reason: "no_table" });
+  }
+  // Nothing of the free text (`restaurant`, `name`, `note`) is answered: only the start and the amount from the party size.
+  return json(200, {
+    status: "confirmed",
     partner: PARTNER,
     simulated: true,
-    restaurant: cleanRestaurant(value.restaurant),
-    party_size: value.party_size,
-    start: value.start,
-  };
-  if (value.party_size > LARGEST_PARTY_WE_SEAT) {
-    return json(200, { status: "declined", ...answer, reason: "no_table" });
-  }
-  return json(200, { status: "confirmed", ...answer, reservation_code: await reservationCode(value.request_id) });
+    results: [
+      resultItem("Booking time", values.start),
+      resultItem("Reservation number", await reservationCode(value.request_id)),
+      resultItem("Estimated cost", values.party_size * ESTIMATE_PER_PERSON_CENTS),
+      resultItem("Partner note", NOTE_TEXT),
+    ],
+  });
 }
