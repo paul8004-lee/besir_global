@@ -615,7 +615,7 @@ struct ContentView: View {
         // 높이는 정렬과 무관하지만 둘이 다르면 다음에 한쪽만 읽고 고치게 된다(계약 5).
         return ZStack(alignment: .top) {
             // The cell is as tall as the template, and that height is measured once (monthTemplateHeight, read by the grid's
-            // height too). A hidden template in every cell put several hundred extra Text views in the pager's three pages (t96).
+            // height too). A hidden template in every cell put several hundred extra Text views in the pager's pages (t96).
             Color.clear.frame(height: monthTemplateHeight)
             VStack(alignment: .center, spacing: Self.monthCellVSpacing) {
                 Text("\(calendar.component(.day, from: day))")
