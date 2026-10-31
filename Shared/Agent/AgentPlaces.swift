@@ -208,6 +208,9 @@ struct AgentLookupOutput {
     let result: String
     let showsGoogleData: Bool
     var notice: String? = nil
+    /// The one fixed English sentence the chat shows at the step limit when this lookup was the last of the message
+    /// and failed; never model text or a code (SPEC-STEPFAIL-001).
+    var failure: String? = nil
 }
 
 /// A network lookup the session runs as the request in flight (design.md section 3).

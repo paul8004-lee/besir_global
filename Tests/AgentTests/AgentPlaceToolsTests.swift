@@ -13,6 +13,12 @@ final class AgentPlaceToolsTests: XCTestCase {
     private static let rangeLine = "Wed, Oct 28, 7:00 PM - 8:00 PM"
     private static let flag = "\u{1F1FA}\u{1F1F8}"
 
+    /// The two fixed search sentences of SPEC-STEPFAIL-001, spelled once for these tests.
+    private enum StepFailLine {
+        static let searchFailed = "Places couldn't be searched right now."
+        static let noPlaces = "No places were found for that search."
+    }
+
     // MARK: - Helpers
 
     private func declarations() -> [[String: Any]] {
@@ -1326,5 +1332,102 @@ final class AgentPlaceToolsTests: XCTestCase {
         XCTAssertEqual(AgentPlaces.devicePlace(manual: nil, current: current), PlaceFixture.device)
         XCTAssertEqual(AgentPlaces.devicePlace(manual: nil, current: current)?.address, "")
         XCTAssertNil(AgentPlaces.devicePlace(manual: nil, current: nil))
+    }
+
+    // MARK: - STEPFAIL: the failure line of a lookup output (SPEC-STEPFAIL-001)
+
+    /// Calls get_travel_time for p1 through the toolbox and runs the lookup to the end.
+    private func travelOutputOf(_ rig: PlaceRig) async -> AgentLookupOutput? {
+        guard let lookup = rig.call("get_travel_time", ["place_id": "p1", "mode": "transit"]).lookup else { return nil }
+        return await lookup.run()
+    }
+
+    func testSTEPFAIL_T1_TravelFailureOutputCarriesTheTravelFailureSentence() async {
+        // Pure table: every TravelFailure case carries its own sentence, nil carries none.
+        XCTAssertEqual(TravelFailure.allCases.count, 4)
+        for failure in TravelFailure.allCases {
+            let output = AgentPlaces.travelFailure(failure)
+            XCTAssertEqual(output.failure, failure.sentence, "\(failure)")
+            XCTAssertEqual(TestClock.object(output.result) as NSDictionary?,
+                           (failure == .noRoute ? Text.noRoute : Text.travelUnavailable) as NSDictionary, "\(failure)")
+            XCTAssertFalse(output.showsGoogleData, "\(failure)")
+        }
+        let cancelled = AgentPlaces.travelFailure(nil)
+        XCTAssertNil(cancelled.failure)
+        XCTAssertEqual(TestClock.object(cancelled.result) as NSDictionary?, Text.travelUnavailable as NSDictionary)
+        XCTAssertFalse(cancelled.showsGoogleData)
+
+        // A full route registry: the lookup itself ran, so no sentence would be true.
+        var registry = AgentPlaceRegistry(nextRouteNumber: 10000)
+        let full = AgentPlaces.travelOutput(PlaceFixture.route(to: PlaceFixture.device), leaveBy: nil, registry: &registry)
+        XCTAssertNil(full.failure)
+        XCTAssertEqual(TestClock.object(full.result) as NSDictionary?, Text.travelUnavailable as NSDictionary)
+        XCTAssertFalse(full.showsGoogleData)
+
+        // Stub rows: get_travel_time through the toolbox, after a search registered p1.
+        let rows: [(routes: RoutesTransportStub, config: AppConfig, expected: String?)] = [
+            (.throwing(URLError(.notConnectedToInternet)), PlaceSentinel.config, TravelFailure.offline.sentence),
+            (.answering(status: 500, with: Data("{}".utf8)), PlaceSentinel.config, TravelFailure.lookupFailed.sentence),
+            (PlaceStubs.routes("routes-empty-object"), PlaceSentinel.config, TravelFailure.noRoute.sentence),
+            (PlaceStubs.routes("routes-google-error-403", status: 403), PlaceSentinel.config, TravelFailure.notConfigured.sentence),
+            (PlaceStubs.routes("routes-drive"), PlaceSentinel.unconfigured, TravelFailure.notConfigured.sentence),
+            (.throwing(CancellationError()), PlaceSentinel.config, nil),
+            (PlaceStubs.routes("routes-drive"), PlaceSentinel.config, nil),
+        ]
+        for (index, row) in rows.enumerated() {
+            let rig = PlaceRig(routes: row.routes, routesConfig: row.config)
+            _ = await rig.search("cafe")
+            let output = await travelOutputOf(rig)
+            if let output {
+                XCTAssertEqual(output.failure, row.expected, "row \(index)")
+            } else {
+                XCTFail("row \(index) did not answer with a lookup")
+            }
+        }
+    }
+
+    func testSTEPFAIL_T2_SearchOutputCarriesItsFixedSentence() async {
+        // Pure rows.
+        let failure = AgentPlaces.searchFailure()
+        XCTAssertEqual(failure.failure, StepFailLine.searchFailed)
+        XCTAssertEqual(TestClock.object(failure.result) as NSDictionary?, Text.placesUnavailable as NSDictionary)
+        XCTAssertFalse(failure.showsGoogleData)
+
+        var fresh = AgentPlaceRegistry()
+        let empty = AgentPlaces.searchOutput([], registry: &fresh)
+        XCTAssertEqual(empty.failure, StepFailLine.noPlaces)
+        XCTAssertEqual(TestClock.object(empty.result) as NSDictionary?, Text.noResults as NSDictionary)
+        XCTAssertFalse(empty.showsGoogleData)
+
+        let three = PlaceFixture.places("places-search-three")
+        var full = AgentPlaceRegistry(nextPlaceNumber: 9999)
+        let refused = AgentPlaces.searchOutput(three, registry: &full)
+        XCTAssertNil(refused.failure, "the search itself ran, so neither sentence would be true")
+        XCTAssertEqual(TestClock.object(refused.result) as NSDictionary?, Text.placesUnavailable as NSDictionary)
+        XCTAssertFalse(refused.showsGoogleData)
+
+        var open = AgentPlaceRegistry()
+        let ok = AgentPlaces.searchOutput(three, registry: &open)
+        XCTAssertNil(ok.failure)
+        XCTAssertEqual(TestClock.object(ok.result)?["status"] as? String, "ok")
+        XCTAssertTrue(ok.showsGoogleData)
+
+        // Stub rows: search_places through the toolbox.
+        let rows: [(places: PlacesTransportStub, expected: String?)] = [
+            (.answering(status: 500, with: Data("{}".utf8)), StepFailLine.searchFailed),
+            (PlacesTransportStub { _ in throw URLError(.notConnectedToInternet) }, StepFailLine.searchFailed),
+            (PlaceStubs.places("places-empty"), StepFailLine.noPlaces),
+            (PlaceStubs.places("places-search-three"), nil),
+        ]
+        for (index, row) in rows.enumerated() {
+            let rig = PlaceRig(places: row.places)
+            let outcome = rig.call("search_places", ["query": "cafe"])
+            guard let lookup = outcome.lookup else {
+                XCTFail("row \(index) did not answer with a lookup")
+                continue
+            }
+            let output = await lookup.run()
+            XCTAssertEqual(output.failure, row.expected, "row \(index)")
+        }
     }
 }
