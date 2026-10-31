@@ -43,6 +43,9 @@ enum AgentPlaces {
     private static let travelUnavailable = AgentToolbox.encode([
         "status": "unavailable",
         "message": "The travel time could not be looked up. Tell the user it is unavailable; do not estimate it."])
+    // The user's line at the step limit (SPEC-STEPFAIL-001), not the model's: one fixed English sentence each.
+    private static let searchFailedLine = "Places couldn't be searched right now."
+    private static let noPlacesLine = "No places were found for that search."
 
     // MARK: Pure helpers
 
@@ -91,7 +94,7 @@ enum AgentPlaces {
     /// The `search_places` answer for the places Google returned; registers the first `maxResults` of them.
     static func searchOutput(_ places: [Place], registry: inout AgentPlaceRegistry) -> AgentLookupOutput {
         let kept = Array(places.prefix(maxResults))
-        guard !kept.isEmpty else { return AgentLookupOutput(result: noResults, showsGoogleData: false) }
+        guard !kept.isEmpty else { return AgentLookupOutput(result: noResults, showsGoogleData: false, failure: noPlacesLine) }
         guard let handles = registry.register(kept) else {
             return AgentLookupOutput(result: placesUnavailable, showsGoogleData: false)
         }
@@ -104,7 +107,7 @@ enum AgentPlaces {
 
     /// The `search_places` answer for a search that failed: the places-unavailable text, no place, no Google data.
     static func searchFailure() -> AgentLookupOutput {
-        AgentLookupOutput(result: placesUnavailable, showsGoogleData: false)
+        AgentLookupOutput(result: placesUnavailable, showsGoogleData: false, failure: searchFailedLine)
     }
 
     /// The `get_travel_time` answer for a route; registers it. `leaveBy` is the app-computed `YYYY-MM-DDTHH:MM`.
@@ -123,7 +126,7 @@ enum AgentPlaces {
 
     /// The answer when a lookup gave no duration: no route, or anything else (offline, not set up, cancelled).
     static func travelFailure(_ failure: TravelFailure?) -> AgentLookupOutput {
-        AgentLookupOutput(result: failure == .noRoute ? noRoute : travelUnavailable, showsGoogleData: false)
+        AgentLookupOutput(result: failure == .noRoute ? noRoute : travelUnavailable, showsGoogleData: false, failure: failure?.sentence)
     }
 }
 
