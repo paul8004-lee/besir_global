@@ -1440,6 +1440,8 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertEqual(two.values.rows(of: "items").count, 1)
         XCTAssertEqual(two.values.rows(of: "items").first?.keys.sorted(), ["item", "note", "quantity"])
         XCTAssertEqual(two.values.rows(of: "items_x").count, 1)
+        XCTAssertEqual(two.values.rows(of: "items").first?["item"]?.value, .option("ramen"), "items_x does not replace a value of items")
+        XCTAssertEqual(two.values.rows(of: "items_x").first?["item"]?.value, .option("gyoza"))
 
         // Ready only while every required member of every row is chosen; the control row never blocks.
         XCTAssertTrue(model.isReady, "every required member of both rows is chosen")
