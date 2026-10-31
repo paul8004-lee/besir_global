@@ -80,7 +80,7 @@ final class CalendarStoreHookTests: XCTestCase {
     /// Repeat row empty.
     private func makeSeriesForm(start: Date, end: Date) -> LegCardForm {
         let rows = LegCardForm.manualNewActivityRows(favorites: [], defaultDay: start, now: start,
-                                                     presetStart: nil, calendarDefaultOn: nil)
+                                                     presetStart: nil)
         var form = LegCardForm(card: EditCard(fields: rows), favoriteOptions: [])
         func rowId(_ f: LegCardForm, _ key: String) -> UUID { f.card.fields.first { $0.key == key }!.id }
         form.setTitleText(field: rowId(form, "title"), text: "Class")

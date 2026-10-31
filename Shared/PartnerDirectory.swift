@@ -154,6 +154,79 @@ extension PartnerAnswer {
     }
 }
 
+// MARK: The place lookup
+
+/// The lookup a partner answers for a field it marked `"lookup": true` (SPEC-PARTNERPLACE-001): the text the user typed goes out,
+/// up to five candidates come back. The grammar of both sides lives here and nowhere else.
+enum PartnerCandidates {
+    static let minTextLength = 2
+    static let maxTextLength = 80
+    static let maxCandidates = 5
+    static let maxNameLength = 80
+    static let maxAddressLength = 120
+
+    /// The text a lookup asks for: hidden characters removed, white space trimmed, cut at 80 code points, trimmed again. Nil when
+    /// fewer than 2 code points remain, because then nothing is asked. The one place that fixes this order.
+    static func requestText(_ typed: String) -> String? {
+        let visible = typed.unicodeScalars.filter { !isHidden($0) }
+        let cut = String(String.UnicodeScalarView(visible.prefix(maxTextLength)))
+        let text = cut.trimmingCharacters(in: .whitespaces)
+        return text.unicodeScalars.count >= minTextLength ? text : nil
+    }
+
+    /// The body of a lookup: `op`, `field`, `text`, and `near` (exactly `latitude` and `longitude`, each rounded to 2 decimals,
+    /// about 1 km) only when the device position is known.
+    static func body(field: String, text: String, near: (latitude: Double, longitude: Double)?) -> [String: Any] {
+        var body: [String: Any] = ["op": "lookup", "field": field, "text": text]
+        if let near { body["near"] = ["latitude": rounded(near.latitude), "longitude": rounded(near.longitude)] }
+        return body
+    }
+
+    private static func rounded(_ value: Double) -> Double { (value * 100).rounded() / 100 }
+
+    /// The characters `PartnerForm.isLabel` refuses: control, format, line separator, paragraph separator.
+    private static func isHidden(_ scalar: Unicode.Scalar) -> Bool {
+        [.control, .format, .lineSeparator, .paragraphSeparator].contains(scalar.properties.generalCategory)
+    }
+
+    /// Accepts only the exact four-key answer of a `lookup`: the entry's own name, `simulated` true, the requested `field`, and
+    /// 0 to 5 `candidates`, each exactly `name`, `address` and `location` (`latitude`, `longitude`). One defect anywhere makes the
+    /// whole answer unusable (nil); an empty list is an answer.
+    // @MX:NOTE the one place the grammar of a lookup answer lives; the Worker drops what this refuses, so one bad result never fails a lookup
+    static func list(from data: Data, spec: PartnerSpec, field: String) -> [Place]? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], object.count == 4,
+              object["partner"] as? String == spec.entry.name, isTrue(object["simulated"]), object["field"] as? String == field,
+              let listed = object["candidates"] as? [Any], listed.count <= maxCandidates else { return nil }
+        var places: [Place] = []
+        for element in listed {
+            guard let candidate = element as? [String: Any], let place = place(from: candidate) else { return nil }
+            places.append(place)
+        }
+        return places
+    }
+
+    private static func place(from object: [String: Any]) -> Place? {
+        guard object.count == 3, let name = object["name"] as? String, isText(name, upTo: maxNameLength),
+              let address = object["address"] as? String, isText(address, upTo: maxAddressLength),
+              let location = object["location"] as? [String: Any], location.count == 2,
+              let latitude = coordinate(location["latitude"], within: 90),
+              let longitude = coordinate(location["longitude"], within: 180) else { return nil }
+        return Place(name: name, address: address, latitude: latitude, longitude: longitude)
+    }
+
+    /// 1 to `limit` code points, no hidden character, and not white space only.
+    private static func isText(_ text: String, upTo limit: Int) -> Bool {
+        PartnerForm.isLabel(text, upTo: limit) && !text.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    /// A finite JSON number (never a boolean) within `-limit...limit`.
+    private static func coordinate(_ value: Any?, within limit: Double) -> Double? {
+        guard let number = value as? NSNumber, !PartnerForm.isBoolean(number) else { return nil }
+        let parsed = number.doubleValue
+        return parsed.isFinite && abs(parsed) <= limit ? parsed : nil
+    }
+}
+
 /// True only for the JSON boolean `true`; a number, a text and null never count.
 private func isTrue(_ value: Any?) -> Bool {
     guard let number = value as? NSNumber, PartnerForm.isBoolean(number) else { return false }

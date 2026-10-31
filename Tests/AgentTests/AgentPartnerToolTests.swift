@@ -25,6 +25,8 @@ final class StubPartner {
         var fields: [[String: Any]]
         var resultFields: [[String: Any]]
         var answer: ([String: Any]) -> [String: Any]
+        /// What the partner lists for a `lookup`, given the field key and the lookup text: its places, in its order.
+        var candidates: (_ field: String, _ text: String) -> [Place] = { _, _ in [] }
 
         var entry: [String: Any] { ["id": id, "name": name, "title": title, "summary": summary, "route": route] }
     }
@@ -34,6 +36,8 @@ final class StubPartner {
     /// Routes that answer a server error to every request.
     var brokenRoutes: Set<String> = []
     private(set) var requests: [URLRequest] = []
+    /// The body of every `lookup` answer, oldest first.
+    private(set) var lookupAnswers: [Data] = []
     /// Runs inside the send call of every request, before the answer is handed back.
     var duringSend: (() -> Void)?
     /// The ops (`list`, `fields`, `submit`) whose answer waits for `release()`: the request is recorded, then held.
@@ -89,13 +93,19 @@ final class StubPartner {
                     answer = ["partner": shape.name, "simulated": true, "fields": shape.fields, "result_fields": shape.resultFields]
                 case "submit":
                     answer = shape.answer(sent["values"] as? [String: Any] ?? [:])
+                case "lookup":
+                    let key = sent["field"] as? String ?? ""
+                    answer = ["partner": shape.name, "simulated": true, "field": key,
+                              "candidates": shape.candidates(key, sent["text"] as? String ?? "").map(StubPartner.candidate)]
                 default:
                     answer = [:]
                 }
             } else {
                 return reply(404, Data("{}".utf8))
             }
-            return reply(200, (try? JSONSerialization.data(withJSONObject: answer)) ?? Data())
+            let data = (try? JSONSerialization.data(withJSONObject: answer)) ?? Data()
+            if op == "lookup" { lookupAnswers.append(data) }
+            return reply(200, data)
         }
     }
 
@@ -113,11 +123,17 @@ final class StubPartner {
     // MARK: Shapes
 
     static func field(_ key: String, _ kind: String, _ label: String, optional: Bool = false,
-                      options: [(String, String)]? = nil) -> [String: Any] {
+                      options: [(String, String)]? = nil, lookup: Bool = false) -> [String: Any] {
         var object: [String: Any] = ["key": key, "kind": kind, "label": label]
         if let options { object["options"] = options.map { ["id": $0.0, "label": $0.1] } }
         if optional { object["optional"] = true }
+        if lookup { object["lookup"] = true }
         return object
+    }
+
+    /// A candidate as a lookup answer holds it: exactly `name`, `address` and `location` with the two coordinates.
+    static func candidate(_ place: Place) -> [String: Any] {
+        ["name": place.name, "address": place.address, "location": ["latitude": place.latitude, "longitude": place.longitude]]
     }
 
     static func item(_ name: String, _ kind: String) -> [String: Any] { ["name": name, "kind": kind] }
@@ -149,6 +165,34 @@ extension StubPartner.Shape {
             })
     }
 
+    /// The table partner with its `restaurant` as a place field the partner resolves itself (`"lookup": true`); the other four
+    /// fields and the four result fields are those of `tables()`. `candidates` answers its lookups.
+    static func placeTables(candidates: @escaping (_ field: String, _ text: String) -> [Place] = { _, _ in PartnerPlaceFixture.branches })
+        -> StubPartner.Shape {
+        var shape = tables()
+        shape.fields[0] = StubPartner.field("restaurant", "place", "Restaurant", lookup: true)
+        shape.candidates = candidates
+        return shape
+    }
+
+    /// A partner with three place fields in this order, an unmarked `from`, then `pickup` and `dropoff` that it resolves itself, a
+    /// time field and a time result. `candidates` answers the lookups of the two marked fields.
+    static func routes(candidates: @escaping (_ field: String, _ text: String) -> [Place] = { _, _ in PartnerPlaceFixture.branches })
+        -> StubPartner.Shape {
+        StubPartner.Shape(
+            id: "routes", name: "Example Routes", title: "Book a ride", summary: "Books a ride between two places.", route: "/routes",
+            fields: [StubPartner.field("from", "place", "From"),
+                     StubPartner.field("pickup", "place", "Pickup", lookup: true),
+                     StubPartner.field("dropoff", "place", "Dropoff", lookup: true),
+                     StubPartner.field("start", "time", "Time")],
+            resultFields: [StubPartner.item("Pickup time", "time")],
+            answer: { values in
+                ["status": "confirmed", "partner": "Example Routes", "simulated": true,
+                 "results": [["name": "Pickup time", "kind": "time", "value": values["start"] ?? ""]]]
+            },
+            candidates: candidates)
+    }
+
     /// A partner of another shape: no time field, a place, a chip, a switch, a number and a text, and only a text and a money result.
     static func parcels() -> StubPartner.Shape {
         StubPartner.Shape(
@@ -177,6 +221,18 @@ extension StubPartner.Shape {
                  "results": [["name": "Ticket", "kind": "text", "value": "T-1"]]]
             })
     }
+}
+
+/// The candidates a stub partner lists by default: two branches of one name at different addresses.
+enum PartnerPlaceFixture {
+    static let branches = [Place(name: "Pasta Palace", address: "1 Main Street, Springfield", latitude: 37.78, longitude: -122.41),
+                           Place(name: "Pasta Palace", address: "22 Oak Avenue, Springfield", latitude: 37.74, longitude: -122.43)]
+}
+
+/// The device position the toolbox reads when a lookup fires; a test sets it before it types.
+@MainActor
+final class DevicePosition {
+    var place: Place? = DeliveryToolFixture.device
 }
 
 final class BookingConfigBox {
@@ -212,6 +268,7 @@ final class PartnerRig {
     let folder: URL
     let budget: BudgetToolPartner?
     let reads = DeliveryDeviceReads()
+    let position = DevicePosition()
 
     init(config: AppConfig = PlaceSentinel.config, partner: StubPartner = StubPartner(), failingLog: Bool = false,
          budget: BudgetToolPartner? = nil, places: PlacesTransportStub? = nil) {
@@ -224,6 +281,7 @@ final class PartnerRig {
                              : ConnectionLog(fileURL: file)
         let box = BookingConfigBox(config)
         let reads = self.reads
+        let position = self.position
         var budgetClient: (() -> BudgetClient)?
         if let budget {
             let ledger = BudgetLedger(fileURL: folder.appendingPathComponent(BudgetLedger.fileName))
@@ -234,7 +292,7 @@ final class PartnerRig {
             search = { PlaceSearch(config: PlacesTestSupport.config, transport: places.transport, connections: log) }
         }
         let toolbox = AgentToolbox(store: store, now: { clock.now }, timeZone: { clock.zone },
-                                   deviceOrigin: { reads.count += 1; return DeliveryToolFixture.device },
+                                   deviceOrigin: { reads.count += 1; return position.place },
                                    places: search,
                                    partners: { PartnerClient(config: box.config, send: partner.send, connections: log) },
                                    budget: budgetClient)
@@ -1443,7 +1501,7 @@ final class AgentPartnerToolTests: XCTestCase {
 
         // The schedule title rows of the app's own cards keep the view's wording.
         let rows = LegCardForm.manualNewActivityRows(favorites: [], defaultDay: TestClock.now, now: TestClock.now,
-                                                     presetStart: nil, calendarDefaultOn: nil)
+                                                     presetStart: nil)
         XCTAssertEqual(rows.first { $0.key == "title" }?.kind, .title, "premise: the row is a title row")
         XCTAssertNil(rows.first { $0.key == "title" }?.placeholder)
         XCTAssertNil(rows.first { $0.kind == .place }?.placeholder)
@@ -1590,5 +1648,264 @@ final class AgentPartnerToolTests: XCTestCase {
             XCTAssertEqual(card.mark, .notApplied, name)
             try assertNoOwnRows(card, name)
         }
+    }
+
+    // MARK: PLACE T01-T04 a place field the partner resolves itself (SPEC-PARTNERPLACE-001, card t98)
+
+    /// Types into a place row and waits out the typing pause and the answer.
+    private func typeAndPause(_ fields: AgentFieldCard, _ key: String, _ text: String) async throws {
+        fields.search(key, text)
+        try await Task.sleep(nanoseconds: 800_000_000)
+    }
+
+    /// The candidates a place row lists now: empty while the row is in any other state.
+    private func listedPlaces(_ fields: AgentFieldCard, _ key: String) -> [Place] {
+        if case .results(let places)? = fields.field(key)?.lookup { return places }
+        return []
+    }
+
+    private func requestText(_ request: URLRequest) -> String { String(decoding: request.httpBody ?? Data(), as: UTF8.self) }
+
+    private func op(of request: URLRequest) -> String? {
+        ((try? JSONSerialization.jsonObject(with: request.httpBody ?? Data())) as? [String: Any])?["op"] as? String
+    }
+
+    private func assertLegRefused(_ outcome: Store.LegOutcome, file: StaticString = #filePath, line: UInt = #line) {
+        guard case .refused(let reason) = outcome else { return XCTFail("expected a refused leg, got \(outcome)", file: file, line: line) }
+        XCTAssertEqual(reason, .noPlace, file: file, line: line)
+    }
+
+    func testPLACE_T01_TheMarkedCardAsksOnlyThePartnersRouteWithTheRoundedDevicePosition() async throws {
+        let branches = PartnerPlaceFixture.branches
+        let stub = StubPartner()
+        stub.shapes = [.placeTables(candidates: { _, _ in branches })]
+        let places = PlacesTransportStub.answering(with: PlaceFixture.data("places-search-three"))
+        let rig = makeRig(partner: stub, places: places)
+        rig.position.place = Place(name: "Device", address: "", latitude: 37.7749295, longitude: -122.4194155)
+        let card = try await built(rig, .init(restaurant: nil))
+        let fields = try model(card)
+        XCTAssertTrue(stub.bodies(op: "lookup").isEmpty, "building the card asks nothing")
+        try await typeAndPause(fields, "restaurant", "Pasta")
+
+        let lookups = stub.bodies(op: "lookup")
+        XCTAssertEqual(lookups.count, 1, "one pause, one lookup")
+        XCTAssertTrue(places.requests.isEmpty, "a marked row never reaches the Places stub")
+        let sent = try XCTUnwrap(lookups.first)
+        XCTAssertEqual(Set(sent.keys), ["op", "field", "text", "near"])
+        XCTAssertEqual(sent["op"] as? String, "lookup")
+        XCTAssertEqual(sent["field"] as? String, "restaurant")
+        XCTAssertEqual(sent["text"] as? String, "Pasta")
+        let near = try XCTUnwrap(sent["near"] as? [String: Any])
+        XCTAssertEqual(Set(near.keys), ["latitude", "longitude"])
+        let latitude = try XCTUnwrap(near["latitude"] as? Double)
+        let longitude = try XCTUnwrap(near["longitude"] as? Double)
+        XCTAssertEqual(latitude, 37.77, accuracy: 1e-9)
+        XCTAssertEqual(longitude, -122.42, accuracy: 1e-9)
+        for value in [latitude, longitude] {
+            XCTAssertLessThan(abs(value * 100 - (value * 100).rounded()), 1e-9, "at most two decimals: \(value)")
+        }
+        let lookupRequests = stub.requests.filter { op(of: $0) == "lookup" }
+        XCTAssertEqual(lookupRequests.map { $0.url?.path }, ["/booking"], "the partner's own route")
+        XCTAssertEqual(lookupRequests.map { $0.httpMethod }, ["POST"])
+        XCTAssertTrue(stub.bodies(op: "submit").isEmpty)
+
+        // No device position: the same request without `near`.
+        let bareStub = StubPartner()
+        bareStub.shapes = [.placeTables(candidates: { _, _ in branches })]
+        let bare = makeRig(partner: bareStub, places: places)
+        bare.position.place = nil
+        let bareCard = try await built(bare, .init(restaurant: nil))
+        try await typeAndPause(try model(bareCard), "restaurant", "Pasta")
+        let bareLookups = bareStub.bodies(op: "lookup")
+        XCTAssertEqual(bareLookups.count, 1)
+        XCTAssertEqual(Set(try XCTUnwrap(bareLookups.first).keys), ["op", "field", "text"], "no position, no near key")
+        XCTAssertTrue(places.requests.isEmpty)
+    }
+
+    func testPLACE_T02_ConfirmingTakesTheLocationFromTheFirstMarkedFieldOnly() async throws {
+        let branches = PartnerPlaceFixture.branches
+        let stub = StubPartner()
+        stub.shapes = [.placeTables(candidates: { _, _ in branches })]
+        let rig = makeRig(partner: stub)
+        let card = try await built(rig, .init(restaurant: nil))
+        let fields = try model(card)
+        XCTAssertFalse(card.canConfirm, "the marked row is blank until a candidate is tapped")
+        try await typeAndPause(fields, "restaurant", "Pasta")
+        XCTAssertEqual(listedPlaces(fields, "restaurant"), branches)
+        XCTAssertTrue(fields.choosePlace("restaurant", branches[1]))
+        XCTAssertTrue(card.canConfirm)
+        let resolution = try await confirm(card)
+
+        // The entry carries the tapped candidate exactly; everything else is what the text-shaped form gave.
+        XCTAssertEqual(rig.store.activities.count, 1)
+        let entry = try XCTUnwrap(rig.store.activities.first)
+        let place = try XCTUnwrap(entry.location)
+        XCTAssertEqual(place, branches[1])
+        XCTAssertEqual(place.name, branches[1].name)
+        XCTAssertEqual(place.address, branches[1].address)
+        XCTAssertEqual(place.latitude, branches[1].latitude)
+        XCTAssertEqual(place.longitude, branches[1].longitude)
+        XCTAssertEqual(entry.title, "Example Tables: Booking time (Simulated)")
+        XCTAssertEqual(entry.startDate, TestClock.date(BookingFixture.start))
+        XCTAssertEqual(entry.endDate.timeIntervalSince(entry.startDate), 60 * 60)
+        XCTAssertEqual(entry.wantsCalendarSync, rig.store.calendarSyncDefault)
+        // The submit body has the keys of the text-shaped form, and the place leaves as its address text.
+        let submits = stub.bodies(op: "submit")
+        XCTAssertEqual(submits.count, 1)
+        let sent = try XCTUnwrap(submits.first)
+        XCTAssertEqual(Set(sent.keys), ["op", "request_id", "values"])
+        let values = try XCTUnwrap(sent["values"] as? [String: Any])
+        XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
+        XCTAssertEqual(values["restaurant"] as? String, branches[1].address)
+        XCTAssertEqual(values["party_size"] as? Int, 2)
+        XCTAssertEqual(values["start"] as? String, BookingFixture.start)
+        XCTAssertEqual(values["name"] as? String, "Sam")
+        // The confirmed answer is the one of the text-shaped form.
+        XCTAssertEqual(card.mark, .confirmed)
+        XCTAssertNil(resolution.notice)
+        XCTAssertEqual(resolution.status, "applied")
+        let json = try XCTUnwrap(resolution.json)
+        XCTAssertEqual(Set(json.keys), ["status", "partner", "simulated", "results", "message", "id", "title", "start", "end"])
+        XCTAssertEqual(json["id"] as? String, entry.id.uuidString)
+        let results = try XCTUnwrap(json["results"] as? [[String: String]])
+        XCTAssertEqual(results.map { $0["value"] ?? "" }, [BookingFixture.start, "EX-AB12CD", "$60.00", "Table held for 15 minutes"])
+
+        // A form of three place fields: an unmarked one first, then two marked ones. Only the first marked field is the location.
+        let home = DeliveryToolFixture.library
+        let pickups = [Place(name: "Pickup One", address: "10 Pickup Lane", latitude: 37.71, longitude: -122.31),
+                       Place(name: "Pickup Two", address: "11 Pickup Lane", latitude: 37.72, longitude: -122.32)]
+        let drops = [Place(name: "Drop One", address: "20 Drop Road", latitude: 37.73, longitude: -122.33),
+                     Place(name: "Drop Two", address: "21 Drop Road", latitude: 37.74, longitude: -122.34)]
+        let ride = StubPartner()
+        ride.shapes = [.routes(candidates: { key, _ in key == "pickup" ? pickups : drops })]
+        let second = makeRig(partner: ride)
+        let rideCard = try await built(second, .init(restaurant: nil, party: nil, start: nil, name: nil), partner: "routes")
+        let rideFields = try model(rideCard)
+        XCTAssertTrue(rideFields.choosePlace("from", home), "an unmarked place field takes any place")
+        try await typeAndPause(rideFields, "pickup", "Pick")
+        try await typeAndPause(rideFields, "dropoff", "Drop")
+        XCTAssertEqual(listedPlaces(rideFields, "pickup"), pickups)
+        XCTAssertEqual(listedPlaces(rideFields, "dropoff"), drops)
+        XCTAssertEqual(ride.bodies(op: "lookup").compactMap { $0["field"] as? String }.sorted(), ["dropoff", "pickup"],
+                       "the unmarked field asks nothing")
+        XCTAssertTrue(rideFields.choosePlace("pickup", pickups[1]))
+        XCTAssertTrue(rideFields.choosePlace("dropoff", drops[0]))
+        XCTAssertTrue(rideFields.chooseTime("start", TestClock.date(BookingFixture.start)))
+        let rideResolution = try await confirm(rideCard)
+        XCTAssertEqual(rideResolution.status, "applied")
+        XCTAssertEqual(second.store.activities.count, 1)
+        let rideEntry = try XCTUnwrap(second.store.activities.first)
+        XCTAssertEqual(rideEntry.location, pickups[1], "not from's place, not dropoff's")
+        let rideValues = try XCTUnwrap(ride.bodies(op: "submit").first?["values"] as? [String: Any])
+        XCTAssertEqual(Set(rideValues.keys), ["from", "pickup", "dropoff", "start"])
+        XCTAssertEqual(rideValues["from"] as? String, home.address)
+        XCTAssertEqual(rideValues["pickup"] as? String, pickups[1].address)
+        XCTAssertEqual(rideValues["dropoff"] as? String, drops[0].address)
+    }
+
+    func testPLACE_T03_TheBookedEntryCanTakeALegAndItsReadersSeeThePlace() async throws {
+        let branches = PartnerPlaceFixture.branches
+        let stub = StubPartner()
+        stub.shapes = [.placeTables(candidates: { _, _ in branches })]
+        let rig = makeRig(partner: stub)
+        let card = try await built(rig, .init(restaurant: nil))
+        let fields = try model(card)
+        try await typeAndPause(fields, "restaurant", "Pasta")
+        XCTAssertTrue(fields.choosePlace("restaurant", branches[0]))
+        _ = try await confirm(card)
+        let entry = try XCTUnwrap(rig.store.activities.first)
+        XCTAssertEqual(entry.location, branches[0])
+        XCTAssertTrue(rig.store.events.isEmpty, "the confirm made no leg and passed no origin")
+
+        // A leg can now be attached: its destination is the chosen place.
+        let outcome = await rig.store.addLeg(activityId: entry.id, role: .arrival, outerPlace: DeliveryToolFixture.library, mode: .walk,
+                                             bufferMinutes: 0, notifyLeadMinutes: 0, travelSecondsHint: 600)
+        guard case .created = outcome else { return XCTFail("expected a created leg, got \(outcome)") }
+        let legs = rig.store.events.filter { $0.linkedActivityId == entry.id }
+        XCTAssertEqual(legs.count, 1)
+        XCTAssertEqual(legs.first?.destination, branches[0])
+
+        // The readers of the stored place (spec 1.3): the calendar draft and the delivery-place suggestion.
+        let draft = CalendarDraft(entry)
+        XCTAssertEqual(draft.placeName, branches[0].name)
+        XCTAssertEqual(draft.address, branches[0].address)
+        XCTAssertEqual(draft.latitude, branches[0].latitude)
+        XCTAssertEqual(draft.longitude, branches[0].longitude)
+        let inside = entry.startDate.addingTimeInterval(10 * 60)
+        XCTAssertEqual(AgentDelivery.suggestedPlaceText(activities: [entry], arrival: inside, now: inside), branches[0].address)
+
+        // The text-shaped form books no place, so the same call is refused.
+        let old = makeRig()
+        let oldCard = try await built(old)
+        _ = try await confirm(oldCard)
+        let oldEntry = try XCTUnwrap(old.store.activities.first)
+        XCTAssertNil(oldEntry.location)
+        let refused = await old.store.addLeg(activityId: oldEntry.id, role: .arrival, outerPlace: DeliveryToolFixture.library, mode: .walk,
+                                             bufferMinutes: 0, notifyLeadMinutes: 0, travelSecondsHint: 600)
+        assertLegRefused(refused)
+        XCTAssertTrue(old.store.events.isEmpty)
+    }
+
+    func testPLACE_T04_NothingTheLookupOrConfirmWritesHoldsTheTypedTextACandidateOrACoordinate() async throws {
+        let typedFirst = "SENTINEL-TYPED-9"
+        let typedSecond = "SENTINEL-TYPED-8"
+        let candidate = Place(name: "SENTINEL-CAND-NAME-9", address: "SENTINEL-CAND-ADDR-9", latitude: 41.234375, longitude: -87.65625)
+        let marks: [(String, String)] = [("typed text 1", typedFirst), ("typed text 2", typedSecond), ("name", candidate.name),
+                                         ("address", candidate.address), ("latitude", "41.234375"), ("longitude", "87.65625")]
+        let stub = StubPartner()
+        stub.shapes = [.placeTables(candidates: { _, _ in [candidate] })]
+        let budget = BudgetToolPartner()
+        let rig = makeRig(partner: stub, budget: budget)
+        let card = try await built(rig, .init(restaurant: nil))
+        let fields = try model(card)
+        try await typeAndPause(fields, "restaurant", typedFirst)
+        try await typeAndPause(fields, "restaurant", typedSecond)
+        XCTAssertEqual(listedPlaces(fields, "restaurant"), [candidate])
+        XCTAssertTrue(fields.choosePlace("restaurant", candidate))
+        let lines = card.lines.joined(separator: "\n")
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied")
+        await rig.log.flush()
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        func bodies(_ name: String) -> String {
+            stub.requests.filter { op(of: $0) == name }.map(requestText).joined(separator: "\n")
+        }
+        // Each surface and the marks it may hold; an allowed mark is the positive control that the mark is really there.
+        let surfaces: [(String, String, Set<String>)] = [
+            ("lookup requests", bodies("lookup"), ["typed text 1", "typed text 2"]),
+            ("lookup answers", stub.lookupAnswers.map { String(decoding: $0, as: UTF8.self) }.joined(separator: "\n"),
+             ["name", "address", "latitude", "longitude"]),
+            ("card lines", lines, ["name", "address"]),
+            ("submit body", bodies("submit"), ["address"]),
+            ("store", String(decoding: try encoder.encode(rig.store.activities), as: UTF8.self), ["name", "address", "latitude", "longitude"]),
+            ("directory request", bodies("list"), []),
+            ("form request", bodies("fields"), []),
+            ("packet summaries", rig.log.packets.map(\.summary).joined(separator: "\n"), []),
+            ("connections file", String(decoding: try Data(contentsOf: rig.folder.appendingPathComponent(ConnectionLog.fileName)), as: UTF8.self), []),
+            ("result", resolution.result, []),
+            ("notice", resolution.notice ?? "", []),
+            ("budget request", String(decoding: try XCTUnwrap(budget.requests.first?.httpBody), as: UTF8.self), [])]
+        for (surface, text, allowed) in surfaces {
+            if surface != "notice" { XCTAssertFalse(text.isEmpty, surface) }
+            for (mark, value) in marks {
+                XCTAssertEqual(text.contains(value), allowed.contains(mark), "\(surface): \(mark) \(allowed.contains(mark) ? "is missing" : "must not be there")")
+            }
+        }
+
+        // Every lookup is a flow of its own, and neither is the flow of the Confirm request.
+        let requested = rig.log.packets.filter { $0.summary == "Example Tables: Candidates requested" }
+        let received = rig.log.packets.filter { $0.summary == "Example Tables: Candidates received" }
+        let sentPackets = rig.log.packets.filter { $0.summary == "Example Tables: Request sent" }
+        XCTAssertEqual(requested.count, 2)
+        XCTAssertEqual(received.count, 2)
+        XCTAssertEqual(sentPackets.count, 1)
+        let lookupFlows = requested.compactMap(\.flowID)
+        XCTAssertEqual(lookupFlows.count, 2)
+        XCTAssertEqual(Set(lookupFlows).count, 2, "two lookups, two different flows")
+        XCTAssertEqual(Set(received.compactMap(\.flowID)), Set(lookupFlows), "a lookup's two packets share its flow")
+        let confirmFlow = try XCTUnwrap(sentPackets.first?.flowID)
+        XCTAssertFalse(lookupFlows.contains(confirmFlow), "a lookup never joins the Confirm flow")
     }
 }

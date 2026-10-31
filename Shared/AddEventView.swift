@@ -38,8 +38,6 @@ struct AddEventView: View {
     /// 알림 줄이 토글 꺼짐으로 배열에서 빠져 있는 동안 마지막 값을 기억한다(REQ-022(b)) — 다시
     /// 켜면 이 값으로 되심는다.
     @State private var lastNotifyLead = EditCard.defaultNotifyLead
-    /// 캘린더 줄이 설정 조건으로 아예 없을 때 저장에 쓸 값. 줄이 화면에 있으면 카드가 정답이다.
-    @State private var calendarDefault = true
     /// 상태 래퍼로 감싼 이유: gate·arm·noteDone은 구조체를 고치는 호출이라, 래퍼 저장소를 향해
     /// 복사해 내보냈다 도로 반영해야 이 화면 안에서 정책 상태가 산다.
     @State private var placeDebounce = PlaceSearchDebouncer()
@@ -174,13 +172,9 @@ struct AddEventView: View {
         // 출발지 줄의 진행 표시 규칙은 syncOriginBusy 한 곳에만 산다 — 카드를 처음 만들 때도
         // 같은 규칙으로 정한다. 시드를 따로 적으면 뜻이 같아도 규칙이 두 곳이 된다(sync 판정 N2).
         syncOriginBusy()
-        // 스위치 줄이 없을 때(구글 연결 없음) 새 일정이 조용히 저장할 기본값 — 설정의 기본값 토글을 따른다(D2).
-        // 편집이면 바로 아래에서 그 일정의 값으로 덮는다.
-        calendarDefault = store.calendarSyncDefault
         if let e = editing {
             // 줄이 없을 수 있는 값들도 저장에 쓰는 기본값은 이벤트에서 가져온다
             lastNotifyLead = String(e.notifyLeadMinutes)
-            calendarDefault = e.wantsCalendarSync
             await recomputeEstimates()
         }
         await prefillOrigin()
@@ -255,8 +249,7 @@ struct AddEventView: View {
         } else {
             // 폼의 문서화된 기본값 — 사용자가 보고 바꾸는 값이다(모델이 조용히 정한 값과 다르다)
             c.fields.append(contentsOf: gatedRows(datetime: nil, mode: TransportMode.transit.rawValue,
-                                                  buffer: "5", notifyOn: "true", lead: EditCard.defaultNotifyLead,
-                                                  calendar: String(store.calendarSyncDefault)))
+                                                  buffer: "5", notifyOn: "true", lead: EditCard.defaultNotifyLead))
         }
         card = c
         syncFieldExtras()
@@ -272,7 +265,7 @@ struct AddEventView: View {
     }
 
     private func gatedRows(datetime: String?, mode: String, buffer: String, notifyOn: String,
-                           lead: String, calendar: String) -> [EditField] {
+                           lead: String) -> [EditField] {
         var rows: [EditField] = [
             .init(key: "arrival_iso", kind: .datetime, label: "Time", options: [],
                   allowsCustom: false, chosen: datetime),
@@ -291,7 +284,6 @@ struct AddEventView: View {
         ]
         // 알림을 끈 채 저장된 일정을 편집할 때는 리드 줄이 없다(켜면 lastNotifyLead로 돌아온다)
         if notifyOn == "true" { rows.append(notifyLeadRow(chosen: lead)) }
-        // 구글 연결이 없는 빌드라 캘린더 줄은 묻지 않고 기본값(calendarDefault)만 저장에 쓴다.
         return rows
     }
 
@@ -300,7 +292,7 @@ struct AddEventView: View {
     private func gatedRows(seeding e: ScheduledEvent) -> [EditField] {
         gatedRows(datetime: editingDatetime(e), mode: e.mode.rawValue,
                   buffer: String(e.bufferMinutes), notifyOn: String(e.wantsNotification),
-                  lead: String(e.notifyLeadMinutes), calendar: String(e.wantsCalendarSync))
+                  lead: String(e.notifyLeadMinutes))
     }
 
     private func notifyLeadRow(chosen: String) -> EditField {
@@ -718,12 +710,6 @@ struct AddEventView: View {
         let notifyLeadMinutes = field("notify_lead_minutes")?.chosen.flatMap { Int($0) }
             ?? Int(lastNotifyLead) ?? 0
         let notifyEnabled = field("notify_enabled")?.chosen != "false"
-        let syncToCalendar: Bool
-        if let chosen = field("calendar_sync")?.chosen {
-            syncToCalendar = chosen == "true"
-        } else {
-            syncToCalendar = calendarDefault
-        }
         saving = true
         // 폼이 이미 보여준 이동시간을 그대로 저장한다 — 저장마다 카카오를 다시 부르지 않고,
         // 폼 표시값과 저장값이 어긋나는 창(재조회 사이 교통상황 변동)도 없어진다. 단 힌트는
@@ -738,7 +724,7 @@ struct AddEventView: View {
                                     arrivalDate: parsed.date, mode: mode,
                                     bufferMinutes: bufferMinutes, notifyLeadMinutes: notifyLeadMinutes,
                                     anchor: anchor, travelSecondsHint: hint,
-                                    notifyEnabled: notifyEnabled, syncToCalendar: syncToCalendar)
+                                    notifyEnabled: notifyEnabled)
             // 이 폼의 저장도 "이 일정만" 변경이라 그 회차를 반복에서 뗀다(REQ-014). 빠짐을
             // updateEvent 안에 두지 않고 이 자리에서 직접 부르는 것은 P-11 금지 때문이다 —
             // realignLegs·updateLeg가 내부에서 updateEvent를 부르는데 거기까지 빠짐이 붙으면
@@ -751,7 +737,7 @@ struct AddEventView: View {
                                               baseDate: parsed.date, anchor: anchor, mode: mode,
                                               bufferMinutes: bufferMinutes,
                                               notifyLeadMinutes: notifyLeadMinutes,
-                                              notifyEnabled: notifyEnabled, syncToCalendar: syncToCalendar) {
+                                              notifyEnabled: notifyEnabled) {
                 if let linked = e.linkedActivityId {
                     store.detachOccurrence(activityId: linked)
                 } else {
@@ -763,7 +749,7 @@ struct AddEventView: View {
                                  arrivalDate: parsed.date, mode: mode,
                                  bufferMinutes: bufferMinutes, notifyLeadMinutes: notifyLeadMinutes,
                                  anchor: anchor, travelSecondsHint: hint,
-                                 notifyEnabled: notifyEnabled, syncToCalendar: syncToCalendar)
+                                 notifyEnabled: notifyEnabled)
         }
         saving = false
         dismiss()

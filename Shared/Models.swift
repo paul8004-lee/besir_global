@@ -228,8 +228,6 @@ struct ScheduledEvent: Identifiable, Codable {
     var notifyLeadMinutes: Int
     /// 이 일정의 출발 알림을 켤지. 옛 데이터는 nil이고 켜진 것으로 본다(`wantsNotification`).
     var notifyEnabled: Bool?
-    /// 이 일정을 구글 캘린더에 올릴지. nil(옛 데이터)이면 전역 설정(autoAddToCalendar)을 따른다.
-    var syncToCalendar: Bool?
     /// 계산된 출발 시각(스냅샷).
     var departureDate: Date?
     /// 계산에 사용된 이동시간(초) 스냅샷.
@@ -247,8 +245,6 @@ struct ScheduledEvent: Identifiable, Codable {
 
     /// 알림을 예약해야 하는지(옛 데이터는 켜진 것으로 취급).
     var wantsNotification: Bool { notifyEnabled ?? true }
-    /// 구글 캘린더에 올려도 되는지(옛 데이터는 전역 설정을 따르므로 true).
-    var wantsCalendarSync: Bool { syncToCalendar ?? true }
 
     /// 이 일정의 시각 기준. nil(옛 데이터)은 .arrival과 동일하게 취급.
     /// 실시간 재계산(refreshUpcomingEstimates) 시 어느 방향으로 계산해야 하는지 판단하는 데 쓰인다.
@@ -1144,7 +1140,7 @@ struct ActivityBlock: Identifiable, Codable {
     var endDate: Date
     /// 반복 일정 그룹(ScheduledEvent의 recurrenceId)과 공유 — 같이 일괄 삭제된다.
     var recurrenceId: UUID?
-    /// 이 활동을 구글 캘린더에 올릴지. nil(옛 데이터)이면 전역 설정을 따른다.
+    /// 이 활동을 Apple 캘린더(기본 캘린더)에 올릴지의 동의. nil(옛 데이터)이면 올리는 것으로 본다.
     var syncToCalendar: Bool?
 
     var wantsCalendarSync: Bool { syncToCalendar ?? true }
@@ -1212,7 +1208,7 @@ struct EventSyncContent: Encodable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, origin, destination, mode, bufferMinutes, notifyLeadMinutes, notifyEnabled
-        case syncToCalendar, recurrenceId, linkedActivityId, anchor, anchorDate
+        case recurrenceId, linkedActivityId, anchor, anchorDate
         case arrivalDate, departureDate, travelSeconds
     }
 
@@ -1226,7 +1222,6 @@ struct EventSyncContent: Encodable {
         try c.encode(event.bufferMinutes, forKey: .bufferMinutes)
         try c.encode(event.notifyLeadMinutes, forKey: .notifyLeadMinutes)
         try c.encodeIfPresent(event.notifyEnabled, forKey: .notifyEnabled)
-        try c.encodeIfPresent(event.syncToCalendar, forKey: .syncToCalendar)
         try c.encodeIfPresent(event.recurrenceId, forKey: .recurrenceId)
         try c.encodeIfPresent(event.linkedActivityId, forKey: .linkedActivityId)
         try c.encodeIfPresent(event.anchor, forKey: .anchor)

@@ -5,7 +5,7 @@
 //   POST /vision  -> Baseten Muse Spark Open: one image in, {title, time, place, confidence} out
 //   POST /snap    -> Baseten Muse Spark Open: one image in, {kind, name, place_type, text, title, time, confidence} out
 //   POST /partners -> directory of the simulated partners (a constant list, no upstream, no storage)
-//   POST /booking -> simulated table-booking partner (no upstream, no storage)
+//   POST /booking -> simulated table-booking partner (an upstream for lookup only, one Places Text Search; no storage)
 //   POST /budget  -> simulated budget partner (no upstream, no storage)
 //   POST /delivery -> simulated food-delivery partner (no upstream, no storage)
 import { handleVision } from "./vision.js";
@@ -92,6 +92,31 @@ async function handleGoogle(request, env, url) {
   return forward(url, { "x-goog-api-key": env.GOOGLE_MAPS_KEY, "x-goog-fieldmask": fieldMask }, value);
 }
 
+// The one Places call behind {"op":"lookup"} of /booking, handed to booking.js. It uses the Worker's own key and a fixed
+// field mask, never a client header, and says only what happened: the JSON of a 200, no key, or failed.
+function placesLookup(env) {
+  return async ({ text, near }) => {
+    if (!env.GOOGLE_MAPS_KEY) return { outcome: "no_key" };
+    const body = { textQuery: text, languageCode: "en", regionCode: "US", pageSize: 5 };
+    if (near) body.locationBias = { circle: { center: { latitude: near.latitude, longitude: near.longitude }, radius: 50000 } };
+    try {
+      const upstream = await fetch(PLACES_URL, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-goog-api-key": env.GOOGLE_MAPS_KEY,
+          "x-goog-fieldmask": "places.displayName,places.formattedAddress,places.location",
+        },
+        body: JSON.stringify(body),
+      });
+      if (upstream.status !== 200) return { outcome: "failed" };
+      return { outcome: "ok", body: await upstream.json() };
+    } catch {
+      return { outcome: "failed" };
+    }
+  };
+}
+
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url);
@@ -114,7 +139,7 @@ export default {
       case "/vision": return handleVision(request, env, { json });
       case "/snap": return handleSnap(request, env, { json });
       case "/partners": return handlePartners(request, { json });
-      case "/booking": return handleBooking(request, { json });
+      case "/booking": return handleBooking(request, { json, lookup: placesLookup(env) });
       case "/budget": return handleBudget(request, { json });
       case "/delivery": return handleDelivery(request, { json });
       default:

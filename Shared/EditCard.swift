@@ -381,6 +381,28 @@ enum PlaceLine {
     /// 화면에서 가를 수 없어 "다른 이름으로 적어보세요" 같은 처방이 틀린 안내가 되는 날이 있다.
     static let noResultNote = "Couldn't find any matches."
 
+    /// The two notes of a place row the partner resolves itself (SPEC-PARTNERPLACE-001): the partner answered with no match, or
+    /// could not be reached. Two states, two notes, never shown together or beside candidate rows.
+    static let partnerNoResultNote = "The partner found no matches."
+    static let partnerFailedNote = "Couldn't reach the partner."
+
+    /// The seed a partner row searches when its list is opened: a non-empty seed while the lookup is still idle, else nil.
+    static func seedToSearchOnOpen(seed: String?, lookup: EditField.Lookup) -> String? {
+        guard let seed, !seed.isEmpty, case .idle = lookup else { return nil }
+        return seed
+    }
+
+    /// The note a partner row shows for its lookup: the no-match words for an empty answer, the failed words for a failed one,
+    /// nil for any other state and for a row that is not the partner's.
+    static func partnerNote(partnerLookup: Bool, lookup: EditField.Lookup) -> String? {
+        guard partnerLookup else { return nil }
+        switch lookup {
+        case .empty: return partnerNoResultNote
+        case .failed: return partnerFailedNote
+        case .idle, .searching, .results: return nil
+        }
+    }
+
     /// "후보를 찾지 못했어요" 문구를 띄울지의 단일 판정(REQ-004, 보완 F2) — 검색 0건이어도 맞는
     /// 즐겨찾기가 하나라도 있으면 목록이 비어 있지 않으므로 띄우지 않는다. 목록 구성(rows)과 빈
     /// 상태 판정이 저마다 계산되면 어긋나는 날 문구가 잘못된 쪽만 말한다(계약 5) — 같은 질의·
@@ -520,8 +542,10 @@ enum PlaceLine {
     /// 그대로 확정하면 좌표가 없어, 카드를 다 채우고 확인을 누른 **뒤에야** 실행부의 검색이
     /// 실패한다("'ㅁㄴㅇㄹ' 위치를 찾지 못했어요" — 2026-09-16 실기기 결함 P). 가장 늦게
     /// 알게 되는 실패를 가장 이른 자리로 옮기는 것이 이 상태의 존재 이유다.
-    enum Lookup { case idle, searching, results([Place]), empty }
+    enum Lookup { case idle, searching, results([Place]), empty, failed }
     var lookup: Lookup = .idle
+    /// True for a place row the partner resolves itself: its empty and failed lookups are the partner's, not the place search's.
+    var partnerLookup: Bool = false
     /// 사용자가 고른 원시 값. nil이면 아직 안 골랐다 — 확인 버튼이 잠긴다.
     var chosen: String? = nil
     /// 줄이 진행 중임을 알리는 깃발. 카드 뷰는 순수 값 뷰라 외부 상태를 스스로 관찰할 수
@@ -1209,15 +1233,14 @@ extension EndWheelSpec {
         }
     }
 
-    /// 다리가 하나라도 켜지면 알림 줄이 필요해진다 — 캘린더 줄이 있다면 그 앞에, 없으면 '반복' 줄 앞에, 그것도 없으면
-    /// 맨 끝에. '반복' 줄은 알림·캘린더 줄을 붙인 뒤에도 늘 마지막이어야 한다(SPEC-UIKIT-019 REQ-001, L-5) — 맨 끝에
-    /// 끼우면 토글을 켜는 순간 알림이 반복 줄 뒤로 간다.
+    /// 다리가 하나라도 켜지면 알림 줄이 필요해진다 — '반복' 줄 앞에, 그것도 없으면 맨 끝에. '반복' 줄은 알림 줄을
+    /// 붙인 뒤에도 늘 마지막이어야 한다(SPEC-UIKIT-019 REQ-001, L-5) — 맨 끝에 끼우면 토글을 켜는 순간 알림이 반복
+    /// 줄 뒤로 간다.
     private mutating func ensureNotifyRows() {
         let legOn = card.fields.first(where: { $0.key == LegRowKeys.outboundEnabled })?.chosen == "true"
             || card.fields.first(where: { $0.key == LegRowKeys.returnEnabled })?.chosen == "true"
         guard legOn, !card.fields.contains(where: { $0.key == LegRowKeys.notifyEnabled }) else { return }
-        let at = card.fields.firstIndex(where: { $0.key == "calendar_sync" })
-            ?? card.fields.firstIndex(where: { $0.key == RecurrenceLine.key }) ?? card.fields.count
+        let at = card.fields.firstIndex(where: { $0.key == RecurrenceLine.key }) ?? card.fields.count
         card.fields.insert(notifyToggleRow(chosen: lastNotifyOn ? "true" : "false"), at: at)
         // 꺼져 있던 채로 돌아오는 것이 아니라면 리드 줄이 곧바로 따라온다 — 토글만 홀로 나오는
         // 순간이 없게 한다(켬이 문서화된 기본값이다).
@@ -1372,17 +1395,15 @@ extension EndWheelSpec {
         }
     }
 
-    /// 수동 새 활동 카드의 줄 정의 — 제목 → 장소 → 시작 → 종료 → (연결 때) 구글 캘린더 → '반복'(늘 마지막, REQ-001).
+    /// 수동 새 활동 카드의 줄 정의 — 제목 → 장소 → 시작 → 종료 → '반복'(늘 마지막, REQ-001).
     /// 뷰(AddActivityView)에 두면 드라이버가 줄 목록을 못 재므로 모델 쪽에 둔다(manualActivityTimeRows와 같은 이유).
-    /// `calendarDefaultOn`이 nil이면 구글 미연결이라 캘린더 줄이 없다.
     static func manualNewActivityRows(favorites: [EditField.Option], defaultDay: Date, now: Date,
-                                      presetStart: Date?, calendarDefaultOn: Bool?) -> [EditField] {
+                                      presetStart: Date?) -> [EditField] {
         var fields: [EditField] = [
             .init(key: "title", kind: .title, label: "Activity Title", options: [], allowsCustom: true),
             manualPlaceRow(label: "Place", favorites: favorites),
         ]
         fields += EditCard.manualActivityTimeRows(defaultDay: defaultDay, now: now, presetStart: presetStart)
-        if let calendarDefaultOn { fields.append(calendarSyncRow(defaultOn: calendarDefaultOn)) }
         fields.append(RecurrenceLine.row())
         return fields
     }
@@ -1454,14 +1475,6 @@ extension EndWheelSpec {
         return .init(key: "location_query", kind: .place, label: label,
               options: favorites + specials.map { PlaceTokens.chip($0) },
               allowsCustom: true, placeSpecials: specials)
-    }
-
-    /// 구글 캘린더 줄(018 REQ-004·O-E4) — AI 활동 카드와 수동 새 활동 카드가 같은 이 공장을 쓴다(수동 카드는
-    /// 019부터 manualNewActivityRows를 거친다). 두 카드의 (kind, label) 순서는 AC-005가 잰다.
-    static func calendarSyncRow(defaultOn: Bool) -> EditField {
-        .init(key: "calendar_sync", kind: .toggle, label: "Show in Google Calendar",
-              options: [.init(label: "Show", value: "true"), .init(label: "Don't Show", value: "false")],
-              allowsCustom: false, chosen: String(defaultOn))
     }
 
     private func chosenIn(_ key: String) -> String? {

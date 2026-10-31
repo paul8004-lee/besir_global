@@ -953,4 +953,448 @@ final class PartnerClientTests: XCTestCase {
         XCTAssertEqual(ConnectionFlows.group(log.packets).count, 2)
         XCTAssertEqual(Set(log.packets.compactMap(\.flowID)), [first, second])
     }
+
+    // MARK: PLACE the partner place lookup (SPEC-PARTNERPLACE-001, card t98)
+
+    /// A form with one field the partner resolves itself (`restaurant`), an unmarked place field and two ordinary fields.
+    private var lookupSpec: PartnerSpec {
+        PartnerSpec(entry: entry,
+                    fields: [PartnerField(key: "restaurant", kind: .place, label: "Restaurant", options: [], canLookUp: true),
+                             PartnerField(key: "from", kind: .place, label: "From", options: []),
+                             PartnerField(key: "party_size", kind: .number, label: "Party size", options: []),
+                             PartnerField(key: "name", kind: .text, label: "Name", options: [])],
+                    results: announced)
+    }
+
+    private let tartine = Place(name: "Tartine Bakery", address: "600 Guerrero St, San Francisco, CA 94110",
+                                latitude: 37.7614, longitude: -122.4241)
+
+    private var fivePlaces: [Place] {
+        (0..<5).map { Place(name: "Branch \($0)", address: "\($0 + 1) Market St, San Francisco, CA",
+                            latitude: 37.5 + Double($0) / 10, longitude: -122.5 + Double($0) / 10) }
+    }
+
+    private let typedSentinel = "Typed-Sentinel-55"
+    private let sentinelPlace = Place(name: "Sentinel-Name-91", address: "91 Sentinel-Addr Lane, Testville",
+                                      latitude: 12.34375, longitude: -65.4375)
+    private let sentinelNear = (latitude: 41.2712, longitude: -73.5391)
+
+    private func candidateObject(_ place: Place, _ mutate: (inout [String: Any]) -> Void = { _ in }) -> [String: Any] {
+        var object: [String: Any] = ["name": place.name, "address": place.address,
+                                     "location": ["latitude": place.latitude, "longitude": place.longitude] as [String: Any]]
+        mutate(&object)
+        return object
+    }
+
+    private func locationObject(_ latitude: Any, _ longitude: Any) -> [String: Any] {
+        ["latitude": latitude, "longitude": longitude]
+    }
+
+    /// The lookup answer of the sample partner; `mutate` bends it.
+    private func lookupAnswer(field: String = "restaurant", places: [Place]? = nil, objects: [[String: Any]]? = nil,
+                              _ mutate: (inout [String: Any]) -> Void = { _ in }) -> String {
+        var answer: [String: Any] = ["partner": "Example Tables", "simulated": true, "field": field,
+                                     "candidates": objects ?? (places ?? [tartine]).map { candidateObject($0) }]
+        mutate(&answer)
+        return json(answer)
+    }
+
+    private func askLookup(_ recorder: BookingSendRecorder, text: String = "Tartine", near: (latitude: Double, longitude: Double)? = nil,
+                           field: String = "restaurant", log: ConnectionLog? = nil, config: AppConfig? = nil,
+                           flow: UUID? = nil) async -> Result<[Place], PartnerFailure> {
+        await client(recorder.send, log: log, config: config).candidates(of: lookupSpec, field: field, text: text, near: near,
+                                                                          flow: flow ?? self.flow)
+    }
+
+    /// The JSON body of the one request a lookup sent; a failure when the recorder does not hold exactly one.
+    private func lookupBody(_ recorder: BookingSendRecorder, _ label: String, file: StaticString = #filePath, line: UInt = #line) -> [String: Any]? {
+        guard recorder.requests.count == 1, let data = recorder.requests.first?.httpBody,
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            XCTFail("\(label): expected exactly one request with a JSON body, saw \(recorder.requests.count)", file: file, line: line)
+            return nil
+        }
+        return object
+    }
+
+    private func isRoundedTo2(_ value: Double?) -> Bool {
+        guard let value else { return false }
+        return abs(value * 100 - (value * 100).rounded()) < 1e-9
+    }
+
+    // MARK: C01 the request
+
+    func testPLACE_C01_TheLookupBodyIsFourFixedKeysAtMostAndTheTextIsTheLookupText() async {
+        // A plain lookup: one POST to the entry's own route with the token, exactly three keys and no area.
+        let plain = BookingSendRecorder(body: lookupAnswer())
+        let plainResult = await askLookup(plain)
+        XCTAssertEqual(plainResult, .success([tartine]), "a good answer is accepted")
+        if let body = lookupBody(plain, "plain"), let sent = plain.requests.first {
+            XCTAssertEqual(sent.httpMethod, "POST")
+            XCTAssertEqual(sent.url?.path, "/booking")
+            XCTAssertEqual(sent.value(forHTTPHeaderField: "x-besir-token"), token)
+            XCTAssertEqual(sent.value(forHTTPHeaderField: "Content-Type"), "application/json")
+            XCTAssertEqual(Set(body.keys), ["op", "field", "text"], "no near key without a device position")
+            XCTAssertEqual(body["op"] as? String, "lookup")
+            XCTAssertEqual(body["field"] as? String, "restaurant")
+            XCTAssertEqual(body["text"] as? String, "Tartine")
+            XCTAssertEqual(String(decoding: sent.httpBody ?? Data(), as: UTF8.self),
+                           #"{"field":"restaurant","op":"lookup","text":"Tartine"}"#)
+        }
+
+        // A known position goes out as `near`, exactly two keys, each rounded to 2 decimals and nothing finer.
+        let rounded: [((latitude: Double, longitude: Double), (Double, Double), [String])] = [
+            ((37.7749295, -122.4194155), (37.77, -122.42), ["37.7749", "122.4194"]),
+            ((-33.8688197, 151.2092955), (-33.87, 151.21), ["33.8688", "151.2092"]),
+        ]
+        for (position, expected, finer) in rounded {
+            let recorder = BookingSendRecorder(body: lookupAnswer())
+            let result = await askLookup(recorder, near: position)
+            XCTAssertEqual(result, .success([tartine]), "near \(position)")
+            guard let body = lookupBody(recorder, "near \(position)") else { continue }
+            XCTAssertEqual(Set(body.keys), ["op", "field", "text", "near"], "near \(position)")
+            let near = body["near"] as? [String: Any]
+            XCTAssertEqual(Set((near ?? [:]).keys), ["latitude", "longitude"], "near \(position)")
+            let latitude = (near?["latitude"] as? NSNumber)?.doubleValue
+            let longitude = (near?["longitude"] as? NSNumber)?.doubleValue
+            XCTAssertEqual(latitude ?? .nan, expected.0, accuracy: 1e-9, "latitude of \(position)")
+            XCTAssertEqual(longitude ?? .nan, expected.1, accuracy: 1e-9, "longitude of \(position)")
+            XCTAssertTrue(isRoundedTo2(latitude), "latitude has no digit beyond the second decimal")
+            XCTAssertTrue(isRoundedTo2(longitude), "longitude has no digit beyond the second decimal")
+            let raw = String(decoding: recorder.requests.first?.httpBody ?? Data(), as: UTF8.self)
+            for digits in finer { XCTAssertFalse(raw.contains(digits), "the body holds \(digits)") }
+        }
+
+        // The text is the lookup text: hidden characters out, trimmed, cut at 80 scalars, trimmed again.
+        let eighty = String((0..<80).map { Character(Unicode.Scalar(UInt8(97 + $0 % 26))) })
+        let head = String(eighty.prefix(78))
+        let normalised: [(String, String, String)] = [
+            ("surrounding spaces", "  Tartine  ", "Tartine"),
+            ("a zero-width space inside", "Mc\u{200B}Donald's", "McDonald's"),
+            ("a line feed inside", "Mc\nDonald's", "McDonald's"),
+            ("a line separator inside", "Mc\u{2028}Donald's", "McDonald's"),
+            ("hidden characters remove before the trim", "\u{200B}  Tartine  \u{200B}", "Tartine"),
+            ("hidden characters remove before the cut", String(repeating: "\u{200B}", count: 5) + eighty, eighty),
+            ("an 85-scalar text with spaces at scalars 79 to 81", head + "   " + "wxyz", head),
+            ("a text over 80 scalars", eighty + "TAIL-IGNORED", eighty),
+            ("90 emoji", String(repeating: "\u{1F600}", count: 90), String(repeating: "\u{1F600}", count: 80)),
+        ]
+        for (label, typed, expected) in normalised {
+            let recorder = BookingSendRecorder(body: lookupAnswer())
+            let result = await askLookup(recorder, text: typed)
+            XCTAssertEqual(result, .success([tartine]), label)
+            guard let body = lookupBody(recorder, label) else { continue }
+            let text = body["text"] as? String
+            XCTAssertEqual(text, expected, label)
+            XCTAssertEqual(text?.unicodeScalars.count, expected.unicodeScalars.count, "\(label): counted in scalars")
+        }
+
+        // A key that is not a lookup field of the partner's own list sends nothing: an unmarked place field, other kinds, an
+        // unknown key; and the same key on a form where the field is not marked.
+        for key in ["from", "party_size", "name", "nothing_here"] {
+            let recorder = BookingSendRecorder(body: lookupAnswer(field: key))
+            let result = await askLookup(recorder, field: key)
+            XCTAssertEqual(result, .failure(.other), key)
+            XCTAssertTrue(recorder.requests.isEmpty, "\(key) is not a marked field")
+        }
+        let unmarked = BookingSendRecorder(body: lookupAnswer())
+        let unmarkedResult = await client(unmarked.send).candidates(of: spec, field: "restaurant", text: "Tartine", near: nil, flow: flow)
+        XCTAssertEqual(unmarkedResult, .failure(.other))
+        XCTAssertTrue(unmarked.requests.isEmpty, "a restaurant field that is not marked sends nothing")
+    }
+
+    // MARK: C02 the answer
+
+    func testPLACE_C02_OnlyAnExactLookupAnswerIsAcceptedAndEveryDefectIsAFailure() async {
+        let eighty = String(repeating: "N", count: 80)
+        let emoji80 = String(repeating: "\u{1F600}", count: 80)
+        let emoji81 = String(repeating: "\u{1F600}", count: 81)
+
+        // Positive controls: the exact answers give exactly their places.
+        let controls: [(String, [Place])] = [
+            ("one candidate", [tartine]),
+            ("five candidates", fivePlaces),
+            ("a name of 80 code points", [Place(name: eighty, address: tartine.address, latitude: 1, longitude: 2)]),
+            ("a name of 80 emoji", [Place(name: emoji80, address: tartine.address, latitude: 1, longitude: 2)]),
+            ("an address of 120 code points", [Place(name: "Tartine", address: String(repeating: "S", count: 120), latitude: 1, longitude: 2)]),
+            ("a name and an address of one code point", [Place(name: "T", address: "A", latitude: 1, longitude: 2)]),
+            ("the corner coordinates", [Place(name: "North", address: "Pole", latitude: 90, longitude: -180),
+                                       Place(name: "South", address: "Pole", latitude: -90, longitude: 180)]),
+        ]
+        for (name, places) in controls {
+            let got = await askLookup(BookingSendRecorder(body: lookupAnswer(places: places)))
+            XCTAssertEqual(got, .success(places), "control: \(name)")
+        }
+
+        // The defect table: every case bends one thing of an otherwise exact answer.
+        var defects: [(String, String)] = []
+        func add(_ name: String, _ body: String) { defects.append((name, body)) }
+        func bad(_ mutate: (inout [String: Any]) -> Void) -> String { lookupAnswer(objects: [candidateObject(tartine, mutate)]) }
+
+        add("an extra top-level key", lookupAnswer { $0["note"] = "x" })
+        for key in ["partner", "simulated", "field", "candidates"] {
+            add("a missing top-level key \(key)", lookupAnswer { $0.removeValue(forKey: key) })
+        }
+        add("partner not the entry's", lookupAnswer { $0["partner"] = "Real Tables" })
+        add("partner in another case", lookupAnswer { $0["partner"] = "example tables" })
+        add("partner not a string", lookupAnswer { $0["partner"] = 5 })
+        add("simulated false", lookupAnswer { $0["simulated"] = false })
+        add("simulated the text true", lookupAnswer { $0["simulated"] = "true" })
+        add("simulated the number 1", lookupAnswer { $0["simulated"] = 1 })
+        add("simulated null", lookupAnswer { $0["simulated"] = NSNull() })
+        add("field not the requested one", lookupAnswer(field: "name"))
+        add("field empty", lookupAnswer(field: ""))
+        add("field not a string", lookupAnswer { $0["field"] = 5 })
+        add("6 candidates", lookupAnswer(places: fivePlaces + [tartine]))
+        add("candidates an object", lookupAnswer { $0["candidates"] = candidateObject(self.tartine) })
+        add("candidates a text", lookupAnswer { $0["candidates"] = "Tartine Bakery" })
+        add("candidates null", lookupAnswer { $0["candidates"] = NSNull() })
+        add("a candidate that is a text", lookupAnswer { $0["candidates"] = ["Tartine Bakery"] })
+        add("a candidate that is a number", lookupAnswer { $0["candidates"] = [7] })
+        add("a candidate that is null", lookupAnswer { $0["candidates"] = [NSNull()] })
+        add("a bad candidate first among good ones", lookupAnswer(objects: [candidateObject(tartine) { $0["trackingId"] = "t" }, candidateObject(tartine)]))
+        add("a bad candidate in the middle of good ones", lookupAnswer(objects: [candidateObject(tartine), candidateObject(tartine) { $0["name"] = "" }, candidateObject(tartine)]))
+        add("a bad candidate last among good ones", lookupAnswer(objects: [candidateObject(tartine), candidateObject(tartine) { $0["location"] = NSNull() }]))
+        add("a name of 0 code points", bad { $0["name"] = "" })
+        add("a name of 81 code points", bad { $0["name"] = eighty + "N" })
+        add("a name of 81 emoji", bad { $0["name"] = emoji81 })
+        add("an address of 0 code points", bad { $0["address"] = "" })
+        add("an address of 121 code points", bad { $0["address"] = String(repeating: "S", count: 121) })
+        add("a name that is not a text", bad { $0["name"] = 5 })
+        add("an address that is not a text", bad { $0["address"] = NSNull() })
+        add("a candidate with an extra key", bad { $0["trackingId"] = "t-1" })
+        add("a candidate lacking name", bad { $0.removeValue(forKey: "name") })
+        add("a candidate lacking address", bad { $0.removeValue(forKey: "address") })
+        add("a candidate lacking location", bad { $0.removeValue(forKey: "location") })
+        for (label, scalar) in [("a control character", "\u{0007}"), ("a line feed", "\n"), ("a tab", "\t"), ("a format character (U+200E)", "\u{200E}"),
+                                ("a zero-width space", "\u{200B}"), ("a line separator", "\u{2028}"), ("a paragraph separator", "\u{2029}")] {
+            add("\(label) in a name", bad { $0["name"] = "Tar\(scalar)tine" })
+            add("\(label) in an address", bad { $0["address"] = "600 Guerrero\(scalar) St" })
+        }
+        add("a name of only spaces", bad { $0["name"] = "   " })
+        add("an address of only spaces", bad { $0["address"] = "   " })
+        add("a boolean latitude", bad { $0["location"] = self.locationObject(true, -122.4) })
+        add("a boolean longitude", bad { $0["location"] = self.locationObject(37.7, false) })
+        add("a text latitude", bad { $0["location"] = self.locationObject("37.7", -122.4) })
+        add("a text longitude", bad { $0["location"] = self.locationObject(37.7, "-122.4") })
+        add("a null latitude", bad { $0["location"] = self.locationObject(NSNull(), -122.4) })
+        add("a null longitude", bad { $0["location"] = self.locationObject(37.7, NSNull()) })
+        add("latitude 91", bad { $0["location"] = self.locationObject(91, -122.4) })
+        add("latitude -91", bad { $0["location"] = self.locationObject(-91, -122.4) })
+        add("longitude 181", bad { $0["location"] = self.locationObject(37.7, 181) })
+        add("longitude -181", bad { $0["location"] = self.locationObject(37.7, -181) })
+        add("a location with a third key", bad { $0["location"] = self.locationObject(37.7, -122.4).merging(["altitude": 3] as [String: Any]) { first, _ in first } })
+        add("a location lacking latitude", bad { $0["location"] = ["longitude": -122.4] as [String: Any] })
+        add("a location lacking longitude", bad { $0["location"] = ["latitude": 37.7] as [String: Any] })
+        add("a location that is a list", bad { $0["location"] = [37.7, -122.4] })
+        add("a location that is a text", bad { $0["location"] = "37.7,-122.4" })
+        add("a body that is a list", "[]")
+        add("a body that is not JSON", "not json")
+        add("an empty body", "")
+
+        for (name, body) in defects {
+            let got = await askLookup(BookingSendRecorder(body: body))
+            XCTAssertEqual(got, .failure(.other), "defect case: \(name)")
+        }
+    }
+
+    // MARK: C03 empty, and each failure keeps its kind
+
+    func testPLACE_C03_AnEmptyAnswerIsAnAnswerAndEachFailureKeepsItsKind() async {
+        // An exact answer with no candidate is an answer, never a failure.
+        let empty = await askLookup(BookingSendRecorder(body: lookupAnswer(objects: [])))
+        XCTAssertEqual(empty, .success([]))
+        let good = await askLookup(BookingSendRecorder(body: lookupAnswer()))
+        XCTAssertEqual(good, .success([tartine]), "control: the same answer with one candidate")
+
+        // Offline and other transport errors.
+        for code in [URLError.Code.notConnectedToInternet, .networkConnectionLost, .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed] {
+            let got = await askLookup(BookingSendRecorder(error: URLError(code)))
+            XCTAssertEqual(got, .failure(.offline), "\(code)")
+        }
+        for error in [URLError(.badServerResponse), URLError(.timedOut), URLError(.cancelled), WriteFailure()] as [Error] {
+            let got = await askLookup(BookingSendRecorder(error: error))
+            XCTAssertEqual(got, .failure(.other), "\(error)")
+        }
+
+        // The Worker's own rejection of the token is exactly one body; any other 401 is `other`.
+        let own = await askLookup(BookingSendRecorder(status: 401, body: #"{"error":"unauthorized"}"#))
+        XCTAssertEqual(own, .failure(.tokenRejected))
+        for text in [#"{"error":"nope"}"#, #"{"error":"unauthorized","x":1}"#, "", "unauthorized", "[]"] {
+            let other = await askLookup(BookingSendRecorder(status: 401, body: text))
+            XCTAssertEqual(other, .failure(.other), "401 with \(text)")
+        }
+
+        // The status alone decides: a good answer under any other status is `other`.
+        for status in [404, 500, 502, 503] {
+            let withAnswer = await askLookup(BookingSendRecorder(status: status, body: lookupAnswer()))
+            XCTAssertEqual(withAnswer, .failure(.other), "status \(status) with a good answer")
+            let withError = await askLookup(BookingSendRecorder(status: status, body: #"{"error":"upstream_failed"}"#))
+            XCTAssertEqual(withError, .failure(.other), "status \(status) with an error body")
+        }
+
+        // No proxy: nothing is called and nothing is recorded.
+        let (quiet, _) = makeLog()
+        for blank in [AppConfig(), AppConfig(kakaoJsKey: "", proxyBaseURL: "https://\(host)", appToken: ""),
+                      AppConfig(kakaoJsKey: "", proxyBaseURL: "", appToken: token)] {
+            let idle = BookingSendRecorder(body: lookupAnswer())
+            let got = await askLookup(idle, log: quiet, config: blank)
+            XCTAssertEqual(got, .failure(.notSetUp))
+            XCTAssertTrue(idle.requests.isEmpty, "no proxy sends nothing")
+        }
+        await quiet.flush()
+        XCTAssertTrue(quiet.packets.isEmpty)
+    }
+
+    // MARK: C04 the lookup text is asked only from two scalars on
+
+    func testPLACE_C04_TextsUnderTwoCodePointsAfterNormalisationSendNothing() async {
+        let (log, _) = makeLog()
+        let tooShort: [(String, String)] = [
+            ("one letter plus a zero-width space", "a\u{200B}"),
+            ("one letter plus a line feed", "a\n"),
+            ("M, 79 spaces and s", "M" + String(repeating: " ", count: 79) + "s"),
+            ("an empty text", ""),
+            ("one letter", "a"),
+            ("only spaces", "     "),
+            ("only hidden characters", "\u{200B}\u{200B}\u{200E}"),
+            ("one emoji", "\u{1F600}"),
+        ]
+        for (label, typed) in tooShort {
+            XCTAssertNil(PartnerCandidates.requestText(typed), label)
+            let recorder = BookingSendRecorder(body: lookupAnswer())
+            let got = await askLookup(recorder, text: typed, log: log)
+            XCTAssertEqual(got, .failure(.other), label)
+            XCTAssertTrue(recorder.requests.isEmpty, "\(label) sends nothing")
+        }
+        await log.flush()
+        XCTAssertTrue(log.packets.isEmpty, "nothing sent, nothing recorded")
+
+        // Positive controls: two scalars are enough, counted in code points and after the hidden ones are removed.
+        let enough: [(String, String, String)] = [
+            ("two letters", "ab", "ab"),
+            ("two letters around a zero-width space", "a\u{200B}b", "ab"),
+            ("a letter and a combining accent (one character, two scalars)", "e\u{0301}", "e\u{0301}"),
+            ("two emoji", "\u{1F600}\u{1F600}", "\u{1F600}\u{1F600}"),
+        ]
+        for (label, typed, expected) in enough {
+            XCTAssertEqual(PartnerCandidates.requestText(typed).map { Array($0.unicodeScalars) }, Array(expected.unicodeScalars), label)
+            let recorder = BookingSendRecorder(body: lookupAnswer())
+            let got = await askLookup(recorder, text: typed)
+            XCTAssertEqual(got, .success([tartine]), label)
+            if let body = lookupBody(recorder, label) {
+                XCTAssertEqual((body["text"] as? String).map { Array($0.unicodeScalars) }, Array(expected.unicodeScalars), label)
+            }
+        }
+    }
+
+    func testPLACE_C05_FortyOneFlagsAre82CodePointsAndAreRefusedAsANameWhileFortyAreAccepted() async {
+        // One flag is two regional-indicator code points but one character, so `String.count` (or a JS `.length` of 2 per flag) and a
+        // count of code points disagree here: a name of 40 flags is 80 code points, a name of 41 flags is 82.
+        let flag = "\u{1F1FA}\u{1F1F8}"
+        let forty = String(repeating: flag, count: 40)
+        let fortyOne = String(repeating: flag, count: 41)
+        XCTAssertEqual(forty.unicodeScalars.count, 80, "premise: 40 flags are 80 code points")
+        XCTAssertEqual(fortyOne.unicodeScalars.count, 82, "premise: 41 flags are 82 code points")
+        XCTAssertEqual(fortyOne.count, 41, "premise: 41 flags are 41 characters, so a character count would let them through")
+
+        let accepted = Place(name: forty, address: tartine.address, latitude: 1, longitude: 2)
+        let got = await askLookup(BookingSendRecorder(body: lookupAnswer(places: [accepted])))
+        XCTAssertEqual(got, .success([accepted]), "a name of 40 flags (80 code points) is accepted")
+
+        let refused = Place(name: fortyOne, address: tartine.address, latitude: 1, longitude: 2)
+        let bad = await askLookup(BookingSendRecorder(body: lookupAnswer(places: [refused])))
+        XCTAssertEqual(bad, .failure(.other), "a name of 41 flags (82 code points) is refused")
+    }
+
+    // MARK: P01-P02 the packets of a lookup
+
+    func testPLACE_P01_ALookupWritesTwoPacketsUnderAFlowOfItsOwn() async {
+        let words = ["besir>partner partner ok Example Tables: Candidates requested",
+                     "partner>besir partner ok Example Tables: Candidates received"]
+
+        // One lookup, one flow of its own; the packets hold fixed words and the partner's name only.
+        let (log, file) = makeLog()
+        let reply = lookupAnswer(places: [sentinelPlace])
+        let recorder = BookingSendRecorder(body: reply)
+        let result = await askLookup(recorder, text: typedSentinel, near: sentinelNear, log: log)
+        XCTAssertEqual(result, .success([sentinelPlace]))
+        await log.flush()
+        XCTAssertEqual(lines(log), words)
+        XCTAssertEqual(Set(log.packets.map(\.flowID)), [flow])
+        XCTAssertEqual(log.packets.map(\.kind), [.partner, .partner])
+        XCTAssertEqual(log.packets.map(\.status), [.ok, .ok])
+
+        // The sentinels are in the request and the answer, so the absence checks below can fail.
+        let sent = String(decoding: recorder.requests.first?.httpBody ?? Data(), as: UTF8.self)
+        XCTAssertTrue(sent.contains(typedSentinel))
+        XCTAssertTrue(sent.contains("41.27"))
+        XCTAssertTrue(reply.contains(sentinelPlace.name))
+        XCTAssertTrue(reply.contains("12.34375"), "the coordinates are binary-exact, so the JSON text holds them as written")
+        let stored = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+        XCTAssertTrue(stored.contains("Example Tables: Candidates requested"), "the packets reached the file")
+        for secret in [typedSentinel, "Typed-Sentinel", sentinelPlace.name, "Sentinel-Addr", "Testville", "12.34375", "65.4375", token, host] {
+            XCTAssertFalse(stored.contains(secret), "connections.json holds \(secret)")
+        }
+        for secret in ["41.27", "73.54"] {
+            XCTAssertFalse(lines(log).joined().contains(secret), "a packet summary holds \(secret)")
+        }
+
+        // Two lookups make two flows.
+        let (twice, _) = makeLog()
+        let first = UUID()
+        let second = UUID()
+        _ = await askLookup(BookingSendRecorder(body: lookupAnswer()), log: twice, flow: first)
+        _ = await askLookup(BookingSendRecorder(body: lookupAnswer()), text: "Zuni", log: twice, flow: second)
+        await twice.flush()
+        XCTAssertEqual(twice.packets.count, 4)
+        XCTAssertEqual(ConnectionFlows.group(twice.packets).count, 2)
+        XCTAssertEqual(Set(twice.packets.compactMap(\.flowID)), [first, second])
+        XCTAssertEqual(lines(twice), words + words)
+
+        // A lookup whose task is cancelled while its request is in flight writes no packet at all.
+        let (during, _) = makeLog()
+        let inFlight = BookingSendRecorder(body: lookupAnswer())
+        inFlight.duringSend = { withUnsafeCurrentTask { $0?.cancel() } }
+        let cancelled = await Task { await askLookup(inFlight, log: during) }.value
+        XCTAssertEqual(inFlight.requests.count, 1, "the request was in flight when the task was cancelled")
+        XCTAssertEqual(cancelled, .failure(.other))
+        await during.flush()
+        XCTAssertTrue(during.packets.isEmpty, "a cancelled lookup records nothing")
+    }
+
+    func testPLACE_P02_AFailedLookupWritesOneFailurePacketAndNoValue() async {
+        let reply = lookupAnswer(places: [sentinelPlace]) { $0["note"] = "extra" }
+        let scenarios: [(String, BookingSendRecorder, PartnerFailure)] = [
+            ("a defective answer", BookingSendRecorder(body: reply), .other),
+            ("a 500 with the answer", BookingSendRecorder(status: 500, body: lookupAnswer(places: [sentinelPlace])), .other),
+            ("offline", BookingSendRecorder(error: URLError(.notConnectedToInternet)), .offline),
+            ("a rejected token", BookingSendRecorder(status: 401, body: #"{"error":"unauthorized"}"#), .tokenRejected),
+            ("a wrong partner", BookingSendRecorder(body: lookupAnswer(places: [sentinelPlace]) { $0["partner"] = "Real Tables" }), .other),
+        ]
+        XCTAssertTrue(reply.contains(sentinelPlace.name), "the answer holds the sentinel candidate")
+        for (label, recorder, failure) in scenarios {
+            let (log, file) = makeLog()
+            let result = await askLookup(recorder, text: typedSentinel, near: sentinelNear, log: log)
+            XCTAssertEqual(result, .failure(failure), label)
+            await log.flush()
+            XCTAssertEqual(lines(log), ["besir>partner partner failed Request failed"], label)
+            XCTAssertEqual(log.packets.first?.flowID, flow, label)
+
+            // The typed text and the area are in the request, so the absence checks below can fail.
+            let sent = String(decoding: recorder.requests.first?.httpBody ?? Data(), as: UTF8.self)
+            XCTAssertTrue(sent.contains(typedSentinel), "\(label): the request holds the typed text")
+            XCTAssertTrue(sent.contains("41.27"), "\(label): the request holds the area")
+            XCTAssertEqual(recorder.requests.first?.value(forHTTPHeaderField: "x-besir-token"), token, label)
+            XCTAssertEqual(recorder.requests.first?.url?.host, host, label)
+
+            let stored = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
+            XCTAssertTrue(stored.contains("Request failed"), "\(label): the failure reached the file")
+            for secret in [typedSentinel, "Typed-Sentinel", sentinelPlace.name, "Sentinel-Addr", "Testville", "12.34375", "65.4375", token, host] {
+                XCTAssertFalse(stored.contains(secret), "\(label): connections.json holds \(secret)")
+            }
+            for secret in ["41.27", "73.54", "Sentinel", "Typed"] {
+                XCTAssertFalse(lines(log).joined().contains(secret), "\(label): a packet summary holds \(secret)")
+            }
+        }
+    }
 }
