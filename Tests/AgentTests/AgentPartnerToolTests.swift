@@ -308,7 +308,7 @@ enum PartnerPlaceFixture {
 /// The device position the toolbox reads when a lookup fires; a test sets it before it types.
 @MainActor
 final class DevicePosition {
-    var place: Place? = DeliveryToolFixture.device
+    var place: Place? = ToolFixture.device
 }
 
 final class BookingConfigBox {
@@ -343,7 +343,7 @@ final class PartnerRig {
     let tools: AgentToolbox
     let folder: URL
     let budget: BudgetToolPartner?
-    let reads = DeliveryDeviceReads()
+    let reads = DeviceReads()
     let position = DevicePosition()
 
     init(config: AppConfig = PlaceSentinel.config, partner: StubPartner = StubPartner(), failingLog: Bool = false,
@@ -1849,7 +1849,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(results.map { $0["value"] ?? "" }, [BookingFixture.start, "EX-AB12CD", "$60.00", "Table held for 15 minutes"])
 
         // A form of three place fields: an unmarked one first, then two marked ones. Only the first marked field is the location.
-        let home = DeliveryToolFixture.library
+        let home = ToolFixture.library
         let pickups = [Place(name: "Pickup One", address: "10 Pickup Lane", latitude: 37.71, longitude: -122.31),
                        Place(name: "Pickup Two", address: "11 Pickup Lane", latitude: 37.72, longitude: -122.32)]
         let drops = [Place(name: "Drop One", address: "20 Drop Road", latitude: 37.73, longitude: -122.33),
@@ -1896,7 +1896,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertTrue(rig.store.events.isEmpty, "the confirm made no leg and passed no origin")
 
         // A leg can now be attached: its destination is the chosen place.
-        let outcome = await rig.store.addLeg(activityId: entry.id, role: .arrival, outerPlace: DeliveryToolFixture.library, mode: .walk,
+        let outcome = await rig.store.addLeg(activityId: entry.id, role: .arrival, outerPlace: ToolFixture.library, mode: .walk,
                                              bufferMinutes: 0, notifyLeadMinutes: 0, travelSecondsHint: 600)
         guard case .created = outcome else { return XCTFail("expected a created leg, got \(outcome)") }
         let legs = rig.store.events.filter { $0.linkedActivityId == entry.id }
@@ -1918,7 +1918,7 @@ final class AgentPartnerToolTests: XCTestCase {
         _ = try await confirm(oldCard)
         let oldEntry = try XCTUnwrap(old.store.activities.first)
         XCTAssertNil(oldEntry.location)
-        let refused = await old.store.addLeg(activityId: oldEntry.id, role: .arrival, outerPlace: DeliveryToolFixture.library, mode: .walk,
+        let refused = await old.store.addLeg(activityId: oldEntry.id, role: .arrival, outerPlace: ToolFixture.library, mode: .walk,
                                              bufferMinutes: 0, notifyLeadMinutes: 0, travelSecondsHint: 600)
         assertLegRefused(refused)
         XCTAssertTrue(old.store.events.isEmpty)

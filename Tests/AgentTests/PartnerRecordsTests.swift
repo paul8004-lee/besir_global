@@ -361,7 +361,7 @@ final class PartnerRecordsTests: XCTestCase {
         let parcelsCardValue = await parcels.card(.init(restaurant: nil, party: nil, start: nil, name: nil), partner: "parcels")
         let parcelsCard = try XCTUnwrap(parcelsCardValue)
         let parcelsFields = try XCTUnwrap(parcelsCard.fieldCard)
-        XCTAssertTrue(parcelsFields.choosePlace("where", DeliveryToolFixture.library))
+        XCTAssertTrue(parcelsFields.choosePlace("where", ToolFixture.library))
         XCTAssertTrue(parcelsFields.chooseOption("speed", "fast"))
         XCTAssertTrue(parcelsFields.chooseOption("signed", "true"))
         XCTAssertTrue(parcelsFields.setText("count", "1"))

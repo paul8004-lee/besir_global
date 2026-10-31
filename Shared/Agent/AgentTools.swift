@@ -1104,7 +1104,7 @@ final class AgentToolbox {
         for field in spec.fields {
             let value: PartnerValue?
             switch field.kind {
-            case .text, .place: value = taken.text(field.key).flatMap(AgentDelivery.snapshotText).map { PartnerValue.text($0) }
+            case .text, .place: value = taken.text(field.key).flatMap(AgentFieldText.snapshotText).map { PartnerValue.text($0) }
             case .time: value = taken.date(field.key).map { PartnerValue.text(f.local.string(from: $0)) }
             case .number: value = taken.int(field.key).map { PartnerValue.number($0) }
             case .pickOne: value = taken.option(field.key).map { PartnerValue.text($0) }
@@ -1118,7 +1118,7 @@ final class AgentToolbox {
                     for member in field.members {
                         let memberValue: PartnerValue?
                         switch (member.kind, row[member.key]?.value) {
-                        case (.text, .text(let text)?): memberValue = AgentDelivery.snapshotText(text).map { PartnerValue.text($0) }
+                        case (.text, .text(let text)?): memberValue = AgentFieldText.snapshotText(text).map { PartnerValue.text($0) }
                         case (.number, .number(let number)?): memberValue = .number(number)
                         case (.pickOne, .option(let id)?): memberValue = .text(id)
                         default: memberValue = nil
@@ -1267,7 +1267,7 @@ final class AgentToolbox {
     /// user chose not to add the entry to the schedule.
     func partnerApplied(_ id: UUID?, partner: String, results: [PartnerResultItem], skipped: Bool,
                         budget: AgentBudget.BookingSpend? = nil) -> (AgentResolution, AgentCardMark) {
-        var object: [String: Any] = ["status": "applied", "partner": partner, "simulated": true, "results": AgentDelivery.resultFields(results)]
+        var object: [String: Any] = ["status": "applied", "partner": partner, "simulated": true, "results": AgentPartner.resultFields(results)]
         var message = AgentPartner.appliedMessage
         if skipped { message += " " + AgentPartner.scheduleSkippedSentence }
         if let id {
@@ -1482,10 +1482,10 @@ final class AgentToolbox {
                 return (AgentResolution(result: result, notice: Say.startPassed), .notApplied)
             }
             // The one trim, here: the delivery text and the title.
-            let address = taken.text(DeliveryClient.addressKey).flatMap(AgentDelivery.snapshotText)
+            let address = taken.text(DeliveryClient.addressKey).flatMap(AgentFieldText.snapshotText)
             let chosen = taken.option(DeliveryClient.cardKey).flatMap { options.card(id: $0) }
             let mealOn = taken.flag(AgentDelivery.mealSwitchKey) == true
-            let title = mealOn ? taken.text(AgentDelivery.mealTitleKey).flatMap(AgentDelivery.snapshotText) : nil
+            let title = mealOn ? taken.text(AgentDelivery.mealTitleKey).flatMap(AgentFieldText.snapshotText) : nil
             guard let when, let address, let chosen, !mealOn || title != nil else {
                 let result = Self.encode(["status": "rejected", "message": AgentDelivery.editRejectedMessage])
                 return (AgentResolution(result: result, notice: nil), .notApplied)

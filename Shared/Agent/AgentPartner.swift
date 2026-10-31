@@ -78,6 +78,20 @@ enum AgentPartner {
                             dependents: [.field(length, value: .number(lengthInitial), source: .inferred), travelRow])
     }
 
+    /// The result items for the model, each `{name, kind, value}` in the partner's order: a time as its text, money in dollars
+    /// through `AgentBudget`, a text as it is. (SPEC-DELIVERYCARD-001, card t91: copied from `AgentDelivery` with its body
+    /// unchanged, so the common path keeps it when the delivery-only file is deleted.)
+    static func resultFields(_ results: [PartnerResultItem]) -> [[String: Any]] {
+        results.map { item in
+            let value: String
+            switch item.value {
+            case .time(let text), .text(let text): value = text
+            case .money(let cents): value = AgentBudget.dollars(cents: cents)
+            }
+            return ["name": item.name, "kind": item.kind.rawValue, "value": value]
+        }
+    }
+
     /// The `get_partners` answer for the partners that are held.
     static func listResult(_ specs: [PartnerSpec]) -> [String: Any] {
         ["status": "ok", "simulated": true, "partners": specs.map(specListing), "message": listMessage]
