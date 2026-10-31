@@ -36,6 +36,9 @@ enum AgentPrefill {
         return kept
     }
 
+    /// The distinct row numbers of `kept`'s keys that are row keys of `group`, ascending (SPEC-GROUPFIELD-001 REQ-008).
+    static func rowNumbers(kept: [String: AgentFieldValue], group: String) -> [Int] { [] }
+
     // MARK: Reading a value back from its quote
 
     private static func read(_ value: String, kind: PartnerFieldKind, quote: String, now: Date, calendar: Calendar) -> AgentFieldValue? {
