@@ -6,11 +6,12 @@
 //   POST /snap    -> Baseten Muse Spark Open: one image in, {kind, name, place_type, text, title, time, confidence} out
 //   POST /partners -> directory of the simulated partners (a constant list, no upstream, no storage)
 //   POST /booking -> simulated table-booking partner (an upstream for lookup only, one Places Text Search; no storage)
+//   POST /booking/cancel -> cancels a simulated table booking (no upstream, no storage)
 //   POST /budget  -> simulated budget partner (no upstream, no storage)
 //   POST /delivery -> simulated food-delivery partner (no upstream, no storage)
 import { handleVision } from "./vision.js";
 import { handleSnap } from "./snap.js";
-import { handleBooking } from "./booking.js";
+import { handleBooking, handleBookingCancel } from "./booking.js";
 import { handlePartners } from "./partners.js";
 import { handleBudget } from "./budget.js";
 import { handleDelivery } from "./delivery.js";
@@ -140,6 +141,7 @@ export default {
       case "/snap": return handleSnap(request, env, { json });
       case "/partners": return handlePartners(request, { json });
       case "/booking": return handleBooking(request, { json, lookup: placesLookup(env) });
+      case "/booking/cancel": return handleBookingCancel(request, { json });
       case "/budget": return handleBudget(request, { json });
       case "/delivery": return handleDelivery(request, { json });
       default:
