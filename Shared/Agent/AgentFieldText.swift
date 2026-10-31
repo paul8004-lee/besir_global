@@ -1,7 +1,7 @@
 import Foundation
 
-/// The neutral home of the field-card text helpers every partner's card reads (SPEC-DELIVERYCARD-001, card t91): copied from
-/// `AgentDelivery` with their bodies unchanged, so the common path keeps its helpers when the delivery-only file is deleted.
+/// The neutral home of the field-card text helpers every partner's card reads (SPEC-DELIVERYCARD-001, card t91): they used to
+/// live in a single-partner helpers file, which is gone, and keep their bodies unchanged.
 /// Foundation only, like `AgentPartner`; the toolbox is named nowhere here.
 enum AgentFieldText {
     /// The most characters a text field holds when a field names no limit of its own.

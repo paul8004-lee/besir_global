@@ -79,8 +79,8 @@ enum AgentPartner {
     }
 
     /// The result items for the model, each `{name, kind, value}` in the partner's order: a time as its text, money in dollars
-    /// through `AgentBudget`, a text as it is. (SPEC-DELIVERYCARD-001, card t91: copied from `AgentDelivery` with its body
-    /// unchanged, so the common path keeps it when the delivery-only file is deleted.)
+    /// through `AgentBudget`, a text as it is. (SPEC-DELIVERYCARD-001, card t91: it used to live in a single-partner helpers
+    /// file, which is gone; the body is unchanged.)
     static func resultFields(_ results: [PartnerResultItem]) -> [[String: Any]] {
         results.map { item in
             let value: String

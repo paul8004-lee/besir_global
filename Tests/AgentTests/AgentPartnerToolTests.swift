@@ -518,16 +518,16 @@ final class AgentPartnerToolTests: XCTestCase {
 
     // MARK: G01-G02 the declarations
 
-    func testPARTNER_G01_FourteenDeclarationsTheOldOnesUnchangedAndTheNewTwoStrict() throws {
+    func testPARTNER_G01_TwelveDeclarationsTheOldOnesUnchangedAndTheNewTwoStrict() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 14)
+        XCTAssertEqual(decls.count, 12)
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 14)
+        XCTAssertEqual(recorded.count, 12)
         for index in 0..<6 {
             XCTAssertTrue((decls[index] as AnyObject).isEqual(recorded[index]), "declaration \(index) changed")
         }
-        let list = try XCTUnwrap(decls.count > 12 ? decls[12] : nil)
+        let list = try XCTUnwrap(decls.count > 10 ? decls[10] : nil)
         XCTAssertEqual(list["name"] as? String, "get_partners")
         let listParameters = try XCTUnwrap(list["parameters"] as? [String: Any])
         XCTAssertEqual((listParameters["properties"] as? [String: Any])?.count, 0)
@@ -1376,23 +1376,23 @@ final class AgentPartnerToolTests: XCTestCase {
 
     // MARK: T09 the declarations
 
-    func testPARTNER_T09_TheDeclarationsAreFourteenWithTheNewTwoLastAndEqualToTheFixture() throws {
+    func testPARTNER_T09_TheDeclarationsAreTwelveWithTheNewTwoLastAndEqualToTheFixture() throws {
         let decls = declarations()
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places", "get_travel_time",
-                        "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "get_delivery_options", "order_delivery",
+                        "check_day_plan", "show_day_plan", "get_budget_left", "record_spend",
                         "get_partners", "request_partner"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 14)
+        XCTAssertEqual(recorded.count, 12)
         XCTAssertTrue((decls as AnyObject).isEqual(recorded), "the whole array equals the fixture")
-        let list = try XCTUnwrap(decls.count > 12 ? decls[12] : nil)
+        let list = try XCTUnwrap(decls.count > 10 ? decls[10] : nil)
         XCTAssertEqual(list["description"] as? String, Text.listDescription)
         let listParameters = try XCTUnwrap(list["parameters"] as? [String: Any])
         XCTAssertEqual((listParameters["properties"] as? [String: Any])?.isEmpty, true)
         XCTAssertNil(listParameters["required"])
         XCTAssertEqual(listParameters["additionalProperties"] as? Bool, false)
-        let request = try XCTUnwrap(decls.count > 13 ? decls[13] : nil)
+        let request = try XCTUnwrap(decls.count > 11 ? decls[11] : nil)
         XCTAssertEqual(request["description"] as? String, Text.requestDescription)
         let parameters = try XCTUnwrap(request["parameters"] as? [String: Any])
         XCTAssertEqual(parameters["required"] as? [String], ["partner"])
@@ -2229,11 +2229,11 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertTrue(card.lines.joined().contains("EDITED-ROW-B"), "the card shows what the user is to check")
     }
 
-    func testGROUP_GT5_TheDeclarationsStayFourteenAndTheFieldsDescriptionTeachesRows() throws {
+    func testGROUP_GT5_TheDeclarationsAreTwelveAndTheFieldsDescriptionTeachesRows() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 14)
+        XCTAssertEqual(decls.count, 12)
         XCTAssertEqual(Array(decls.compactMap { $0["name"] as? String }.suffix(2)), ["get_partners", "request_partner"])
-        let request = try XCTUnwrap(decls.count > 13 ? decls[13] : nil)
+        let request = try XCTUnwrap(decls.count > 11 ? decls[11] : nil)
         let parameters = try XCTUnwrap(request["parameters"] as? [String: Any])
         let properties = try XCTUnwrap(parameters["properties"] as? [String: Any])
         XCTAssertEqual(Set(properties.keys), ["partner", "fields"])

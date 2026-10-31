@@ -17,7 +17,7 @@ final class AgentFieldCardCardTests: XCTestCase {
 
     private let library = Place(name: "Library", address: "9 Library Road", latitude: 37.5, longitude: -122.4)
 
-    /// A model with the place blank and the card chosen, as `order_delivery` builds it for a call that names no place.
+    /// A model with the place blank and the card chosen, as a food order card starts when the call names no place.
     private func model() -> AgentFieldCard {
         AgentFieldCard(header: "Order delivery",
                        rows: [.line("Pasta Palace"),

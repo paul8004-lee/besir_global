@@ -118,7 +118,7 @@ final class AgentPlaceToolsTests: XCTestCase {
         let decls = declarations()
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity",
-                        "search_places", "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "get_delivery_options", "order_delivery", "get_partners", "request_partner"])
+                        "search_places", "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "get_partners", "request_partner"])
         let params: [String: Set<String>] = [
             "search_places": ["query"],
             "get_travel_time": ["place_id", "mode", "origin_place_id", "arrive_by"],
@@ -154,7 +154,7 @@ final class AgentPlaceToolsTests: XCTestCase {
     func testAGPLACE_NoCoordinateNameAddressOrTimeToLeaveParameter() {
         // First: the six tools and the new parameters exist, so an empty declaration list cannot pass.
         let decls = declarations()
-        XCTAssertEqual(decls.count, 14)
+        XCTAssertEqual(decls.count, 12)
         var names: [String] = []
         for d in decls { names += Array(properties(d).keys) }
         for param in ["query", "place_id", "mode", "origin_place_id", "arrive_by", "route_id"] {

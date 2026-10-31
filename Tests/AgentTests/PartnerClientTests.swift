@@ -755,10 +755,8 @@ final class PartnerClientTests: XCTestCase {
             XCTAssertFalse(text.isEmpty)
             XCTAssertTrue(text.unicodeScalars.allSatisfy { $0.isASCII })
         }
-        // The delivery and budget cases stay, and every earlier case keeps its raw value and name.
-        XCTAssertEqual(ConnectionParty.deliveryPartner.rawValue, "deliveryPartner")
+        // The budget cases stay, and every earlier case keeps its raw value and name.
         XCTAssertEqual(ConnectionParty.budgetPartner.rawValue, "budgetPartner")
-        XCTAssertEqual(ConnectionKind.delivery.rawValue, "delivery")
         XCTAssertEqual(ConnectionKind.budget.rawValue, "budget")
         XCTAssertEqual(ConnectionParty.appleCalendar.rawValue, "appleCalendar")
         XCTAssertEqual(ConnectionParty.museSpark.displayName, "Muse Spark")
