@@ -123,10 +123,16 @@ struct MapFitBasis {
 }
 
 enum MapFitRule {
-    /// Whether the camera must be fitted. Stub of card t49 M1: it still looks at the frame only.
+    /// Whether the camera must be fitted: first fit, a different frame, or - for a bounds frame only -
+    /// a label of a different width (wider or narrower). A single-point frame uses no insets, so its width never matters.
+    // @MX:NOTE: The key is the label width, not the computed MapFitInsets and not the map size: a map-size change
+    // (rotation, a sheet) must not refit, because that would reset the user's pan and zoom (card t49, decision D2).
+    // `labelWidth()` is ceil(text) + 32 of the same string at the same font, so an unchanged name gives an identical value.
     static func needsFit(last: MapFitBasis?, next: MapFitBasis) -> Bool {
         guard let last else { return true }
-        return last.frame != next.frame
+        if last.frame != next.frame { return true }
+        guard case .bounds = next.frame else { return false }
+        return last.labelWidth != next.labelWidth
     }
 }
 
