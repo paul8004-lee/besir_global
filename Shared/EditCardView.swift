@@ -513,14 +513,22 @@ struct EditCardView: View {
                     // PlaceLine.showsNoResultNote가 혼자 한다(계약 5). 0건과 검색 실패(오프라인)를
                     // PlaceSearch가 같은 빈 배열로 돌려줘 앱이 구분하지 못한다 — 구분 못 하는 것을
                     // 구분한 척하지 않고 양쪽을 함께 말한다.
-                    if PlaceLine.showsNoResultNote(query: query, lookup: field.lookup,
-                                                   favorites: field.options) {
+                    // A row the partner resolves has no favorites and tells empty from failed: its own note is chosen by
+                    // PlaceLine.partnerNote.
+                    if let note = PlaceLine.partnerNote(partnerLookup: field.partnerLookup, lookup: field.lookup) {
+                        partnerNoteText(note)
+                    } else if PlaceLine.showsNoResultNote(query: query, lookup: field.lookup,
+                                                          favorites: field.options) {
                         Text(PlaceLine.noResultNote)
                             .font(.caption).foregroundStyle(Theme.warn)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 case .results:
                     EmptyView()
+                case .failed:
+                    if let note = PlaceLine.partnerNote(partnerLookup: field.partnerLookup, lookup: field.lookup) {
+                        partnerNoteText(note)
+                    }
                 }
             }
         } else {
@@ -564,6 +572,18 @@ struct EditCardView: View {
         draft[field.id] = field.searchSeed ?? ""
         placeOpen.insert(field.id)
         placeFocus = field.id
+        // A text the model stated for a row the partner resolves starts one lookup the first time the row is opened; the search
+        // spends the seed in the model, so a reopened row does not search it again.
+        if let seed = PlaceLine.seedToSearchOnOpen(seed: field.searchSeed, lookup: field.lookup) {
+            actions.searchPlaces(field.id, seed)
+        }
+    }
+
+    /// The note of a partner row whose lookup found nothing or failed, in the warning style of the place search's own note.
+    private func partnerNoteText(_ note: String) -> some View {
+        Text(note)
+            .font(.caption).foregroundStyle(Theme.warn)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// 장소 목록 닫기 — 고르지 않고 닫으면 입력하던 글자를 지우고 확정값 이름의 누름 글자로

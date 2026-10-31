@@ -229,14 +229,14 @@ final class Store: ObservableObject {
             _ = await addLeg(activityId: activity.id, role: .arrival, outerPlace: from,
                              mode: outboundMode, bufferMinutes: bufferMinutes,
                              notifyLeadMinutes: notifyLeadMinutes, notifyEnabled: notifyEnabled,
-                             travelSecondsHint: travelSecondsHint, syncToCalendar: syncToCalendar)
+                             travelSecondsHint: travelSecondsHint)
             made += 1
         }
         if let to = returnTo {
             _ = await addLeg(activityId: activity.id, role: .departure, outerPlace: to,
                              mode: returnMode, bufferMinutes: 0,
                              notifyLeadMinutes: notifyLeadMinutes, notifyEnabled: notifyEnabled,
-                             travelSecondsHint: travelSecondsHint, syncToCalendar: syncToCalendar)
+                             travelSecondsHint: travelSecondsHint)
             made += 1
         }
         return (activity.id, made)
@@ -394,7 +394,7 @@ final class Store: ObservableObject {
 
     /// 이동 편집 폼의 저장이 그 회차를 **실제로 바꿨는가**(REQ-014 "바꾸지 않는 저장은 안 뗀다").
     /// 비교 범위는 폼이 저장으로 내보내는 값 전부 — 제목·출발지·목적지·기준 시각·방향·이동수단·
-    /// 도착 여유·알림(켬/끔·리드)·캘린더 동의. 이동시간은 폼이 다시 계산해 내는 파생값이라
+    /// 도착 여유·알림(켬/끔·리드). 이동시간은 폼이 다시 계산해 내는 파생값이라
     /// 넣지 않는다(교통 상황만 달라져도 "바뀜"이 되면 열었다 닫기만 해도 회차가 빠진다).
     /// 판정을 뷰가 아니라 여기 둔 것은 드라이버가 부를 수 있게 하려는 것이고(계약 5), 폼이
     /// 불러온 값(`editing`)과 저장 값을 같은 정규화로 맞춰 읽는다 — 출발 기준은 도착 여유가
@@ -403,7 +403,7 @@ final class Store: ObservableObject {
                                          title: String, origin: Place, destination: Place,
                                          baseDate: Date, anchor: ScheduleAnchor, mode: TransportMode,
                                          bufferMinutes: Int, notifyLeadMinutes: Int,
-                                         notifyEnabled: Bool, syncToCalendar: Bool) -> Bool {
+                                         notifyEnabled: Bool) -> Bool {
         let origAnchor = e.anchor ?? .arrival
         let origBase = e.anchorDate   // 같은 식이 이미 있다(계약 5) — 두 벌로 두지 않는다
         let origBuffer = origAnchor == .departure ? 0 : e.bufferMinutes
@@ -418,7 +418,6 @@ final class Store: ObservableObject {
             || origBuffer != newBuffer
             || e.notifyLeadMinutes != notifyLeadMinutes
             || e.wantsNotification != notifyEnabled
-            || e.wantsCalendarSync != syncToCalendar
     }
 
     /// 구간 쪽 빠짐의 공개 진입점 — 명시 소유가 없는 반복 구간 하나를 반복에서 뗀다(J-10).
@@ -539,8 +538,7 @@ final class Store: ObservableObject {
                 bufferMinutes: Int,
                 notifyLeadMinutes: Int,
                 notifyEnabled: Bool = true,
-                travelSecondsHint: TimeInterval? = nil,
-                syncToCalendar: Bool? = nil) async -> LegOutcome {
+                travelSecondsHint: TimeInterval? = nil) async -> LegOutcome {
         guard let activity = self.activity(id: activityId) else {
             return .refused(reason: .activityMissing)
         }
@@ -552,10 +550,6 @@ final class Store: ObservableObject {
         // 걷힌다). 번호 없는 구간이 반복 전체 삭제에서 살아남는 옛 우려(sync 1차 B1)는 이제
         // 반대로 "회차가 빠진다"(REQ-014)가 답이다 — 붙이는 순간 그 회차는 단독 일정이 된다.
         guard let place = activity.location else { return .refused(reason: .noPlace) }
-        // 구간의 캘린더 동의는 기본으로 활동을 따른다 — "캘린더 안 함" 활동에 붙은 구간이 구글
-        // 캘린더에 오르면 활동과 구간의 동의가 어긋난다(REQ-008, sync 1차 W1). 명시적으로 넘긴
-        // 값(생성 카드의 addActivityWithTravel)은 그대로 이긴다.
-        let legSync = syncToCalendar ?? activity.wantsCalendarSync
         let leg = await addEvent(title: legTitle(role: role, activity: activity),
                                  origin: role == .departure ? place : outerPlace,
                                  destination: role == .departure ? outerPlace : place,
@@ -566,8 +560,7 @@ final class Store: ObservableObject {
                                  anchor: role,
                                  travelSecondsHint: travelSecondsHint,
                                  linkedActivityId: activityId,
-                                 notifyEnabled: notifyEnabled,
-                                 syncToCalendar: legSync)
+                                 notifyEnabled: notifyEnabled)
         // await 뒤 배열이 바뀌었을 수 있으니 활동을 다시 본다 — 지워졌으면 방금 만든 구간을
         // 되돌린다(보상 검사). leg를 검색이 아니라 반환값으로 얻는 건 같은 제목·시각 구간이
         // 이미 있을 때 엉뚱한 쪽을 집는 일을 막는다(addEvent가 레코드를 돌려주는 이유와 같다).
@@ -599,8 +592,7 @@ final class Store: ObservableObject {
                    bufferMinutes: Int? = nil,
                    notifyLeadMinutes: Int? = nil,
                    notifyEnabled: Bool? = nil,
-                   travelSecondsHint: TimeInterval? = nil,
-                   syncToCalendar: Bool? = nil) async -> LegOutcome {
+                   travelSecondsHint: TimeInterval? = nil) async -> LegOutcome {
         guard let leg = events.first(where: { $0.id == legId }) else { return .failed }
         let role = leg.anchor ?? .arrival
         let activity = leg.linkedActivityId.flatMap { id in self.activity(id: id) }
@@ -622,8 +614,7 @@ final class Store: ObservableObject {
                               notifyLeadMinutes: notifyLeadMinutes ?? leg.notifyLeadMinutes,
                               anchor: role,
                               travelSecondsHint: travelSecondsHint,
-                              notifyEnabled: notifyEnabled,
-                              syncToCalendar: syncToCalendar)
+                              notifyEnabled: notifyEnabled)
         }
         await write(activity)
         // await(추정) 사이 활동이 다른 경로로 바뀌면 위 쓰기에 옛 앵커·끝점·제목이 들어갔다 —
@@ -1202,8 +1193,7 @@ final class Store: ObservableObject {
                   anchor: ScheduleAnchor = .arrival,
                   travelSecondsHint: TimeInterval? = nil,
                   linkedActivityId: UUID? = nil,
-                  notifyEnabled: Bool = true,
-                  syncToCalendar: Bool = true) async -> ScheduledEvent {
+                  notifyEnabled: Bool = true) async -> ScheduledEvent {
         var event = ScheduledEvent(title: title,
                                    origin: origin,
                                    destination: destination,
@@ -1213,7 +1203,6 @@ final class Store: ObservableObject {
                                    notifyLeadMinutes: notifyLeadMinutes)
         event.linkedActivityId = linkedActivityId
         event.notifyEnabled = notifyEnabled
-        event.syncToCalendar = syncToCalendar
         // 호출부가 충돌 검사를 위해 이미 이동시간을 조회했다면 그 값을 쓴다(외부 API 중복 호출 방지).
         switch (anchor, travelSecondsHint) {
         case (.arrival, let hint?):
@@ -1276,7 +1265,7 @@ final class Store: ObservableObject {
         // 알림 줄이 꺼져서 없으면 문법 값이 기억한 마지막 값을 쓴다(REQ-012).
         let notifyLead = field(LegRowKeys.notifyLeadMinutes)?.chosen.flatMap { Int($0) } ?? Int(form.lastNotifyLead) ?? 0
         let notifyOn = field(LegRowKeys.notifyEnabled)?.chosen != "false"
-        let sync = field("calendar_sync")?.chosen.map { $0 == "true" } ?? calendarDefault
+        let sync = calendarDefault
 
         guard let active = form.activeRecurrence else {
             _ = await addActivityWithTravel(title: title, location: location, startDate: start, endDate: end,
@@ -1637,7 +1626,6 @@ final class Store: ObservableObject {
         event.recurrenceId = work.series.id
         event.linkedActivityId = occurrence.id
         event.notifyEnabled = work.plan.notifyEnabled
-        event.syncToCalendar = work.series.syncToCalendar
         if outbound {
             event.anchor = .arrival
             if let seconds {
@@ -1712,8 +1700,7 @@ final class Store: ObservableObject {
     /// eligibleIds), taken as they are. The order inside the save (P-12): 2. the siblings get the leg, 3. the edited
     /// occurrence gets it too (without a number when editedDetaches), 4. the edited occurrence leaves the series last.
     /// Only the first occurrence is looked up and the rest copy it (REQ-005), and activities and events are each saved
-    /// once, with one reschedule. Calendar consent follows each activity's wantsCalendarSync (the same rule as addLeg;
-    /// autoAddToCalendar is a setting for automatic adding, not consent). "This event only" does not come through here: addLeg
+    /// once, with one reschedule. "This event only" does not come through here: addLeg
     /// does it alone (the leg it makes has no number, and the detach inside addLeg takes that occurrence out).
     @discardableResult
     func addLegToSeries(editedActivityId: UUID,
@@ -1752,7 +1739,6 @@ final class Store: ObservableObject {
                                      notifyLeadMinutes: notifyLeadMinutes)
             leg.linkedActivityId = occurrence.id
             leg.notifyEnabled = notifyEnabled
-            leg.syncToCalendar = occurrence.wantsCalendarSync
             // 같은 저장에서 편집 회차가 빠지면(회차를 바꿨거나 "이 일정만"을 골랐을 때) 그 회차의
             // 이동은 번호 없이 만든다(REQ-016 끝 문장).
             if tid == editedActivityId && editedDetaches {
@@ -1983,8 +1969,7 @@ final class Store: ObservableObject {
                      notifyLeadMinutes: Int,
                      anchor: ScheduleAnchor = .arrival,
                      travelSecondsHint: TimeInterval? = nil,
-                     notifyEnabled: Bool? = nil,
-                     syncToCalendar: Bool? = nil) async {
+                     notifyEnabled: Bool? = nil) async {
         guard let idx = events.firstIndex(where: { $0.id == id }) else { return }
         var event = events[idx]
         event.title = title
@@ -1995,7 +1980,6 @@ final class Store: ObservableObject {
         event.bufferMinutes = anchor == .departure ? 0 : bufferMinutes
         event.notifyLeadMinutes = notifyLeadMinutes
         if let notifyEnabled { event.notifyEnabled = notifyEnabled }
-        if let syncToCalendar { event.syncToCalendar = syncToCalendar }
         // 폼이 이미 보여준 이동시간이 있으면 그 값으로 산정한다(addEvent의 같은 스위치와 같은
         // 이유 — 외부 API 중복 호출 방지). 힌트가 없을 때만 다시 조회한다.
         switch (anchor, travelSecondsHint) {

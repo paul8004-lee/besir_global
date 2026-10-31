@@ -45,6 +45,19 @@ final class PartnerClient {
                           })
     }
 
+    /// Asks an entry's route for the places it finds for the text typed in one of its own lookup fields. Sends nothing (and fails
+    /// with `other`) for a key that is not a marked field of `spec` or a text under two code points once normalised. Records
+    /// `<name>: Candidates requested` and `<name>: Candidates received`; no summary holds the text, a candidate or a coordinate.
+    func candidates(of spec: PartnerSpec, field: String, text: String, near: (latitude: Double, longitude: Double)?,
+                    flow: UUID) async -> Result<[Place], PartnerFailure> {
+        guard spec.fields.contains(where: { $0.key == field && $0.canLookUp }),
+              let lookupText = PartnerCandidates.requestText(text) else { return .failure(.other) }
+        let name = spec.entry.name
+        return await call(path: spec.entry.route, body: PartnerCandidates.body(field: field, text: lookupText, near: near), flow: flow,
+                          read: { PartnerCandidates.list(from: $0, spec: spec, field: field) },
+                          words: { _ in ("\(name): Candidates requested", "\(name): Candidates received", .ok) })
+    }
+
     // MARK: The exchange
 
     /// One request, one checked answer and the packets of the exchange under `flow`. Recording never changes the result.
