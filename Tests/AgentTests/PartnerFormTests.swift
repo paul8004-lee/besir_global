@@ -219,6 +219,48 @@ final class PartnerFormTests: XCTestCase {
         XCTAssertEqual(reordered[1].options, [PartnerOption(id: "small", label: "Small")])
     }
 
+    func testPLACE_W09_ALookupMarkerOnAPlaceFieldDecodesAndEveryOtherMarkerMakesTheWholeListUnusable() throws {
+        func marked(_ key: String, _ kind: String, _ marker: Any, optional: Any? = nil) -> [String: Any] {
+            var object = field(key, kind, key.capitalized, optional: optional)
+            object["lookup"] = marker
+            return object
+        }
+        // Positive first: a marked place field decodes with the flag, an unmarked one without it, and the list reads as before.
+        let valid: [[String: Any]] = [marked("restaurant", "place", true), field("note", "text", "Note", optional: true), field("where_to", "place", "Where")]
+        let good = try XCTUnwrap(fields(valid))
+        XCTAssertEqual(good.map(\.canLookUp), [true, false, false])
+        XCTAssertEqual(good.map(\.isOptional), [false, true, false])
+        XCTAssertFalse(PartnerField(key: "a", kind: .place, label: "A", options: []).canLookUp)
+        XCTAssertEqual(try XCTUnwrap(fields(deliveryList)).map(\.canLookUp), [false, false, false])
+
+        let chips = [option("small", "Small")]
+        let cases: [(String, Any)] = [
+            ("lookup false", [marked("a", "place", false)]),
+            ("lookup as the text true", [marked("a", "place", "true")]),
+            ("lookup as the number 1", [marked("a", "place", 1)]),
+            ("lookup as null", [marked("a", "place", NSNull())]),
+            ("lookup as a list", [marked("a", "place", [true])]),
+            ("lookup on a text field", [marked("a", "text", true)]),
+            ("lookup on an on_off field", [marked("a", "on_off", true).merging(["options": onOffOptions]) { $1 }]),
+            ("lookup on a number field", [marked("a", "number", true)]),
+            ("lookup on a time field", [marked("a", "time", true)]),
+            ("lookup on a pick_one field", [marked("a", "pick_one", true).merging(["options": chips]) { $1 }]),
+            ("lookup beside optional", [marked("a", "place", true, optional: true)]),
+            ("a fifth key beside lookup", [["key": "a", "kind": "place", "label": "A", "lookup": true, "hint": "x"]]),
+            ("one bad lookup among good fields", [field("a", "text", "A"), marked("b", "place", false), field("c", "text", "C")]),
+        ]
+        assertUnusable(cases) { fields($0) != nil }
+
+        // `lookup` is a key of the parsed dictionary, never a position, and beside `optional` in either key order it is refused.
+        let text = #"[{"lookup":true,"label":"Restaurant","kind":"place","key":"restaurant"}]"#
+        let reordered = try XCTUnwrap(PartnerForm.fields(from: try JSONSerialization.jsonObject(with: Data(text.utf8))))
+        XCTAssertEqual(reordered.map(\.canLookUp), [true])
+        for both in [#"[{"lookup":true,"optional":true,"label":"A","kind":"place","key":"a"}]"#,
+                     #"[{"optional":true,"lookup":true,"label":"A","kind":"place","key":"a"}]"#] {
+            XCTAssertNil(PartnerForm.fields(from: try JSONSerialization.jsonObject(with: Data(both.utf8))), both)
+        }
+    }
+
     func testW07_TheNumberKindIsAKindOfItsOwnWithThreeKeysAndAnUnknownWordIsStillRefused() throws {
         XCTAssertEqual(PartnerFieldKind(rawValue: "number"), .number)
         XCTAssertFalse(PartnerFieldKind.number.hasOptions)

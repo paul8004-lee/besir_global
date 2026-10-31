@@ -22,7 +22,7 @@ const without = (object, key) => {
 };
 
 const FIELDS = [
-  { key: "restaurant", kind: "text", label: "Restaurant" },
+  { key: "restaurant", kind: "place", label: "Restaurant", lookup: true },
   { key: "party_size", kind: "number", label: "Party size" },
   { key: "start", kind: "time", label: "Time" },
   { key: "name", kind: "text", label: "Name" },
@@ -270,7 +270,7 @@ test("AC-BOOKING-001 B07: not JSON, an array and an over-long body", async () =>
   await expectError(await call(null, { raw: "x".repeat(4096) }), 400, "invalid_json");
 });
 
-test("AC-BOOKING-001 B09: a GET is 405 and a valid request makes no outgoing fetch", async () => {
+test("AC-BOOKING-001 B09: a GET is 405 and a valid submit or fields request makes no outgoing fetch", async () => {
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
@@ -376,7 +376,12 @@ test("AC-BOOKING-003 B14: the fields request answers four keys, the five fields 
   assert.equal(body.simulated, true);
   assert.deepEqual(body.fields.map((field) => field.key), ["restaurant", "party_size", "start", "name", "note"]);
   for (const field of body.fields) {
-    const want = field.key === "note" ? ["key", "kind", "label", "optional"] : ["key", "kind", "label"];
+    const want =
+      field.key === "note"
+        ? ["key", "kind", "label", "optional"]
+        : field.key === "restaurant"
+          ? ["key", "kind", "label", "lookup"]
+          : ["key", "kind", "label"];
     assert.deepEqual(Object.keys(field), want, field.key);
   }
   assert.deepEqual(body.fields, FIELDS);
@@ -407,12 +412,18 @@ function fieldListProblems(list) {
     }
     const hasOptions = field.kind === "pick_one" || field.kind === "on_off";
     if (hasOptions !== names.includes("options")) problems.push("options do not match the kind");
-    const allowed = ["key", "kind", "label", "options", "optional"];
+    const allowed = ["key", "kind", "label", "options", "optional", "lookup"];
     if (names.some((name) => !allowed.includes(name))) problems.push("an unknown key");
     if (names.includes("optional")) {
       if (field.optional !== true) problems.push("optional is not true");
       if (field.kind === "on_off") problems.push("optional on a switch");
       if (names[names.length - 1] !== "optional") problems.push("optional is not last");
+    }
+    if (names.includes("lookup")) {
+      if (field.lookup !== true) problems.push("lookup is not true");
+      if (field.kind !== "place") problems.push("lookup on a field that is not a place");
+      if (names[names.length - 1] !== "lookup") problems.push("lookup is not last");
+      if (names.includes("optional")) problems.push("lookup beside optional");
     }
   }
   return problems;
@@ -438,6 +449,7 @@ test("AC-BOOKING-003 B15: an independent validator accepts the fields answer and
   // The validator fires on each planted defect.
   const note = FIELDS[4];
   const swap = (field) => [...FIELDS.slice(0, 4), field];
+  const swapFirst = (field) => [field, ...FIELDS.slice(1)];
   const planted = [
     ["optional false", swap({ ...note, optional: false })],
     ["optional as text", swap({ ...note, optional: "true" })],
@@ -449,6 +461,10 @@ test("AC-BOOKING-003 B15: an independent validator accepts the fields answer and
     ["a key with an upper-case letter", swap({ key: "Size", kind: "text", label: "Size" })],
     ["nine fields", Array.from({ length: 9 }, (_, i) => ({ key: "k".repeat(i + 1), kind: "text", label: "L" }))],
     ["no field", []],
+    ["lookup false", swapFirst({ ...FIELDS[0], lookup: false })],
+    ["lookup on a text field", swapFirst({ key: "restaurant", kind: "text", label: "Restaurant", lookup: true })],
+    ["lookup not last", swapFirst({ key: "restaurant", kind: "place", lookup: true, label: "Restaurant" })],
+    ["lookup beside optional", swapFirst({ key: "restaurant", kind: "place", label: "Restaurant", lookup: true, optional: true })],
   ];
   for (const [name, list] of planted) {
     assert.notDeepEqual(fieldListProblems(list), [], `the field validator misses ${name}`);
@@ -541,4 +557,322 @@ test("AC-BOOKING-003 B18: the old request, answer keys sent back, and the keys a
   // The answers of the two ops are the ones documented.
   assert.equal((await call({ op: "fields" })).status, 200);
   assert.equal((await call(valid())).status, 200);
+});
+
+// A Google Places stand-in: it counts the calls and keeps what the Worker sent.
+function mockPlaces(respond) {
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url, init });
+    return respond(url, init);
+  };
+  return seen;
+}
+const placesAnswer = (payload, status = 200) =>
+  new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json" } });
+const lookupBody = (over = {}) => ({ op: "lookup", field: "restaurant", text: "Tartine", ...over });
+const placeOf = (name, address, latitude = 37.76, longitude = -122.42) => ({
+  displayName: { text: name, languageCode: "en" },
+  formattedAddress: address,
+  location: { latitude, longitude },
+});
+const candidateOf = (name, address, latitude = 37.76, longitude = -122.42) => ({
+  name,
+  address,
+  location: { latitude, longitude },
+});
+const PLACES_URL = "https://places.googleapis.com/v1/places:searchText";
+const PIZZA = "\u{1F355}"; // one code point, two UTF-16 units
+
+test("AC-BOOKING-005 B19: a lookup request is validated in order and an invalid one makes no outgoing fetch", async () => {
+  const seen = mockPlaces(() => placesAnswer({ places: [] }));
+  const near = { latitude: 37.77, longitude: -122.42 };
+  try {
+    const refuse = async (name, body, error, raw) => {
+      const before = seen.length;
+      const res = raw === undefined ? await call(body) : await call(null, { raw });
+      assert.equal(res.status, 400, name);
+      assert.deepEqual(await res.json(), { error }, name);
+      assert.equal(seen.length, before, `${name} made an outgoing fetch`);
+    };
+    const accept = async (name, body) => {
+      const before = seen.length;
+      const res = await call(body);
+      assert.equal(res.status, 200, name);
+      assert.equal(seen.length, before + 1, `${name} did not ask Google once`);
+    };
+    // (1) a key outside the allowed set: unknown_field, before every other fault.
+    await refuse("extra key", { ...lookupBody(), x: 1 }, "unknown_field");
+    await refuse("extra key with a bad op", { op: "cancel", x: 1 }, "unknown_field");
+    await refuse("extra key with a missing text", { op: "lookup", field: "restaurant", x: 1 }, "unknown_field");
+    await refuse("a stray key beside a lookup", { ...lookupBody(), phone: "1" }, "unknown_field");
+    // (2) an op outside fields, submit, lookup: invalid_field, before a missing key.
+    for (const op of ["cancel", "LOOKUP", "Lookup", "", 5, null, true, ["lookup"]]) {
+      await refuse(`op ${JSON.stringify(op)}`, lookupBody({ op }), "invalid_field");
+    }
+    await refuse("bad op and nothing else", { op: "cancel" }, "invalid_field");
+    // (3) no op, or a key lookup requires missing: missing_field, before a key the op does not allow.
+    await refuse("no op", { field: "restaurant", text: "Tartine" }, "missing_field");
+    await refuse("no field", without(lookupBody(), "field"), "missing_field");
+    await refuse("no text", without(lookupBody(), "text"), "missing_field");
+    await refuse("op alone", { op: "lookup" }, "missing_field");
+    await refuse("only near", { op: "lookup", near }, "missing_field");
+    await refuse("no text and a request_id", { op: "lookup", field: "restaurant", request_id: ID }, "missing_field");
+    // (4) a key the op does not allow: invalid_field, before field, text and near are looked at.
+    await refuse("request_id beside lookup", lookupBody({ request_id: ID }), "invalid_field");
+    await refuse("values beside lookup", lookupBody({ values: values() }), "invalid_field");
+    await refuse("a bad field and a request_id", lookupBody({ field: "nope", request_id: ID }), "invalid_field");
+    await refuse("field beside fields", { op: "fields", field: "restaurant" }, "invalid_field");
+    await refuse("text beside fields", { op: "fields", text: "Tartine" }, "invalid_field");
+    await refuse("near beside fields", { op: "fields", near }, "invalid_field");
+    await refuse("field beside submit", valid({}, { field: "restaurant" }), "invalid_field");
+    await refuse("text beside submit", valid({}, { text: "Tartine" }), "invalid_field");
+    await refuse("near beside submit", valid({}, { near }), "invalid_field");
+    // (5) a field that is not a lookup field, a bad text, a near that is not an object: invalid_field, before the keys of near are read.
+    for (const field of ["party_size", "start", "name", "note", "Restaurant", " restaurant", "", 5, null, true, ["restaurant"]]) {
+      await refuse(`field ${JSON.stringify(field)}`, lookupBody({ field }), "invalid_field");
+    }
+    for (const [name, text] of [
+      ["one code point", "a"],
+      ["one code point and spaces", "  a  "],
+      ["spaces only", "    "],
+      ["empty", ""],
+      ["81 emoji", PIZZA.repeat(81)],
+      ["a zero-width space", "ab​"],
+      ["an inner line feed", "ab\ncd"],
+      ["a trailing line feed", "ab\n"],
+      ["a control character", "ab\u0007"],
+      ["a line separator", "ab cd"],
+      ["a number", 5],
+      ["null", null],
+      ["a list", ["ab"]],
+    ]) {
+      await refuse(`text: ${name}`, lookupBody({ text }), "invalid_field");
+    }
+    for (const bad of [5, "x", null, [], [1, 2], true]) {
+      await refuse(`near ${JSON.stringify(bad)}`, lookupBody({ near: bad }), "invalid_field");
+    }
+    // (6) a key of near outside latitude and longitude: unknown_field, before a missing key or a bad value.
+    await refuse("near with a third key", lookupBody({ near: { ...near, altitude: 1 } }), "unknown_field");
+    await refuse("near with a third key and a bad value", lookupBody({ near: { latitude: "x", longitude: 0, altitude: 1 } }), "unknown_field");
+    await refuse("near with wrong keys only", lookupBody({ near: { lat: 1, lng: 2 } }), "unknown_field");
+    // (7) a key of near missing: missing_field, before a bad value.
+    await refuse("near without longitude", lookupBody({ near: { latitude: 37.77 } }), "missing_field");
+    await refuse("near without latitude", lookupBody({ near: { longitude: -122.42 } }), "missing_field");
+    await refuse("empty near", lookupBody({ near: {} }), "missing_field");
+    await refuse("a bad latitude and no longitude", lookupBody({ near: { latitude: "x" } }), "missing_field");
+    // (8) a bad value of near: invalid_field.
+    for (const [name, bad] of [
+      ["latitude as text", { latitude: "37.77", longitude: -122.42 }],
+      ["longitude as text", { latitude: 37.77, longitude: "-122.42" }],
+      ["latitude null", { latitude: null, longitude: -122.42 }],
+      ["longitude true", { latitude: 37.77, longitude: true }],
+      ["latitude above 90", { latitude: 90.01, longitude: 0 }],
+      ["latitude below -90", { latitude: -90.01, longitude: 0 }],
+      ["longitude above 180", { latitude: 0, longitude: 180.01 }],
+      ["longitude below -180", { latitude: 0, longitude: -180.01 }],
+    ]) {
+      await refuse(`near: ${name}`, lookupBody({ near: bad }), "invalid_field");
+    }
+    await refuse(
+      "near with a latitude that is not finite",
+      null,
+      "invalid_field",
+      '{"op":"lookup","field":"restaurant","text":"Tartine","near":{"latitude":1e999,"longitude":0}}',
+    );
+    // Several faults at once: one answer, and still no fetch.
+    await refuse("field, text and near all bad", lookupBody({ field: "nope", text: "a", near: 5 }), "invalid_field");
+    await refuse("a bad text and a third key of near", lookupBody({ text: "a", near: { ...near, altitude: 1 } }), "invalid_field");
+    await refuse("a bad field and a missing key of near", lookupBody({ field: "nope", near: { latitude: 1 } }), "invalid_field");
+    assert.equal(seen.length, 0, "an invalid lookup reached Google");
+    // Positive controls: the valid request makes exactly one fetch, and so do the edges.
+    await accept("valid request", lookupBody());
+    await accept("valid request with near", lookupBody({ near }));
+    await accept("80 emoji", lookupBody({ text: PIZZA.repeat(80) }));
+    await accept("two code points", lookupBody({ text: "ab" }));
+    await accept("a padded text", lookupBody({ text: "  ab  " }));
+    await accept("near at one pair of corners", lookupBody({ near: { latitude: 90, longitude: 180 } }));
+    await accept("near at the other pair of corners", lookupBody({ near: { latitude: -90, longitude: -180 } }));
+    await accept("near at zero", lookupBody({ near: { latitude: 0, longitude: 0 } }));
+    assert.equal(seen.length, 8);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("AC-BOOKING-005 B20: a valid lookup asks Google Places once with the Worker's own key and answers four keys", async () => {
+  const keyed = { ...env, GOOGLE_MAPS_KEY: "gk-sentinel-5521" };
+  const near = { latitude: 37.77, longitude: -122.42 };
+  const results = Array.from({ length: 7 }, (_, i) => placeOf(`Place ${i}`, `${i} Main St, San Francisco, CA`, 37.7 + i / 100, -122.4 - i / 100));
+  const seen = mockPlaces(() => placesAnswer({ places: results }));
+  try {
+    const res = await call(lookupBody({ text: "  Tartine  ", near }), { e: keyed });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type"), /application\/json/);
+    const text = await res.text();
+    const body = JSON.parse(text);
+    // Exactly one request, to Google's text search, with the Worker's key and the fixed mask and nothing else of the app.
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, PLACES_URL);
+    assert.equal(seen[0].init.method, "POST");
+    assert.deepEqual(Object.fromEntries(new Headers(seen[0].init.headers)), {
+      "content-type": "application/json",
+      "x-goog-api-key": "gk-sentinel-5521",
+      "x-goog-fieldmask": "places.displayName,places.formattedAddress,places.location",
+    });
+    assert.deepEqual(JSON.parse(seen[0].init.body), {
+      textQuery: "Tartine",
+      languageCode: "en",
+      regionCode: "US",
+      pageSize: 5,
+      locationBias: { circle: { center: { latitude: 37.77, longitude: -122.42 }, radius: 50000 } },
+    });
+    // The answer: four keys in this order, at most 5 candidates in Google's order, three keys each.
+    assert.deepEqual(Object.keys(body), ["partner", "simulated", "field", "candidates"]);
+    assert.equal(body.partner, "Example Tables");
+    assert.equal(body.simulated, true);
+    assert.equal(body.field, "restaurant");
+    assert.deepEqual(
+      body.candidates,
+      results.slice(0, 5).map((place) => candidateOf(place.displayName.text, place.formattedAddress, place.location.latitude, place.location.longitude)),
+    );
+    for (const candidate of body.candidates) {
+      assert.deepEqual(Object.keys(candidate), ["name", "address", "location"]);
+      assert.deepEqual(Object.keys(candidate.location), ["latitude", "longitude"]);
+    }
+    // The key is in no answer body and no answer header.
+    assert.equal(text.includes("gk-sentinel-5521"), false);
+    assert.equal(JSON.stringify(Object.fromEntries(res.headers)).includes("gk-sentinel-5521"), false);
+
+    // With no near there is no locationBias at all, and the text is sent trimmed.
+    const plain = await call(lookupBody({ text: "  ab " }), { e: keyed });
+    assert.equal(plain.status, 200);
+    assert.equal(seen.length, 2);
+    assert.deepEqual(JSON.parse(seen[1].init.body), { textQuery: "ab", languageCode: "en", regionCode: "US", pageSize: 5 });
+    // An empty result list is a 200 with no candidates.
+    mockPlaces(() => placesAnswer({ places: [] }));
+    const none = await call(lookupBody(), { e: keyed });
+    assert.equal(none.status, 200);
+    assert.deepEqual(await none.json(), { partner: "Example Tables", simulated: true, field: "restaurant", candidates: [] });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("AC-BOOKING-005 B21: a bad Google result is dropped alone and a failing upstream is a 502 with no upstream text", async () => {
+  const keyed = { ...env, GOOGLE_MAPS_KEY: "gk-sentinel-5521" };
+  const fine = (n) => placeOf(`Fine ${n}`, `${n} Market St, San Francisco, CA`, 37.7 + n / 100, -122.4 - n / 100);
+  const wanted = [1, 2, 3, 4].map((n) => candidateOf(`Fine ${n}`, `${n} Market St, San Francisco, CA`, 37.7 + n / 100, -122.4 - n / 100));
+  const location = { latitude: 37.76, longitude: -122.42 };
+  const bad = [
+    ["no displayName", { formattedAddress: "1 Main St", location }],
+    ["displayName without text", { displayName: {}, formattedAddress: "1 Main St", location }],
+    ["a name that is not a string", { displayName: { text: 5 }, formattedAddress: "1 Main St", location }],
+    ["an empty name", placeOf("", "1 Main St")],
+    ["a name of spaces", placeOf("   ", "1 Main St")],
+    ["a name of 81 emoji", placeOf(PIZZA.repeat(81), "1 Main St")],
+    ["a left-to-right mark in the name", placeOf("Tar‎tine", "1 Main St")],
+    ["a line feed in the name", placeOf("Tar\ntine", "1 Main St")],
+    ["no address", { displayName: { text: "Tartine" }, location }],
+    ["an address that is not a string", { displayName: { text: "Tartine" }, formattedAddress: 5, location }],
+    ["an empty address", placeOf("Tartine", "")],
+    ["an address of spaces", placeOf("Tartine", "   ")],
+    ["an address of 121 emoji", placeOf("Tartine", PIZZA.repeat(121))],
+    ["a control character in the address", placeOf("Tartine", "1 Main\u0007 St")],
+    ["no location", { displayName: { text: "Tartine" }, formattedAddress: "1 Main St" }],
+    ["a location that is not an object", { displayName: { text: "Tartine" }, formattedAddress: "1 Main St", location: "here" }],
+    ["a latitude as text", placeOf("Tartine", "1 Main St", "37.76", -122.42)],
+    ["a latitude of 91", placeOf("Tartine", "1 Main St", 91, -122.42)],
+    ["a latitude of -91", placeOf("Tartine", "1 Main St", -91, -122.42)],
+    ["a longitude of 181", placeOf("Tartine", "1 Main St", 37.76, 181)],
+    ["a longitude of -181", placeOf("Tartine", "1 Main St", 37.76, -181)],
+    ["a latitude that is not finite", placeOf("Tartine", "1 Main St", null, -122.42)],
+    ["a null element", null],
+    ["a number element", 5],
+    ["a text element", "Tartine"],
+    ["a list element", [1]],
+  ];
+  const kept = [placeOf(PIZZA.repeat(80), "80 Pizza Rd"), placeOf("Tartine", PIZZA.repeat(120))];
+  const keptWanted = [candidateOf(PIZZA.repeat(80), "80 Pizza Rd"), candidateOf("Tartine", PIZZA.repeat(120))];
+  const ask = async (payload) => {
+    mockPlaces(() => placesAnswer(payload));
+    return call(lookupBody(), { e: keyed });
+  };
+  try {
+    // Each bad result alone, between good ones: the good ones are kept in order.
+    for (const [name, one] of bad) {
+      const res = await ask({ places: [fine(1), fine(2), one, fine(3), fine(4)] });
+      assert.equal(res.status, 200, name);
+      assert.deepEqual((await res.json()).candidates, wanted, name);
+    }
+    // All of them at once, mixed with the good ones.
+    const mixed = bad.flatMap(([, one], i) => (i < 4 ? [one, fine(i + 1)] : [one]));
+    const all = await ask({ places: mixed });
+    assert.equal(all.status, 200);
+    assert.deepEqual((await all.json()).candidates, wanted);
+    // Positive control: the same answer with the bad results removed gives the same list.
+    const clean = await ask({ places: [fine(1), fine(2), fine(3), fine(4)] });
+    assert.deepEqual((await clean.json()).candidates, wanted);
+    // The edges that are kept: 80 code points of name, 120 of address.
+    const edges = await ask({ places: kept });
+    assert.deepEqual((await edges.json()).candidates, keptWanted);
+    // Bad results do not use up the five places.
+    const crowded = await ask({ places: [...bad.map(([, one]) => one), ...[1, 2, 3, 4, 5, 6].map(fine)] });
+    assert.deepEqual((await crowded.json()).candidates.map((c) => c.name), ["Fine 1", "Fine 2", "Fine 3", "Fine 4", "Fine 5"]);
+
+    // An answer with nothing to list is an empty list.
+    for (const [name, payload] of [
+      ["an object without places", {}],
+      ["places null", { places: null }],
+      ["places empty", { places: [] }],
+      ["only bad results", { places: bad.map(([, one]) => one) }],
+    ]) {
+      const res = await ask(payload);
+      assert.equal(res.status, 200, name);
+      assert.deepEqual(await res.json(), { partner: "Example Tables", simulated: true, field: "restaurant", candidates: [] }, name);
+    }
+
+    // A failing upstream is one fixed 502, whatever it said.
+    const secret = "SECRET-UPSTREAM-TEXT-8841";
+    const failures = [
+      [
+        "a thrown fetch",
+        () => {
+          throw new Error(secret);
+        },
+      ],
+      ["a 500", () => new Response(secret, { status: 500 })],
+      ["a 403 with a JSON error", () => placesAnswer({ error: { message: secret } }, 403)],
+      ["a 200 that is not JSON", () => new Response(secret, { status: 200 })],
+      ["a 200 null", () => placesAnswer(null)],
+      ["a 200 list", () => placesAnswer([{ places: [] }])],
+      ["a 200 number", () => placesAnswer(5)],
+      ["places as text", () => placesAnswer({ places: secret })],
+      ["places as an object", () => placesAnswer({ places: { 0: fine(1) } })],
+      ["places as a number", () => placesAnswer({ places: 5 })],
+    ];
+    for (const [name, respond] of failures) {
+      const seen = mockPlaces(respond);
+      const res = await call(lookupBody(), { e: keyed });
+      const text = await res.text();
+      assert.equal(res.status, 502, name);
+      assert.equal(text, JSON.stringify({ error: "upstream_failed" }), name);
+      assert.equal(seen.length, 1, `${name}: one fetch`);
+      assert.equal(text.includes(secret) || text.includes("gk-sentinel-5521"), false, name);
+    }
+
+    // No key: 503 and no fetch, an empty key too.
+    for (const key of [undefined, ""]) {
+      const seen = mockPlaces(() => placesAnswer({ places: [] }));
+      const res = await call(lookupBody(), { e: { ...env, GOOGLE_MAPS_KEY: key } });
+      await expectError(res, 503, "google_key_not_configured");
+      assert.equal(seen.length, 0);
+    }
+    // The other two ops do not need the key.
+    const noKey = { ...env, GOOGLE_MAPS_KEY: undefined };
+    assert.equal((await call({ op: "fields" }, { e: noKey })).status, 200);
+    assert.equal((await call(valid(), { e: noKey })).status, 200);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });

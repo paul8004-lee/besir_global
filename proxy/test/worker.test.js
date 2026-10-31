@@ -93,6 +93,41 @@ test("/places and /routes need a field mask and send the Google key", async () =
   assert.equal(seen[1].url, "https://routes.googleapis.com/directions/v2:computeRoutes");
 });
 
+test("/booking lookup ignores client Google headers, keeps its own key and writes no log line", async () => {
+  const realFetch = globalThis.fetch;
+  const levels = ["log", "info", "warn", "error", "debug"];
+  const real = Object.fromEntries(levels.map((level) => [level, console[level]]));
+  let logged = 0;
+  for (const level of levels) console[level] = () => (logged += 1);
+  try {
+    // The spy counts: a deliberate call is seen.
+    console.warn("deliberate");
+    assert.equal(logged, 1);
+    logged = 0;
+    const lookup = { op: "lookup", field: "restaurant", text: "Tartine" };
+    const hostile = { "x-goog-fieldmask": "places.id", "x-goog-api-key": "client-key", authorization: "Bearer client" };
+    const seen = mockUpstream(200, { places: [{ displayName: { text: "Tartine" }, formattedAddress: "600 Guerrero St", location: { latitude: 37.76, longitude: -122.42 } }] });
+    const ok = await call("/booking", { body: lookup, headers: hostile });
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.json()).candidates.length, 1);
+    assert.equal(seen.length, 1);
+    const sent = new Headers(seen[0].init.headers);
+    assert.equal(sent.get("x-goog-api-key"), "g-test");
+    assert.equal(sent.get("x-goog-fieldmask"), "places.displayName,places.formattedAddress,places.location");
+    assert.equal(sent.get("authorization"), null);
+    // The route that does take a client mask still wants one.
+    assert.equal((await call("/places", { body: { textQuery: "ramen" } })).status, 400);
+    // A lookup that fails upstream is a 502 and writes nothing either.
+    mockUpstream(500, { error: "down" });
+    const failed = await call("/booking", { body: lookup });
+    assert.equal(failed.status, 502);
+    assert.equal(logged, 0);
+  } finally {
+    for (const level of levels) console[level] = real[level];
+    globalThis.fetch = realFetch;
+  }
+});
+
 test("unknown path and non-POST are refused", async () => {
   assert.equal((await call("/nope")).status, 404);
   assert.equal((await call("/ai", { method: "GET" })).status, 405);

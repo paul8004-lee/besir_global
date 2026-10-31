@@ -1052,7 +1052,15 @@ final class AgentToolbox {
         let fieldCard = AgentFieldCard(header: spec.entry.title, rows: rows, favorites: store.favorites, search: { [self] query in
             let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
             return await (placeSearchProvider?() ?? store.placeSearch).search(query, near: center)
-        }, now: { [self] in now() })
+        }, now: { [self] in now() }, candidates: { [self] key, text in
+            // A place row the partner resolves asks the partner's own route, never Google. The device position is read when the
+            // lookup fires; the client rounds it. Each lookup is a flow of its own, apart from the Confirm flow.
+            let origin = deviceOrigin().map { (latitude: $0.latitude, longitude: $0.longitude) }
+            switch await partnerClient().candidates(of: spec, field: key, text: text, near: origin, flow: ConnectionLog.beginFlow()) {
+            case .success(let places): return .found(places)
+            case .failure: return .failed
+            }
+        })
         let requestID = UUID().uuidString
         return .card(AgentCard(fieldCard: fieldCard, showsGoogleMark: spec.fields.contains { $0.kind == .place }) { [self] in
             // The one snapshot of the model (Confirm froze it): every use below reads it, never a value from the build.
@@ -1095,6 +1103,10 @@ final class AgentToolbox {
             minutes = length
         }
 
+        // The booked entry's place is the candidate tapped in the first lookup field of the partner's own order; an unmarked place
+        // field, even an earlier one, and a later marked one never supply it.
+        let place = spec.fields.first { $0.canLookUp }.flatMap { taken.place($0.key) }
+
         let flow = ConnectionLog.beginFlow()
         let answer = await partnerClient().submit(PartnerRequest(requestID: requestID, values: items), to: spec, flow: flow)
         // Cancellation is checked after the answer is known and before anything is written.
@@ -1106,14 +1118,15 @@ final class AgentToolbox {
             let result = Self.encode(["status": "declined", "partner": spec.entry.name, "simulated": true, "message": AgentPartner.declinedMessage])
             return (AgentResolution(result: result, notice: nil), .notApplied)
         case .success(.confirmed(let results)):
-            return await actOnPartner(spec, results: results, scheduleOn: scheduleOn, skipped: schedulable && !scheduleOn, minutes: minutes, flow: flow)
+            return await actOnPartner(spec, results: results, scheduleOn: scheduleOn, skipped: schedulable && !scheduleOn, minutes: minutes,
+                                      place: place, flow: flow)
         }
     }
 
     /// Acting by kind, from the answer only: a `time` item becomes the entry when the switch was on, a `money` item goes to the
     /// budget as an estimate in the week of the `time` item (this week when there is none), a `text` item stays in the reply.
     private func actOnPartner(_ spec: PartnerSpec, results: [PartnerResultItem], scheduleOn: Bool, skipped: Bool, minutes: Int,
-                              flow: UUID) async -> (AgentResolution, AgentCardMark) {
+                              place: Place?, flow: UUID) async -> (AgentResolution, AgentCardMark) {
         var start: Date?
         var itemName: String?
         for item in results {
@@ -1125,7 +1138,7 @@ final class AgentToolbox {
         var entryID: UUID?
         if scheduleOn, let start, let itemName {
             let made = await store.addActivityWithTravel(
-                title: AgentPartner.entryTitle(partner: spec.entry.name, item: itemName), location: nil, startDate: start,
+                title: AgentPartner.entryTitle(partner: spec.entry.name, item: itemName), location: place, startDate: start,
                 endDate: start.addingTimeInterval(TimeInterval(minutes * 60)), travelFrom: nil, returnTo: nil, outboundMode: .walk,
                 returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0, syncToCalendar: store.calendarSyncDefault, travelSecondsHint: nil)
             entryID = made.activityId
