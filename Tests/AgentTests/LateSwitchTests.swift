@@ -579,3 +579,1172 @@ final class LateSwitchTests: XCTestCase {
         XCTAssertEqual(edited.arrival, at(11, 2, 19, 30))
     }
 }
+
+// MARK: - The steps (milestone M4, T01-T26)
+
+/// A value two threads may share: the stubs call their hooks from wherever the transport runs.
+final class SwitchBox<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+
+    init(_ value: Value) { stored = value }
+
+    var value: Value {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
+    }
+}
+
+/// Names the requests that reach the stub partners in the order they arrive, and runs a hook inside the send of a named one.
+final class SwitchCalls: @unchecked Sendable {
+    private let lock = NSLock()
+    private var names: [String] = []
+    private var hooks: [String: @Sendable () -> Void] = [:]
+
+    var list: [String] { lock.lock(); defer { lock.unlock() }; return names }
+
+    func count(_ name: String) -> Int { list.filter { $0 == name }.count }
+
+    func add(_ name: String) {
+        lock.lock()
+        names.append(name)
+        let hook = hooks[name]
+        lock.unlock()
+        hook?()
+    }
+
+    func on(_ name: String, _ hook: @escaping @Sendable () -> Void) {
+        lock.lock()
+        hooks[name] = hook
+        lock.unlock()
+    }
+}
+
+final class SwitchIDs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var made = 0
+
+    func next() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        made += 1
+        return String(format: "00000000-0000-4000-8000-%012d", made)
+    }
+}
+
+@MainActor
+final class SwitchClock {
+    var now: Date
+    var zone: TimeZone
+
+    init(now: Date, zone: TimeZone) {
+        self.now = now
+        self.zone = zone
+    }
+}
+
+extension LateSwitchCenter.State {
+    var offerValue: LateSwitchCenter.Offer? {
+        if case .offer(let value) = self { return value }
+        return nil
+    }
+
+    var noteText: String? {
+        if case .note(let text) = self { return text }
+        return nil
+    }
+
+    var resultValue: LateSwitchCenter.Result? {
+        if case .finished(let value) = self { return value }
+        return nil
+    }
+
+    var isRunning: Bool {
+        if case .running = self { return true }
+        return false
+    }
+
+    var isChecking: Bool {
+        if case .checking = self { return true }
+        return false
+    }
+}
+
+/// The scene of the worked case on a Monday evening in `zone`: a booked entry at 19:00 with one arrival leg, a ledger entry of
+/// $60.00 for the booking, a record with a quantity hint of 2, and stub partners for the budget, the delivery and the cancel. Every
+/// file is a temporary one; the clock and the zone are the rig's.
+@MainActor
+final class SwitchRig {
+    nonisolated static let host = "switch-host.invalid"
+    nonisolated static let token = "switch-token-0001"
+    nonisolated static let config = AppConfig(kakaoJsKey: "", proxyBaseURL: "https://" + host, appToken: token)
+    nonisolated static let unconfigured = AppConfig(kakaoJsKey: "", proxyBaseURL: "", appToken: "")
+    nonisolated static let seoul = TimeZone(identifier: "Asia/Seoul")!
+    nonisolated static let losAngeles = TimeZone(identifier: "America/Los_Angeles")!
+    nonisolated static let bistro = Place(name: "Test Bistro", address: "5 Example Road", latitude: 37.5, longitude: 127.0)
+    nonisolated static let home = Place(name: "Home", address: "1 Home Road", latitude: 37.4, longitude: 127.1)
+    nonisolated static let deviceFix = Place(name: "Current location", address: "", latitude: 37.4, longitude: 127.1)
+    nonisolated static let requestID = "3f2b8c1e-5d4a-4e7b-9a60-1c2d3e4f5a6b"
+    nonisolated static let spendID = "spend-1"
+    nonisolated static let week = "2026-11-02"
+    nonisolated static let cancelledBody = #"{"partner":"Example Tables","simulated":true,"status":"cancelled"}"#
+    nonisolated static let declinedBody = #"{"partner":"Example Tables","reason":"no_booking","simulated":true,"status":"declined"}"#
+    nonisolated static let unauthorized = #"{"error":"unauthorized"}"#
+    nonisolated static let bookingEntry = BudgetEntry(requestID: spendID, weekStart: week, amountCents: 6000, isEstimate: true)
+
+    /// The packets of a full success, in order, without the calendar hop.
+    nonisolated static let fullFlow = ["Budget left asked", "Budget left answered", "Options requested", "Options received",
+                           "Delivery of 2 items requested", "Order confirmed", "Example Tables: Cancellation requested",
+                           "Example Tables: Request cancelled", "Spend sent", "Spend recorded"]
+
+    let zone0: TimeZone
+    let clock: SwitchClock
+    let store: Store
+    let box: BookingConfigBox
+    let budget = BudgetToolPartner()
+    let delivery = DeliveryToolPartner()
+    let tables: BookingSendRecorder
+    let places: PlacesTransportStub
+    let log: ConnectionLog
+    let ledger: BudgetLedger
+    let ledgerFile: URL
+    let records: PartnerRecords
+    let recordsFile: URL
+    let recordsGate = SwitchableWrite()
+    let orders: DeliveryOrderLog
+    let calls = SwitchCalls()
+    let ids = SwitchIDs()
+    let activityID: UUID
+    /// The leg as the view hands it to the center (its origin is nil when the scene asks for none).
+    let event: ScheduledEvent
+    let outcome: ReplanOutcome
+    private(set) var center: LateSwitchCenter!
+
+    static func time(_ zone: TimeZone, _ hour: Int, _ minute: Int, _ second: Double = 0, day: Int = 2) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let parts = DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute)
+        return calendar.date(from: parts)!.addingTimeInterval(second)
+    }
+
+    func at(_ hour: Int, _ minute: Int, _ second: Double = 0, day: Int = 2) -> Date {
+        Self.time(zone0, hour, minute, second, day: day)
+    }
+
+    /// A late result of the leg checked at `checkedAt` (the live travel time is 24 minutes 30 seconds).
+    static func makeOutcome(leg: ScheduledEvent, zone: TimeZone, checkedAt: Date, liveTravel: TimeInterval = 24 * 60 + 30) -> ReplanOutcome {
+        Replan.classify(eventID: leg.id, trigger: .appOpen, checkedAt: checkedAt, inputs: ReplanInputs(event: leg),
+                        referenceDeparture: time(zone, 18, 20), referenceTravel: 25 * 60, liveTravel: liveTravel,
+                        noTrafficTravel: nil, now: checkedAt)
+    }
+
+    init(_ test: XCTestCase, zone: TimeZone = SwitchRig.seoul, sync: Bool = false, hint: Int? = 2, estimate: Int? = 6000,
+         ledgerAmount: Int? = 6000, withRecord: Bool = true, place: Place = SwitchRig.bistro, origin: Place? = SwitchRig.home,
+         extraSpent: Int = 0) async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("late-switch-\(UUID().uuidString)", isDirectory: true)
+        test.addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let clock = SwitchClock(now: Self.time(zone, 18, 47), zone: zone)
+        let store = EmptyStore.make()
+        store.config = AppConfig()
+        let start = Self.time(zone, 19, 0)
+        let made = await store.addActivityWithTravel(
+            title: "Dinner at Test Bistro (Simulated)", location: place, startDate: start, endDate: start.addingTimeInterval(3600),
+            travelFrom: origin ?? Self.home, returnTo: nil, outboundMode: .car, returnMode: .car, bufferMinutes: 0,
+            notifyLeadMinutes: 0, notifyEnabled: false, syncToCalendar: sync, travelSecondsHint: 1470)
+        var leg = try XCTUnwrap(store.events.first { $0.linkedActivityId == made.activityId })
+        if origin == nil { leg.origin = nil }
+        let outcome = Self.makeOutcome(leg: leg, zone: zone, checkedAt: clock.now)
+        XCTAssertEqual(outcome.kind, .late, "the control: the scene's result is late")
+
+        let ledgerFile = folder.appendingPathComponent(BudgetLedger.fileName)
+        let ledger = BudgetLedger(fileURL: ledgerFile)
+        if let ledgerAmount {
+            ledger.add(BudgetEntry(requestID: Self.spendID, weekStart: Self.week, amountCents: ledgerAmount, isEstimate: true))
+        }
+        if extraSpent > 0 {
+            ledger.add(BudgetEntry(requestID: "other-1", weekStart: Self.week, amountCents: extraSpent, isEstimate: false))
+        }
+        let recordsFile = folder.appendingPathComponent(PartnerRecords.fileName)
+        let gate = recordsGate
+        let records = PartnerRecords(fileURL: recordsFile, write: gate.write)
+        if withRecord {
+            records.add(PartnerRecord(activityID: made.activityId, partnerID: "booking", partnerName: "Example Tables", route: "/booking",
+                                      requestID: Self.requestID, estimateCents: estimate, quantityHint: hint,
+                                      spendRequestID: ledgerAmount == nil ? nil : Self.spendID, switchStarted: false))
+        }
+
+        self.zone0 = zone
+        self.clock = clock
+        self.store = store
+        self.box = BookingConfigBox(Self.config)
+        self.tables = BookingSendRecorder(body: Self.cancelledBody)
+        self.places = PlacesTransportStub.answering(with: PlacesTestSupport.nearbyAnswer([(name: "Cafe One", meters: 100)]))
+        self.log = ConnectionLog(fileURL: folder.appendingPathComponent(ConnectionLog.fileName), secrets: { [Self.token, Self.host] })
+        self.ledger = ledger
+        self.ledgerFile = ledgerFile
+        self.records = records
+        self.recordsFile = recordsFile
+        self.orders = DeliveryOrderLog(fileURL: folder.appendingPathComponent(DeliveryOrderLog.fileName))
+        self.activityID = made.activityId
+        self.event = leg
+        self.outcome = outcome
+
+        let calls = self.calls
+        let budget = self.budget
+        let delivery = self.delivery
+        budget.duringSend = {
+            let op = budget.body(budget.requests.count - 1)?["op"] as? String ?? "?"
+            calls.add("budget-\(op)")
+        }
+        delivery.duringSend = {
+            let op = delivery.body(delivery.requests.count - 1)?["op"] as? String ?? "?"
+            calls.add("delivery-\(op)")
+        }
+        tables.duringSend = { calls.add("cancel") }
+        center = LateSwitchCenter(dependencies: dependencies(records: records))
+    }
+
+    func dependencies(records: PartnerRecords) -> LateSwitchCenter.Dependencies {
+        let box = self.box
+        let ledger = self.ledger
+        let log = self.log
+        let budget = self.budget
+        let delivery = self.delivery
+        let tables = self.tables
+        let places = self.places
+        let clock = self.clock
+        let ids = self.ids
+        return LateSwitchCenter.Dependencies(
+            store: store,
+            budget: { BudgetClient(config: box.config, ledger: ledger, send: budget.send, connections: log) },
+            delivery: { DeliveryClient(config: box.config, send: delivery.send, connections: log) },
+            partners: { PartnerClient(config: box.config, send: tables.send, connections: log) },
+            ledger: ledger, records: records, orders: orders,
+            placeSearch: { PlaceSearch(config: PlacesTestSupport.config, transport: places.transport, connections: log) },
+            now: { clock.now }, zone: { clock.zone }, newID: { ids.next() }, log: log)
+    }
+
+    // MARK: Driving
+
+    var entry: ActivityBlock? { store.activity(id: activityID) }
+    var state: LateSwitchCenter.State? { center.states[activityID] }
+
+    func check(_ result: ReplanOutcome? = nil) async {
+        await center.check(event: event, outcome: result ?? outcome, store: store)
+    }
+
+    func offer() throws -> LateSwitchCenter.Offer { try XCTUnwrap(state?.offerValue, "an offer is shown") }
+
+    /// A later late result of the same leg; the clock moves to its check.
+    func laterOutcome() -> ReplanOutcome {
+        clock.now = at(18, 50)
+        return Self.makeOutcome(leg: event, zone: zone0, checkedAt: at(18, 50))
+    }
+
+    func restore() {
+        box.config = Self.config
+        budget.mode = .worker
+        delivery.mode = .worker
+    }
+
+    /// Waits until the center is neither checking nor running.
+    func settle() async {
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            if let current = state, current.isRunning || current.isChecking {
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            } else {
+                return
+            }
+        }
+        XCTFail("the center did not settle")
+    }
+
+    /// Waits until the tap has left the offer (running, a note, a result or a new read).
+    func untilTapped() async {
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            if state?.offerValue == nil { return }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTFail("the tap did not happen")
+    }
+
+    func tap() async {
+        center.confirm(activityID: activityID)
+        await settle()
+    }
+
+    func packets(in flow: UUID? = nil) async -> [ConnectionPacket] {
+        await log.flush()
+        return log.packets.filter { flow == nil || $0.flowID == flow }
+    }
+
+    func body(_ requests: [URLRequest], op: String) -> [String: Any]? {
+        for request in requests.reversed() {
+            if let data = request.httpBody, let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               object["op"] as? String == op { return object }
+        }
+        return nil
+    }
+
+    var orderBody: [String: Any]? { body(delivery.requests, op: "order") }
+    var spendBody: [String: Any]? { body(budget.requests, op: "spend") }
+
+    nonisolated static func mark(at url: URL) -> Bool? {
+        guard let data = try? Data(contentsOf: url), let list = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]],
+              let first = list.first else { return nil }
+        return first["switchStarted"] as? Bool
+    }
+
+    func resultLines() -> [String]? { state?.resultValue?.lines }
+}
+
+/// SPEC-LATESWITCH-001 (card t72), AC-LATESWITCH-005 to 008: the center that reads, offers, checks the tap and runs the steps.
+/// Every partner is a stub, the clock and the zone are injected, and every file is a temporary one.
+@MainActor
+final class LateSwitchStepsTests: XCTestCase {
+    private let seoul = SwitchRig.seoul
+    private let losAngeles = SwitchRig.losAngeles
+
+    private func sourceText(_ name: String) throws -> String {
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        return try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8)
+    }
+
+    private func summaries(_ packets: [ConnectionPacket]) -> [String] { packets.map(\.summary) }
+
+    /// What the booking was before the steps: nothing sent beyond the two reads, nothing changed.
+    private func assertUntouched(_ rig: SwitchRig, sent: [String] = ["budget-left", "delivery-options"], file: StaticString = #filePath,
+                                 line: UInt = #line) {
+        XCTAssertEqual(rig.calls.list, sent, file: file, line: line)
+        XCTAssertEqual(rig.ledger.entry(requestID: SwitchRig.spendID), SwitchRig.bookingEntry, file: file, line: line)
+        XCTAssertEqual(rig.ledger.spentCents(weekStart: SwitchRig.week), 6000, file: file, line: line)
+        XCTAssertEqual(rig.entry?.startDate, rig.at(19, 0), file: file, line: line)
+        XCTAssertEqual(rig.entry?.title, "Dinner at Test Bistro (Simulated)", file: file, line: line)
+        XCTAssertNotNil(rig.records.record(forActivity: rig.activityID), file: file, line: line)
+        XCTAssertTrue(rig.orders.orders.isEmpty, file: file, line: line)
+    }
+
+    private static func until(_ condition: @MainActor () async -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(5)
+        while Date() < deadline {
+            if await condition() { return }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("the condition did not come true")
+    }
+
+    // MARK: T01-T04 the steps
+
+    func testT01_FullSuccessRunsTheCallsInOrderWritesTheElevenPacketsUnderOneFlowAndShowsTheResultLines() async throws {
+        let rig = try await SwitchRig(self, sync: true)
+        await rig.check()
+        let offer = try rig.offer()
+        XCTAssertEqual(offer.evaluation.estimateLine, "Booking est. $60.00 - Delivery est. $33.00")
+        XCTAssertEqual(offer.evaluation.standingLine, "$167.00 left this week after the switch")
+        XCTAssertTrue(rig.center.canConfirm(activityID: rig.activityID))
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options"])
+
+        await rig.tap()
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options", "delivery-order", "cancel", "budget-spend"])
+        let flow = await rig.packets(in: offer.flow)
+        XCTAssertEqual(summaries(flow), SwitchRig.fullFlow + ["Event move sent"])
+        XCTAssertEqual(flow.map(\.from), [.besir, .budgetPartner, .besir, .deliveryPartner, .besir, .deliveryPartner, .besir, .partner,
+                                          .besir, .budgetPartner, .besir])
+        XCTAssertEqual(flow.map(\.to), [.budgetPartner, .besir, .deliveryPartner, .besir, .deliveryPartner, .besir, .partner, .besir,
+                                        .budgetPartner, .besir, .appleCalendar])
+        XCTAssertEqual(flow.last?.kind, .calendarSave)
+        XCTAssertTrue(flow.allSatisfy { $0.status == .ok })
+        let everything = await rig.packets()
+        XCTAssertEqual(everything.count, 11, "no packet outside the offer's flow")
+
+        XCTAssertEqual(rig.resultLines(), [
+            "Booking cancelled",
+            "Delivery DL-AB12CD arrives 7:12 PM",
+            "Schedule entry moved to 7:12 PM",
+            "Estimated total $33.00 sent to Example Budget (Simulated): $167.00 left this week."])
+        XCTAssertFalse(rig.center.canConfirm(activityID: rig.activityID))
+    }
+
+    func testT02_TheBookingsLedgerEntryIsRemovedAfterTheCancelAnswerAndBeforeTheSpendWhichCarriesTheDeliverysRequestIDAndTheArrivalsWeek() async throws {
+        let rig = try await SwitchRig(self)
+        let seen = SwitchBox<[String]>([])
+        let ledger = rig.ledger
+        rig.calls.on("cancel") { seen.value += ["cancel:" + (ledger.contains(requestID: SwitchRig.spendID) ? "in" : "out")] }
+        rig.calls.on("budget-spend") { seen.value += ["spend:" + (ledger.contains(requestID: SwitchRig.spendID) ? "in" : "out")] }
+        await rig.check()
+        await rig.tap()
+        XCTAssertEqual(seen.value, ["cancel:in", "spend:out"])
+
+        let order = try XCTUnwrap(rig.orderBody)
+        let orderID = try XCTUnwrap(order["request_id"] as? String)
+        let spend = try XCTUnwrap(rig.spendBody)
+        XCTAssertEqual(spend["request_id"] as? String, orderID)
+        XCTAssertEqual(spend["amount_cents"] as? Int, 3300)
+        XCTAssertEqual(spend["week_start"] as? String, "2026-11-02")
+        XCTAssertEqual(spend["spent_cents"] as? Int, 0, "the booking's entry was already released")
+        XCTAssertNil(rig.ledger.entry(requestID: SwitchRig.spendID))
+        XCTAssertEqual(rig.ledger.entry(requestID: orderID),
+                       BudgetEntry(requestID: orderID, weekStart: "2026-11-02", amountCents: 3300, isEstimate: true))
+        XCTAssertEqual(rig.ledger.spentCents(weekStart: "2026-11-02"), 3300)
+        XCTAssertTrue(rig.ledger.hasEstimate(weekStart: "2026-11-02"))
+    }
+
+    func testT03_TheEntryIsRetitledMovedToTheArrivalKeepsItsLengthPlaceAndLegAndTheLateLinesAndTheRecordAreGone() async throws {
+        let rig = try await SwitchRig(self)
+        let before = try XCTUnwrap(rig.entry)
+        XCTAssertNotNil(Replan.displayLines(for: rig.outcome, event: rig.event, now: rig.clock.now, timeZone: rig.zone0), "the control")
+        await rig.check()
+        await rig.tap()
+
+        let after = try XCTUnwrap(rig.entry)
+        XCTAssertEqual(after.title, "Dinner (Simulated)")
+        XCTAssertEqual(after.startDate, rig.at(19, 12))
+        XCTAssertEqual(after.endDate.timeIntervalSince(after.startDate), before.endDate.timeIntervalSince(before.startDate))
+        XCTAssertEqual(after.location, before.location)
+        let legs = rig.store.events.filter { $0.linkedActivityId == rig.activityID }
+        XCTAssertEqual(legs.count, 1, "the leg stays")
+        let moved = try XCTUnwrap(legs.first)
+        XCTAssertEqual(moved.arrivalDate, after.startDate, "the leg follows the entry")
+        XCTAssertNil(Replan.displayLines(for: rig.outcome, event: moved, now: rig.clock.now, timeZone: rig.zone0), "the late lines are gone")
+        XCTAssertNil(rig.records.record(forActivity: rig.activityID), "the record is removed after a move")
+        XCTAssertNil(SwitchRig.mark(at: rig.recordsFile), "and so is its file entry")
+    }
+
+    func testT04_EventMoveSentIsWrittenOnlyWhenTheMovedEntrySyncsToAppleCalendar() async throws {
+        for sync in [true, false] {
+            let rig = try await SwitchRig(self, sync: sync)
+            await rig.check()
+            let offer = try rig.offer()
+            await rig.tap()
+            let flow = await rig.packets(in: offer.flow)
+            let hops = flow.filter { $0.to == .appleCalendar }
+            XCTAssertEqual(hops.count, sync ? 1 : 0, "sync \(sync)")
+            XCTAssertEqual(flow.count, sync ? 11 : 10, "sync \(sync)")
+            if sync {
+                XCTAssertEqual(hops.first?.summary, "Event move sent")
+                XCTAssertEqual(hops.first?.kind, .calendarSave)
+                XCTAssertEqual(hops.first?.from, .besir)
+                XCTAssertEqual(hops.first?.status, .ok)
+                XCTAssertEqual(flow.last?.summary, "Event move sent", "it comes after the spend")
+            }
+            XCTAssertEqual(rig.resultLines()?.count, 4)
+        }
+    }
+
+    // MARK: T05-T08 the tap that sends nothing, or the delivery that does not come
+
+    func testT05_ADeclinedDeliveryShowsTheNoteAndLeavesEverythingElseAloneWithTheMarkCleared() async throws {
+        let rig = try await SwitchRig(self)
+        await rig.check()
+        let offer = try rig.offer()
+        rig.center.confirm(activityID: rig.activityID)
+        // The device zone changes before the request is made: the partner then reads an arrival outside its hours and declines it.
+        rig.clock.zone = rig.zone0 == seoul ? losAngeles : seoul
+        await rig.settle()
+
+        XCTAssertEqual(rig.state?.noteText, "The delivery could not be ordered. Nothing was changed.")
+        XCTAssertEqual(rig.orderBody?["arrive_at"] as? String, "2026-11-02T02:12", "the control: the order was made and refused")
+        assertUntouched(rig, sent: ["budget-left", "delivery-options", "delivery-order"])
+        XCTAssertEqual(rig.records.record(forActivity: rig.activityID)?.switchStarted, false)
+        XCTAssertEqual(SwitchRig.mark(at: rig.recordsFile), false)
+        let flow = await rig.packets(in: offer.flow)
+        XCTAssertEqual(summaries(flow).suffix(2), ["Delivery of 2 items requested", "Order not available"])
+        XCTAssertEqual(flow.last?.status, .declined)
+        XCTAssertEqual(flow.count, 6)
+    }
+
+    func testT06_NoProxyAndTheWorkers401ClearTheMarkOfflineAndTheOtherEndingsKeepItAndAFailedWriteOfTheMarkSendsNothing() async throws {
+        let endings: [(name: String, clears: Bool, before: (SwitchRig) -> Void, after: (SwitchRig) -> Void)] = [
+            ("no proxy", true, { _ in }, { $0.box.config = SwitchRig.unconfigured }),
+            ("401 with the Worker's body", true, { $0.delivery.mode = .status(401, SwitchRig.unauthorized) }, { _ in }),
+            ("401 with another body", false, { $0.delivery.mode = .status(401, "denied") }, { _ in }),
+            ("offline", false, { $0.delivery.mode = .error(URLError(.notConnectedToInternet)) }, { _ in }),
+            ("404", false, { $0.delivery.mode = .status(404, "Not found") }, { _ in }),
+            ("500", false, { $0.delivery.mode = .status(500, "oops") }, { _ in }),
+            ("a deviating 200", false, { $0.delivery.mode = .status(200, "{}") }, { _ in })]
+        for ending in endings {
+            let rig = try await SwitchRig(self)
+            await rig.check()
+            ending.before(rig)
+            rig.center.confirm(activityID: rig.activityID)
+            ending.after(rig)
+            await rig.settle()
+
+            let expected = ending.clears ? "The delivery could not be ordered. Nothing was changed."
+                                         : "The delivery could not be confirmed. Nothing else was changed."
+            XCTAssertEqual(rig.state?.noteText, expected, ending.name)
+            XCTAssertEqual(rig.records.record(forActivity: rig.activityID)?.switchStarted, !ending.clears, ending.name)
+            XCTAssertEqual(SwitchRig.mark(at: rig.recordsFile), !ending.clears, ending.name)
+            XCTAssertEqual(rig.calls.count("cancel"), 0, ending.name)
+            XCTAssertEqual(rig.calls.count("budget-spend"), 0, ending.name)
+            XCTAssertEqual(rig.ledger.entry(requestID: SwitchRig.spendID), SwitchRig.bookingEntry, ending.name)
+            XCTAssertEqual(rig.entry?.startDate, rig.at(19, 0), ending.name)
+            XCTAssertTrue(rig.orders.orders.isEmpty, ending.name)
+            // A later result: offered again only when the mark is clear.
+            rig.restore()
+            await rig.check(rig.laterOutcome())
+            XCTAssertEqual(rig.calls.count("budget-left"), ending.clears ? 2 : 1, ending.name)
+            XCTAssertEqual(rig.state?.offerValue != nil, ending.clears, ending.name)
+            if !ending.clears { XCTAssertEqual(rig.state?.noteText, expected, ending.name) }
+        }
+
+        // The mark is written before the request, on disk, and a failed write sends nothing and leaves it false.
+        let early = try await SwitchRig(self)
+        let atOrder = SwitchBox<Bool?>(nil)
+        let file = early.recordsFile
+        early.calls.on("delivery-order") { atOrder.value = SwitchRig.mark(at: file) }
+        await early.check()
+        await early.tap()
+        XCTAssertEqual(atOrder.value, true, "the mark was on disk when the delivery request arrived")
+
+        let failing = try await SwitchRig(self)
+        await failing.check()
+        failing.recordsGate.isFailing = true
+        await failing.tap()
+        XCTAssertEqual(failing.state?.noteText, "Nothing was changed.")
+        XCTAssertEqual(failing.records.record(forActivity: failing.activityID)?.switchStarted, false)
+        assertUntouched(failing)
+    }
+
+    func testT07_AnArrivalThatIsNoLongerUsableAtTheTapSendsNothingAndSaysSo() async throws {
+        let note = "That arrival time cannot be used. Nothing was changed."
+        // The minute passed while the offer was open.
+        let passed = try await SwitchRig(self)
+        await passed.check()
+        let offer = try passed.offer()
+        passed.clock.now = passed.at(19, 30)
+        await passed.tap()
+        XCTAssertEqual(passed.state?.noteText, note)
+        XCTAssertTrue(offer.card.isFrozen, "the card was frozen by the tap")
+        assertUntouched(passed)
+        XCTAssertEqual(passed.records.record(forActivity: passed.activityID)?.switchStarted, false)
+
+        // An edit outside the rule: after the hours, past 120 minutes, another week.
+        let edits: [(String, (SwitchRig) -> Date)] = [("after the hours", { $0.at(22, 30) }), ("past 120 minutes", { $0.at(21, 30) }),
+                                                      ("another week", { $0.at(19, 30, day: 9) })]
+        for (name, edit) in edits {
+            let rig = try await SwitchRig(self)
+            await rig.check()
+            let current = try rig.offer()
+            XCTAssertTrue(current.card.chooseTime(current.seed.arriveKey, edit(rig)), name)
+            await rig.tap()
+            XCTAssertEqual(rig.state?.noteText, note, name)
+            assertUntouched(rig)
+        }
+    }
+
+    func testT08_ATapWithoutTheEntryTheRecordOrTheProxyOrWithTheMarkSetSendsNothingAndSaysNothingWasChanged() async throws {
+        let vanish: [(String, (SwitchRig) -> Void)] = [
+            ("the record is gone", { _ = $0.records.remove(activityID: $0.activityID) }),
+            ("the entry is gone", { rig in if let entry = rig.entry { rig.store.deleteActivity(entry) } }),
+            ("the proxy is gone", { $0.box.config = SwitchRig.unconfigured }),
+            ("the mark is set", { _ = $0.records.setSwitchStarted(true, forActivity: $0.activityID) })]
+        for (name, change) in vanish {
+            let rig = try await SwitchRig(self)
+            await rig.check()
+            change(rig)
+            await rig.tap()
+            XCTAssertEqual(rig.state?.noteText, "Nothing was changed.", name)
+            XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options"], name)
+            XCTAssertTrue(rig.orders.orders.isEmpty, name)
+            XCTAssertEqual(rig.ledger.entry(requestID: SwitchRig.spendID), SwitchRig.bookingEntry, name)
+        }
+    }
+
+    // MARK: T09-T11 the endings after a confirmed delivery
+
+    func testT09_ADeclinedCancelKeepsTheLedgerEntryDoesNotMoveTheEntryRecordsTheDeliverySpendOnceAndWritesTheOrderRecord() async throws {
+        let rig = try await SwitchRig(self, sync: true)
+        rig.tables.result = .success((Data(SwitchRig.declinedBody.utf8), 200))
+        await rig.check()
+        let offer = try rig.offer()
+        await rig.tap()
+
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options", "delivery-order", "cancel", "budget-spend"])
+        XCTAssertEqual(rig.ledger.entry(requestID: SwitchRig.spendID), SwitchRig.bookingEntry, "the booking's entry stays")
+        XCTAssertEqual(rig.ledger.spentCents(weekStart: SwitchRig.week), 9300)
+        XCTAssertEqual(rig.calls.count("budget-spend"), 1)
+        XCTAssertEqual(rig.entry?.startDate, rig.at(19, 0), "the entry is not moved")
+        XCTAssertEqual(rig.entry?.title, "Dinner at Test Bistro (Simulated)")
+        XCTAssertNotNil(rig.records.record(forActivity: rig.activityID), "the record stays")
+        XCTAssertEqual(rig.orders.orders.count, 1)
+        XCTAssertNil(rig.orders.orders.first?.mealActivityID)
+        XCTAssertEqual(rig.resultLines(), [
+            "Delivery DL-AB12CD arrives 7:12 PM",
+            "The booking could not be cancelled.",
+            "Estimated total $33.00 sent to Example Budget (Simulated): $107.00 left this week."])
+        let flow = await rig.packets(in: offer.flow)
+        XCTAssertEqual(summaries(flow), Array(SwitchRig.fullFlow.prefix(7)) + ["Example Tables: Cancellation declined", "Spend sent", "Spend recorded"])
+        XCTAssertEqual(flow[7].status, .declined)
+        XCTAssertTrue(flow.allSatisfy { $0.to != .appleCalendar }, "nothing was moved")
+    }
+
+    func testT10_ACancelThatFailsLikeAnOldWorkersNotFoundEndsAsADeclinedOne() async throws {
+        let rig = try await SwitchRig(self, sync: true)
+        rig.tables.result = .success((Data("Not found".utf8), 404))
+        await rig.check()
+        let offer = try rig.offer()
+        await rig.tap()
+
+        XCTAssertEqual(rig.ledger.entry(requestID: SwitchRig.spendID), SwitchRig.bookingEntry)
+        XCTAssertEqual(rig.ledger.spentCents(weekStart: SwitchRig.week), 9300)
+        XCTAssertEqual(rig.calls.count("budget-spend"), 1)
+        XCTAssertEqual(rig.entry?.startDate, rig.at(19, 0))
+        XCTAssertNotNil(rig.records.record(forActivity: rig.activityID))
+        XCTAssertEqual(rig.orders.orders.count, 1)
+        XCTAssertNil(rig.orders.orders.first?.mealActivityID)
+        XCTAssertEqual(rig.resultLines()?[1], "The booking could not be cancelled.")
+        XCTAssertEqual(rig.resultLines()?.count, 3)
+        let flow = await rig.packets(in: offer.flow)
+        XCTAssertEqual(summaries(flow), Array(SwitchRig.fullFlow.prefix(6)) + ["Request failed", "Spend sent", "Spend recorded"])
+        XCTAssertEqual(flow[6].status, .failed)
+    }
+
+    func testT11_AFailedBudgetRequestAfterAGoodCancelUndoesNothingAndPutsTheReleasedEntryBackUnchanged() async throws {
+        let rig = try await SwitchRig(self, sync: true, extraSpent: 2500)
+        await rig.check()
+        let offer = try rig.offer()
+        let before = rig.ledger.spentCents(weekStart: SwitchRig.week)
+        XCTAssertEqual(before, 8500)
+        rig.budget.mode = .status(500, "oops")
+        await rig.tap()
+
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options", "delivery-order", "cancel", "budget-spend"])
+        XCTAssertEqual(rig.ledger.entry(requestID: SwitchRig.spendID), SwitchRig.bookingEntry, "put back unchanged")
+        XCTAssertEqual(rig.ledger.spentCents(weekStart: SwitchRig.week), before, "same sum")
+        XCTAssertTrue(rig.ledger.hasEstimate(weekStart: SwitchRig.week), "same estimate flag")
+        let deliveryID = try XCTUnwrap(rig.orderBody?["request_id"] as? String)
+        XCTAssertFalse(rig.ledger.contains(requestID: deliveryID), "no delivery entry")
+        XCTAssertEqual(rig.entry?.startDate, rig.at(19, 12), "the entry was moved")
+        XCTAssertNil(rig.records.record(forActivity: rig.activityID))
+        XCTAssertEqual(rig.orders.orders.count, 1)
+        XCTAssertEqual(rig.orders.orders.first?.mealActivityID, rig.activityID.uuidString)
+        XCTAssertEqual(rig.resultLines(), [
+            "Booking cancelled",
+            "Delivery DL-AB12CD arrives 7:12 PM",
+            "Schedule entry moved to 7:12 PM",
+            "The estimated total could not be sent to Example Budget (Simulated)."])
+        let flow = await rig.packets(in: offer.flow)
+        XCTAssertEqual(summaries(flow), Array(SwitchRig.fullFlow.prefix(8)) + ["Request failed", "Event move sent"])
+    }
+
+    // MARK: T12-T14 the task, the second tap, the reads
+
+    func testT12_TheStepsFinishWhenTheViewGoesAwayAndTheResultIsKeptForTheEntry() async throws {
+        let rig = try await SwitchRig(self)
+        await rig.check()
+        let holder = SwitchBox<Task<Void, Never>?>(nil)
+        rig.calls.on("delivery-order") { holder.value?.cancel() }
+        let id = rig.activityID
+        let center = rig.center!
+        let view = Task { @MainActor in
+            center.confirm(activityID: id)
+            while !Task.isCancelled { try? await Task.sleep(nanoseconds: 5_000_000) }
+        }
+        holder.value = view
+        await rig.untilTapped()
+        await rig.settle()
+        XCTAssertTrue(view.isCancelled, "the control: the view's task was cancelled while the order was in flight")
+        XCTAssertEqual(rig.resultLines()?.first, "Booking cancelled")
+        XCTAssertEqual(rig.resultLines()?.count, 4)
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options", "delivery-order", "cancel", "budget-spend"])
+        XCTAssertEqual(rig.orders.orders.count, 1)
+        // The result is kept: a later result of the leg changes nothing.
+        await rig.check(rig.laterOutcome())
+        XCTAssertEqual(rig.resultLines()?.first, "Booking cancelled")
+    }
+
+    func testT13_ASecondTapWhileRunningOrAfterFinishingSendsNothing() async throws {
+        let rig = try await SwitchRig(self)
+        await rig.check()
+        rig.center.confirm(activityID: rig.activityID)
+        XCTAssertEqual(rig.state?.isRunning, true)
+        XCTAssertFalse(rig.center.canConfirm(activityID: rig.activityID), "the button is disabled while the steps run")
+        rig.center.confirm(activityID: rig.activityID)
+        await rig.settle()
+        let counts = rig.calls.list
+        XCTAssertEqual(counts, ["budget-left", "delivery-options", "delivery-order", "cancel", "budget-spend"])
+        let finished = rig.state?.resultValue
+        XCTAssertNotNil(finished)
+
+        rig.center.confirm(activityID: rig.activityID)
+        await rig.settle()
+        XCTAssertEqual(rig.calls.list, counts)
+        XCTAssertEqual(rig.state?.resultValue, finished)
+        XCTAssertEqual(rig.orders.orders.count, 1)
+    }
+
+    func testT14_ItReadsOnceForAnEntryAndAnOutcomeAFailedReadShowsNothingAndACancelledReadDoesNotCount() async throws {
+        let rig = try await SwitchRig(self)
+        XCTAssertNil(rig.state)
+        await rig.check()
+        let first = try rig.offer()
+        await rig.check()
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options"], "the same entry and outcome reads once")
+        // A new result reads again, under a new flow.
+        await rig.check(rig.laterOutcome())
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options", "budget-left", "delivery-options"])
+        let second = try rig.offer()
+        XCTAssertNotEqual(second.flow, first.flow)
+
+        // A failed budget read shows nothing, asks for no options and is not repeated for the same result.
+        let failed = try await SwitchRig(self)
+        failed.budget.mode = .status(500, "oops")
+        await failed.check()
+        XCTAssertNil(failed.state)
+        XCTAssertEqual(failed.calls.list, ["budget-left"])
+        failed.budget.mode = .worker
+        await failed.check()
+        XCTAssertEqual(failed.calls.list, ["budget-left"], "not read again for the same result")
+        await failed.check(failed.laterOutcome())
+        XCTAssertNotNil(failed.state?.offerValue, "a later result reads again")
+
+        // A failed options read shows nothing either.
+        let noOptions = try await SwitchRig(self)
+        noOptions.delivery.mode = .status(500, "oops")
+        await noOptions.check()
+        XCTAssertNil(noOptions.state)
+        XCTAssertEqual(noOptions.calls.list, ["budget-left", "delivery-options"])
+
+        // A read cancelled because the view went away does not count.
+        let cancelled = try await SwitchRig(self)
+        let holder = SwitchBox<Task<Void, Never>?>(nil)
+        cancelled.calls.on("budget-left") { holder.value?.cancel() }
+        let reading = Task { @MainActor in await cancelled.check() }
+        holder.value = reading
+        await reading.value
+        XCTAssertNil(cancelled.state)
+        XCTAssertEqual(cancelled.calls.list, ["budget-left"], "no options were asked for")
+        cancelled.calls.on("budget-left") {}
+        await cancelled.check()
+        XCTAssertEqual(cancelled.calls.count("budget-left"), 2, "the same result reads again")
+        XCTAssertNotNil(cancelled.state?.offerValue)
+    }
+
+    // MARK: T15-T17 when there is no offer, the zones, the visibility rule
+
+    func testT15_ThereIsNoOfferForAResultThatIsNotLateALegWithoutARecordNoProxyOrAMissingEntry() async throws {
+        let base = try await SwitchRig(self)
+        await base.check()
+        XCTAssertNotNil(base.state?.offerValue, "the control")
+
+        let quiet = try await SwitchRig(self)
+        let early = SwitchRig.makeOutcome(leg: quiet.event, zone: quiet.zone0, checkedAt: quiet.at(18, 0), liveTravel: 20 * 60)
+        XCTAssertNotEqual(early.kind, .late)
+        quiet.clock.now = quiet.at(18, 0)
+        await quiet.check(early)
+        XCTAssertNil(quiet.state)
+
+        let bare = try await SwitchRig(self, withRecord: false)
+        await bare.check()
+        XCTAssertNil(bare.state)
+
+        let offline = try await SwitchRig(self)
+        offline.box.config = SwitchRig.unconfigured
+        await offline.check()
+        XCTAssertNil(offline.state)
+
+        let gone = try await SwitchRig(self)
+        if let entry = gone.entry { gone.store.deleteActivity(entry) }
+        await gone.check()
+        XCTAssertNil(gone.state)
+
+        let unlinked = try await SwitchRig(self)
+        var loose = unlinked.event
+        loose.linkedActivityId = nil
+        await unlinked.center.check(event: loose, outcome: unlinked.outcome, store: unlinked.store)
+        XCTAssertNil(unlinked.state)
+
+        for rig in [quiet, bare, offline, gone, unlinked] {
+            XCTAssertTrue(rig.calls.list.isEmpty, "nothing was asked for")
+        }
+    }
+
+    func testT16_TheWholeSceneRunsTheSameStepsInASeoulAndALosAngelesClockWithOnlyTheAllowedKeysInTheBodies() async throws {
+        for zone in [seoul, losAngeles] {
+            let rig = try await SwitchRig(self, zone: zone, sync: true)
+            await rig.check()
+            let offer = try rig.offer()
+            await rig.tap()
+            let name = zone.identifier
+            XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options", "delivery-order", "cancel", "budget-spend"], name)
+            XCTAssertEqual(rig.resultLines(), [
+                "Booking cancelled",
+                "Delivery DL-AB12CD arrives 7:12 PM",
+                "Schedule entry moved to 7:12 PM",
+                "Estimated total $33.00 sent to Example Budget (Simulated): $167.00 left this week."], name)
+            let flow = await rig.packets(in: offer.flow)
+            XCTAssertEqual(summaries(flow), SwitchRig.fullFlow + ["Event move sent"], name)
+
+            let left = try XCTUnwrap(rig.body(rig.budget.requests, op: "left"))
+            XCTAssertEqual(Set(left.keys), ["op", "week_start", "spent_cents"], name)
+            XCTAssertEqual(left["week_start"] as? String, "2026-11-02", name)
+            let options = try XCTUnwrap(rig.body(rig.delivery.requests, op: "options"))
+            XCTAssertEqual(Set(options.keys), ["op"], name)
+            let order = try XCTUnwrap(rig.orderBody)
+            XCTAssertEqual(Set(order.keys), ["op", "request_id", "restaurant", "arrive_at", "items", "address", "card_id"], name)
+            XCTAssertEqual(order["arrive_at"] as? String, "2026-11-02T19:12", name)
+            let cancel = try XCTUnwrap(rig.tables.requests.first)
+            XCTAssertEqual(cancel.url?.path, "/booking/cancel", name)
+            let cancelBody = try XCTUnwrap(try JSONSerialization.jsonObject(with: try XCTUnwrap(cancel.httpBody)) as? [String: Any])
+            XCTAssertEqual(Set(cancelBody.keys), ["op", "request_id"], name)
+            XCTAssertEqual(cancelBody["request_id"] as? String, SwitchRig.requestID, name)
+            let spend = try XCTUnwrap(rig.spendBody)
+            XCTAssertEqual(Set(spend.keys), ["op", "week_start", "spent_cents", "amount_cents", "request_id"], name)
+            XCTAssertEqual(spend["week_start"] as? String, "2026-11-02", name)
+            XCTAssertEqual(rig.entry?.startDate, rig.at(19, 12), name)
+            // No packet of the scene holds an amount, a place, a time, a code, an id or an address.
+            let text = flow.map(\.summary).joined(separator: "\n")
+            for word in ["$", "Bistro", "Home Road", "Example Road", "DL-", SwitchRig.requestID, "19:", "7:12"] {
+                XCTAssertFalse(text.contains(word), "\(name): a packet holds \(word)")
+            }
+        }
+    }
+
+    func testT17_ShowsFollowsTheStateAndTheLateLinesAndOnlyATransitLegDrawsItsOwnMark() async throws {
+        let rig = try await SwitchRig(self)
+        await rig.check()
+        let offer = try rig.offer()
+        typealias Center = LateSwitchCenter
+        XCTAssertTrue(Center.shows(state: .offer(offer), lateLines: true))
+        XCTAssertFalse(Center.shows(state: .offer(offer), lateLines: false), "an offer needs the late lines")
+        for lateLines in [true, false] {
+            XCTAssertTrue(Center.shows(state: .running, lateLines: lateLines))
+            XCTAssertTrue(Center.shows(state: .note("Nothing was changed."), lateLines: lateLines))
+            XCTAssertTrue(Center.shows(state: .finished(Center.Result(lines: ["Booking cancelled"])), lateLines: lateLines))
+            XCTAssertFalse(Center.shows(state: .checking, lateLines: lateLines), "nothing shows while a read is in flight")
+            XCTAssertFalse(Center.shows(state: nil, lateLines: lateLines))
+        }
+        XCTAssertTrue(LateSwitch.ownMark(mode: .transit))
+        for mode in [TransportMode.car, .walk, .bicycle] { XCTAssertFalse(LateSwitch.ownMark(mode: mode), "\(mode)") }
+    }
+
+    // MARK: T18-T21 one switch per booking, a failed move, a changed ledger, the over-budget offer
+
+    func testT18_OneSwitchPerBookingNoOfferWhileRunningAfterAResultOrWithTheMarkSetAndTheMarkSurvivesARestart() async throws {
+        // While the steps run, and after they finished, a later result reads and offers nothing.
+        let rig = try await SwitchRig(self)
+        await rig.check()
+        rig.center.confirm(activityID: rig.activityID)
+        await rig.check(rig.laterOutcome())
+        XCTAssertEqual(rig.calls.count("budget-left"), 1, "no read while running")
+        XCTAssertEqual(rig.state?.isRunning, true)
+        await rig.settle()
+        let result = rig.state?.resultValue
+        XCTAssertNotNil(result)
+        await rig.check(rig.laterOutcome())
+        XCTAssertEqual(rig.calls.count("budget-left"), 1, "no read after a finished result")
+        XCTAssertEqual(rig.state?.resultValue, result)
+
+        // A partial result (the cancel was declined) keeps the mark: no offer, also after a restart.
+        let partial = try await SwitchRig(self)
+        partial.tables.result = .success((Data(SwitchRig.declinedBody.utf8), 200))
+        await partial.check()
+        await partial.tap()
+        XCTAssertNotNil(partial.state?.resultValue)
+        await partial.check(partial.laterOutcome())
+        XCTAssertEqual(partial.calls.count("budget-left"), 1)
+        XCTAssertEqual(SwitchRig.mark(at: partial.recordsFile), true, "the mark is on disk")
+        let reloaded = PartnerRecords(fileURL: partial.recordsFile)
+        XCTAssertEqual(reloaded.record(forActivity: partial.activityID)?.switchStarted, true, "the mark survives a restart")
+        let restarted = LateSwitchCenter(dependencies: partial.dependencies(records: reloaded))
+        await restarted.check(event: partial.event, outcome: partial.laterOutcome(), store: partial.store)
+        XCTAssertNil(restarted.states[partial.activityID])
+        XCTAssertEqual(partial.calls.count("budget-left"), 1, "the restarted center reads nothing")
+
+        // An ending that may have ordered something keeps the mark; one that provably did not clears it.
+        let unknown = try await SwitchRig(self)
+        await unknown.check()
+        unknown.delivery.mode = .error(URLError(.notConnectedToInternet))
+        await unknown.tap()
+        XCTAssertEqual(unknown.records.record(forActivity: unknown.activityID)?.switchStarted, true)
+        unknown.restore()
+        await unknown.check(unknown.laterOutcome())
+        XCTAssertEqual(unknown.calls.count("budget-left"), 1)
+        let cleared = try await SwitchRig(self)
+        await cleared.check()
+        cleared.delivery.mode = .status(401, SwitchRig.unauthorized)
+        await cleared.tap()
+        XCTAssertEqual(PartnerRecords(fileURL: cleared.recordsFile).record(forActivity: cleared.activityID)?.switchStarted, false)
+        cleared.restore()
+        await cleared.check(cleared.laterOutcome())
+        XCTAssertNotNil(cleared.state?.offerValue, "offered again")
+    }
+
+    func testT19_AMoveThatFailsSaysSoKeepsTheRecordMakesNoSecondOfferAndWritesTheOrderRecordWithoutAMealID() async throws {
+        let line = "The schedule entry could not be moved."
+        // The entry vanishes while the order is in flight.
+        let vanishing = try await SwitchRig(self, sync: true)
+        await vanishing.check()
+        vanishing.delivery.whileSending = { [vanishing] in
+            if let entry = vanishing.entry { vanishing.store.deleteActivity(entry) }
+        }
+        await vanishing.tap()
+        XCTAssertEqual(vanishing.resultLines(), [
+            "Booking cancelled",
+            "Delivery DL-AB12CD arrives 7:12 PM",
+            line,
+            "Estimated total $33.00 sent to Example Budget (Simulated): $167.00 left this week."])
+        XCTAssertNotNil(vanishing.records.record(forActivity: vanishing.activityID), "the record is kept")
+        XCTAssertNil(vanishing.orders.orders.first?.mealActivityID)
+        XCTAssertEqual(vanishing.orders.orders.count, 1)
+        let hops = await vanishing.packets()
+        XCTAssertTrue(hops.allSatisfy { $0.to != .appleCalendar }, "no calendar hop for a move that did not happen")
+
+        // The Store reports no change: the entry already holds the title and the start the card would give it.
+        let unchanged = try await SwitchRig(self, sync: true)
+        await unchanged.check()
+        XCTAssertTrue(unchanged.store.modifyActivity(id: unchanged.activityID, newTitle: "Dinner (Simulated)", newStart: unchanged.at(19, 12),
+                                                     newEnd: unchanged.at(20, 12)))
+        await unchanged.tap()
+        XCTAssertEqual(unchanged.resultLines()?[2], line)
+        XCTAssertEqual(unchanged.resultLines()?.count, 4)
+        XCTAssertNotNil(unchanged.records.record(forActivity: unchanged.activityID))
+        XCTAssertNil(unchanged.orders.orders.first?.mealActivityID)
+        // No second offer for a later result.
+        await unchanged.check(unchanged.laterOutcome())
+        XCTAssertEqual(unchanged.calls.count("budget-left"), 1)
+        XCTAssertNotNil(unchanged.state?.resultValue)
+    }
+
+    func testT20_ASpendRecordedBetweenTheOfferAndTheTapSendsNothingShowsNoLineAndReadsOnceMoreUnderANewFlow() async throws {
+        let rig = try await SwitchRig(self)
+        await rig.check()
+        let first = try rig.offer()
+        XCTAssertEqual(first.seed.spentCentsAtOffer, 6000)
+        rig.ledger.add(BudgetEntry(requestID: "late-1", weekStart: SwitchRig.week, amountCents: 1000, isEstimate: false))
+        rig.center.confirm(activityID: rig.activityID)
+        XCTAssertEqual(rig.state?.isChecking, true, "the offer is dropped and one new read follows")
+        await rig.settle()
+
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options", "budget-left", "delivery-options"], "nothing was ordered")
+        XCTAssertTrue(first.card.isFrozen)
+        let second = try rig.offer()
+        XCTAssertNotEqual(second.flow, first.flow)
+        XCTAssertEqual(second.seed.spentCentsAtOffer, 7000)
+        XCTAssertNil(rig.state?.noteText, "no line")
+        XCTAssertEqual(rig.records.record(forActivity: rig.activityID)?.switchStarted, false)
+        XCTAssertEqual(rig.tables.requests.count, 0)
+        let firstFlow = await rig.packets(in: first.flow)
+        let secondFlow = await rig.packets(in: second.flow)
+        let pairs = ["Budget left asked", "Budget left answered", "Options requested", "Options received"]
+        XCTAssertEqual(summaries(firstFlow), pairs)
+        XCTAssertEqual(summaries(secondFlow), pairs)
+        XCTAssertEqual(second.evaluation.standingLine, "$157.00 left this week after the switch")
+        // The new offer can be tapped.
+        await rig.tap()
+        XCTAssertNotNil(rig.state?.resultValue)
+        XCTAssertEqual(rig.calls.count("delivery-order"), 1)
+    }
+
+    func testT21_TheOverBudgetOfferRunsEveryStepAndTheResultEndsWithTheOverFormOfTheBudgetNotice() async throws {
+        let rig = try await SwitchRig(self, extraSpent: 18000)
+        await rig.check()
+        let offer = try rig.offer()
+        XCTAssertEqual(offer.evaluation.estimateLine, "Booking est. $60.00 - Delivery est. $33.00")
+        XCTAssertEqual(offer.evaluation.standingLine, "$13.00 over the budget this week after the switch")
+        await rig.tap()
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options", "delivery-order", "cancel", "budget-spend"])
+        XCTAssertEqual(rig.resultLines()?.last, "Estimated total $33.00 sent to Example Budget (Simulated): $13.00 over the budget this week.")
+        XCTAssertEqual(rig.resultLines()?.first, "Booking cancelled")
+        XCTAssertEqual(rig.entry?.startDate, rig.at(19, 12))
+        XCTAssertEqual(rig.orders.orders.count, 1)
+    }
+
+    // MARK: T22-T26 the card and what the steps are made from
+
+    func testT22_TheDeliveryPlaceRowIsSeededOrBlankTheOrderCarriesTheTapsSnapshotAndTheTextOnlyLeavesInTheOrderAndItsRecord() async throws {
+        // Seeded from the leg's origin; the button is enabled.
+        let seeded = try await SwitchRig(self)
+        await seeded.check()
+        let offer = try seeded.offer()
+        XCTAssertEqual(offer.card.values.text(offer.seed.addressKey), "1 Home Road")
+        XCTAssertEqual(offer.card.source(of: offer.seed.addressKey), .inferred)
+        XCTAssertTrue(seeded.center.canConfirm(activityID: seeded.activityID))
+        seeded.center.confirm(activityID: seeded.activityID)
+        // Frozen: an edit after the tap changes nothing.
+        XCTAssertFalse(offer.card.setText(LateSwitch.quantityKey, "5"))
+        XCTAssertFalse(offer.card.chooseOption(LateSwitch.itemKey, "gyoza"))
+        XCTAssertEqual(offer.card.values.int(LateSwitch.quantityKey), 2)
+        await seeded.settle()
+        let order = try XCTUnwrap(seeded.orderBody)
+        XCTAssertEqual(order["address"] as? String, "1 Home Road")
+        XCTAssertEqual((order["items"] as? [[String: Any]])?.first?["quantity"] as? Int, 2)
+        // With no search typed, the delivery text is in no packet, notice, result line or partner record.
+        let packets = await seeded.packets()
+        XCTAssertFalse(packets.map(\.summary).joined().contains("Home Road"))
+        XCTAssertFalse((seeded.resultLines() ?? []).joined().contains("Home Road"))
+        XCTAssertFalse(try String(contentsOf: seeded.ledgerFile, encoding: .utf8).contains("Home Road"))
+        XCTAssertFalse(try String(contentsOf: seeded.recordsFile, encoding: .utf8).contains("Home Road"))
+        XCTAssertEqual(seeded.orders.orders.first?.address, "1 Home Road", "the control: the order record keeps it")
+
+        // Blank: the leg's origin is a device fix without an address and the schedule has no other entry.
+        let blank = try await SwitchRig(self, origin: SwitchRig.deviceFix)
+        await blank.check()
+        let empty = try blank.offer()
+        XCTAssertNil(empty.card.values.text(empty.seed.addressKey))
+        XCTAssertEqual(empty.card.source(of: empty.seed.addressKey), .blank)
+        XCTAssertFalse(blank.center.canConfirm(activityID: blank.activityID))
+        blank.center.confirm(activityID: blank.activityID)
+        XCTAssertNotNil(blank.state?.offerValue, "a blank required row sends nothing and leaves the offer")
+        XCTAssertFalse(empty.card.isFrozen)
+        XCTAssertEqual(blank.calls.list, ["budget-left", "delivery-options"])
+        let cafe = Place(name: "Cafe One", address: "Cafe One address", latitude: 37.45, longitude: 127.05)
+        XCTAssertTrue(empty.card.choosePlace(empty.seed.addressKey, cafe))
+        XCTAssertTrue(blank.center.canConfirm(activityID: blank.activityID))
+        await blank.tap()
+        XCTAssertEqual(blank.orderBody?["address"] as? String, "Cafe One address")
+
+        // A search typed in the row: the base search packet is the only one holding the text, centred on the leg's origin.
+        let typed = try await SwitchRig(self)
+        await typed.check()
+        let searching = try typed.offer()
+        searching.card.search(searching.seed.addressKey, "Cafe")
+        try await Self.until { typed.places.callCount == 1 }
+        let body = PlaceBody.json(typed.places.requests.last)
+        let centre = try XCTUnwrap(PlaceBody.biasCenter(body))
+        XCTAssertEqual(centre.latitude, 37.4, accuracy: 0.0001)
+        XCTAssertEqual(centre.longitude, 127.1, accuracy: 0.0001)
+        try await Self.until {
+            await typed.log.flush()
+            return typed.log.packets.contains { $0.to == .googlePlaces }
+        }
+        XCTAssertTrue(searching.card.choosePlace(searching.seed.addressKey, cafe))
+        await typed.tap()
+        let all = await typed.packets()
+        let holding = all.filter { $0.summary.contains("Cafe") }
+        XCTAssertEqual(holding.count, 1)
+        XCTAssertEqual(holding.first?.to, .googlePlaces)
+        XCTAssertEqual(holding.first?.kind, .placeSearch)
+        XCTAssertEqual(holding.first?.summary.hasPrefix("Searched \u{201C}Cafe\u{201D} \u{00B7} "), true)
+        XCTAssertNil(holding.first?.flowID)
+        XCTAssertFalse((typed.resultLines() ?? []).joined().contains("Cafe"))
+        XCTAssertEqual(typed.orderBody?["address"] as? String, "Cafe One address")
+
+        // No origin on the leg: no bias, and the centre holds no device-position dependency.
+        let bare = try await SwitchRig(self, origin: nil)
+        await bare.check()
+        let noBias = try bare.offer()
+        noBias.card.search(noBias.seed.addressKey, "Cafe")
+        try await Self.until { bare.places.callCount == 1 }
+        XCTAssertNotNil(PlaceBody.json(bare.places.requests.last))
+        XCTAssertNil(PlaceBody.biasCenter(PlaceBody.json(bare.places.requests.last)))
+        let source = try sourceText("Shared/LateSwitch.swift")
+        XCTAssertTrue(source.contains("placeSearch"), "the control: the scan reads the centre's source")
+        for word in ["deviceOrigin", "CLLocationManager", "CLLocation("] {
+            XCTAssertFalse(source.contains(word), "the centre holds \(word)")
+        }
+    }
+
+    func testT23_ThereIsOneOrderRecordWithTheAnsweredOrderTheLineTheTextTheCardAndTheTotalAndAMealIDOnlyAfterAMove() async throws {
+        let rig = try await SwitchRig(self)
+        await rig.check()
+        await rig.tap()
+        let record = try XCTUnwrap(rig.orders.orders.first)
+        XCTAssertEqual(rig.orders.orders.count, 1)
+        XCTAssertEqual(record.orderID, "DL-AB12CD")
+        XCTAssertEqual(record.requestID, rig.orderBody?["request_id"] as? String)
+        XCTAssertEqual(record.placeName, "Test Bistro")
+        XCTAssertEqual(record.arrival, "2026-11-02T19:12")
+        XCTAssertEqual(record.items, [DeliveryOrderItem(itemID: "ramen", name: "Ramen", quantity: 2, unitPriceCents: 1400)])
+        XCTAssertEqual(record.address, "1 Home Road")
+        XCTAssertEqual(record.cardLabel, "Example Debit \u{2022}\u{2022}4242 (Simulated)")
+        XCTAssertEqual(record.estimatedTotalCents, 3300)
+        XCTAssertEqual(record.createdAt, rig.clock.now)
+        XCTAssertEqual(record.mealActivityID, rig.activityID.uuidString, "the entry moved")
+        XCTAssertNotNil(rig.state?.resultValue)
+
+        // No record for a delivery that was not confirmed.
+        for mode in [DeliveryToolPartner.Mode.error(URLError(.notConnectedToInternet)), .status(500, "oops")] {
+            let failed = try await SwitchRig(self)
+            await failed.check()
+            failed.delivery.mode = mode
+            await failed.tap()
+            XCTAssertTrue(failed.orders.orders.isEmpty)
+        }
+    }
+
+    func testT24_TheBudgetIsReadFirstTheOptionsFollowUnderTheSameFlowAndTheOrderBodyHoldsOnlyItsKeysAndTheEntrysPlaceName() async throws {
+        let long = Place(name: "Le " + String(repeating: "N", count: 100), address: "7 Long Road", latitude: 37.5, longitude: 127.0)
+        let rig = try await SwitchRig(self, place: long)
+        await rig.check()
+        let offer = try rig.offer()
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options"])
+        let reads = await rig.packets(in: offer.flow)
+        XCTAssertEqual(summaries(reads), ["Budget left asked", "Budget left answered", "Options requested", "Options received"])
+        await rig.tap()
+        let order = try XCTUnwrap(rig.orderBody)
+        XCTAssertEqual(Set(order.keys), ["op", "request_id", "restaurant", "arrive_at", "items", "address", "card_id"])
+        XCTAssertEqual(order["restaurant"] as? String, AgentBooking.sentName(long))
+        XCTAssertEqual((order["restaurant"] as? String)?.unicodeScalars.count, 80)
+        XCTAssertNotEqual(order["restaurant"] as? String, long.name)
+        XCTAssertNotEqual(order["restaurant"] as? String, "Example Tables")
+        XCTAssertEqual(order["op"] as? String, "order")
+        XCTAssertEqual(order["card_id"] as? String, "debit-4242")
+        let items = try XCTUnwrap(order["items"] as? [[String: Any]])
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(Set(items[0].keys), ["item_id", "quantity"])
+        XCTAssertEqual(items[0]["item_id"] as? String, "ramen")
+        XCTAssertEqual(items[0]["quantity"] as? Int, 2)
+        XCTAssertEqual(rig.orders.orders.first?.placeName, AgentBooking.sentName(long))
+
+        // A failed budget read asks for no options and shows nothing.
+        let down = try await SwitchRig(self)
+        down.budget.mode = .error(URLError(.notConnectedToInternet))
+        await down.check()
+        XCTAssertTrue(down.delivery.requests.isEmpty)
+        XCTAssertNil(down.state)
+    }
+
+    func testT25_TheOrderFollowsTheCardItsItemQuantityCardAndMealTitleReachTheOrderTheSpendTheRecordAndTheMovedEntry() async throws {
+        let rig = try await SwitchRig(self)
+        await rig.check()
+        let offer = try rig.offer()
+        XCTAssertTrue(offer.card.chooseOption(LateSwitch.itemKey, "gyoza"))
+        XCTAssertTrue(offer.card.setText(LateSwitch.quantityKey, "1"))
+        XCTAssertTrue(offer.card.chooseOption(offer.seed.cardKey, "credit-1881"))
+        XCTAssertTrue(offer.card.setText(LateSwitch.titleKey, "Late bite"))
+        XCTAssertEqual(offer.evaluation.estimateLine, "Booking est. $60.00 - Delivery est. $12.00")
+        XCTAssertEqual(offer.evaluation.standingLine, "$188.00 left this week after the switch")
+        await rig.tap()
+
+        let order = try XCTUnwrap(rig.orderBody)
+        let items = try XCTUnwrap(order["items"] as? [[String: Any]])
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0]["item_id"] as? String, "gyoza")
+        XCTAssertEqual(items[0]["quantity"] as? Int, 1)
+        XCTAssertEqual(order["card_id"] as? String, "credit-1881")
+        XCTAssertEqual(rig.spendBody?["amount_cents"] as? Int, 1200)
+        let record = try XCTUnwrap(rig.orders.orders.first)
+        XCTAssertEqual(record.items, [DeliveryOrderItem(itemID: "gyoza", name: "Gyoza", quantity: 1, unitPriceCents: 700)])
+        XCTAssertEqual(record.cardLabel, "Example Credit \u{2022}\u{2022}1881 (Simulated)")
+        XCTAssertEqual(record.estimatedTotalCents, 1200)
+        XCTAssertEqual(rig.entry?.title, "Late bite (Simulated)")
+        XCTAssertEqual(rig.resultLines()?.last, "Estimated total $12.00 sent to Example Budget (Simulated): $188.00 left this week.")
+    }
+
+    func testT26_TheOfferIsAnAgentFieldCardWithTheHeaderTheRowsOfTheSpecInOrderNoStatedValueAndThePartnerLine() async throws {
+        let rig = try await SwitchRig(self)
+        await rig.check()
+        let offer = try rig.offer()
+        let card: AgentFieldCard = offer.card
+        XCTAssertEqual(card.header, "Order delivery instead")
+        XCTAssertEqual(card.card.fields.map(\.key), ["0", "switch-item", "switch-quantity", "arrive_at", "address", "card_id", "switch-title", "1"])
+        XCTAssertEqual(card.card.fields.dropFirst().dropLast().map(\.label),
+                       ["Item", "Quantity", "Arrival", "Delivery place", "Pay with", "Meal title"])
+        XCTAssertEqual(card.lines.first, "Order delivery instead")
+        XCTAssertEqual(card.lines[1], "Test Bistro")
+        XCTAssertEqual(card.lines.last, "Example Tables, Example Delivery and Example Budget - Simulated")
+        XCTAssertEqual(card.lines.last, LateSwitch.partnerLine(partnerName: "Example Tables"))
+        XCTAssertEqual(card.lines[2], "Item: Ramen")
+        XCTAssertEqual(card.lines[3], "Quantity: 2")
+        XCTAssertEqual(card.lines[7], "Meal title: Dinner")
+        let entries = card.values.entries
+        XCTAssertEqual(entries.count, 6)
+        XCTAssertTrue(entries.allSatisfy { $0.source == .inferred }, "every value is inferred")
+        XCTAssertFalse(entries.contains { $0.source == .stated })
+        XCTAssertTrue(card.isReady)
+    }
+}

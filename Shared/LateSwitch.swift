@@ -1,4 +1,5 @@
 import Foundation
+import CoreLocation
 
 /// SPEC-LATESWITCH-001 (card t72): the pure rule that decides when a late booking can be switched to a delivery and what the offer
 /// holds. Foundation only: it reads no network, no store and no clock (the instants and the zone are handed in), and it holds no
@@ -276,5 +277,318 @@ enum LateSwitch {
             line: line, arrival: arrival, address: snapshot.text(seed.addressKey).flatMap(AgentDelivery.snapshotText),
             card: snapshot.option(seed.cardKey).flatMap { seed.options.card(id: $0) },
             mealTitle: snapshot.text(titleKey).flatMap(AgentDelivery.snapshotText))
+    }
+}
+
+// MARK: - The center
+
+/// What the departure card of a late leg shows for a booking that has a partner record, and what its one tap does. It keeps one
+/// state per schedule entry: a read in flight, the offer, the steps running, a note, or the result. It reads once for an entry
+/// and a late result, never changes anything on a read, and runs the steps of one tap in a task of its own, so the view going
+/// away does not stop them. The view reads `states` and calls `check` and `confirm`; it holds no rule.
+@MainActor
+final class LateSwitchCenter: ObservableObject {
+    /// The center the app uses. It builds its clients from the Store it is handed.
+    static let shared = LateSwitchCenter()
+
+    // MARK: Dependencies
+
+    /// Everything the center reaches outside itself. The defaults are the live ones, built the way the toolbox builds them (an
+    /// ephemeral URL session per call, the shared ledger, record and logs, the Store's own place search); a test injects stubs and
+    /// a clock. The center reads no device position: the offer's place search is centred on the leg's own origin.
+    @MainActor struct Dependencies {
+        let store: Store
+        let budget: () -> BudgetClient
+        let delivery: () -> DeliveryClient
+        let partners: () -> PartnerClient
+        let ledger: BudgetLedger
+        let records: PartnerRecords
+        let orderLog: DeliveryOrderLog
+        let placeSearch: () -> PlaceSearch
+        let now: () -> Date
+        let zone: () -> TimeZone
+        let newID: () -> String
+        let log: ConnectionLog
+
+        init(store: Store,
+             budget: (() -> BudgetClient)? = nil,
+             delivery: (() -> DeliveryClient)? = nil,
+             partners: (() -> PartnerClient)? = nil,
+             ledger: BudgetLedger = BudgetLedger.shared,
+             records: PartnerRecords = PartnerRecords.shared,
+             orders: DeliveryOrderLog = DeliveryOrderLog.shared,
+             placeSearch: (() -> PlaceSearch)? = nil,
+             now: @escaping () -> Date = { Date() },
+             zone: @escaping () -> TimeZone = { TimeZone.current },
+             newID: @escaping () -> String = { UUID().uuidString },
+             log: ConnectionLog = ConnectionLog.shared) {
+            self.store = store
+            self.budget = budget ?? { BudgetClient(config: store.config, ledger: ledger, send: Dependencies.send) }
+            self.delivery = delivery ?? { DeliveryClient(config: store.config, send: Dependencies.send) }
+            self.partners = partners ?? { PartnerClient(config: store.config, send: Dependencies.send) }
+            self.ledger = ledger
+            self.records = records
+            self.orderLog = orders
+            self.placeSearch = placeSearch ?? { store.placeSearch }
+            self.now = now
+            self.zone = zone
+            self.newID = newID
+            self.log = log
+        }
+
+        nonisolated private static func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
+            try await URLSession(configuration: .ephemeral).data(for: request)
+        }
+
+        /// True when all three partner clients have a proxy to call.
+        var proxyConfigured: Bool { budget().isConfigured && delivery().isConfigured && partners().isConfigured }
+    }
+
+    // MARK: States
+
+    /// The words of a finished tap, in the order the view draws them.
+    struct Result: Equatable {
+        let lines: [String]
+    }
+
+    /// An offer: the seed, the field card built from it (the edit card draws it), and what the tap needs later. The two lines under
+    /// the card and the button's state come from the card as it is now.
+    @MainActor struct Offer {
+        let seed: LateSwitch.Seed
+        let card: AgentFieldCard
+        /// The one flow of the offer: the two reads and, after the tap, every step.
+        let flow: UUID
+        fileprivate let event: ScheduledEvent
+        fileprivate let outcome: ReplanOutcome
+        fileprivate let dependencies: Dependencies
+
+        /// The estimates and the standing recomputed from the card's snapshot.
+        var evaluation: LateSwitch.Evaluation {
+            LateSwitch.evaluate(card.values, seed: seed, now: dependencies.now(), zone: dependencies.zone())
+        }
+    }
+
+    enum State {
+        /// A read is in flight; nothing is drawn.
+        case checking
+        case offer(Offer)
+        case running
+        case note(String)
+        case finished(Result)
+    }
+
+    @Published private(set) var states: [UUID: State] = [:]
+    /// The last late result read for each entry; a failed read counts, a cancelled one does not.
+    private var checked: [UUID: Date] = [:]
+    private let injected: Dependencies?
+
+    init(dependencies: Dependencies? = nil) {
+        injected = dependencies
+    }
+
+    private func dependencies(for store: Store) -> Dependencies { injected ?? Dependencies(store: store) }
+
+    func state(for activityID: UUID) -> State? { states[activityID] }
+
+    /// True while an offer is on and its card is ready and not frozen: the button's enabled state.
+    func canConfirm(activityID id: UUID) -> Bool {
+        guard case .offer(let offer)? = states[id] else { return false }
+        return offer.card.isReady && !offer.card.isFrozen
+    }
+
+    /// An offer shows only while the card shows a late result for the leg; a running state, a note or a result shows whenever the
+    /// center holds one for the entry; nothing shows while a read is in flight.
+    static func shows(state: State?, lateLines: Bool) -> Bool {
+        switch state {
+        case .offer?: return lateLines
+        case .running?, .note?, .finished?: return true
+        case .checking?, nil: return false
+        }
+    }
+
+    // MARK: The read
+
+    /// REQ-LATESWITCH-007: for a late result of a leg whose entry has an unmarked record, one budget read for the entry's week
+    /// and, after a good answer, one options read under the same new flow; then the seed. Nothing is shown while a read is in
+    /// flight or after a failure. It reads once for an entry and a result.
+    func check(event: ScheduledEvent, outcome: ReplanOutcome, store: Store) async {
+        let deps = dependencies(for: store)
+        guard outcome.kind == .late, outcome.eventID == event.id, let id = event.linkedActivityId, checked[id] != outcome.checkedAt,
+              deps.store.activity(id: id) != nil, let record = deps.records.record(forActivity: id), !record.switchStarted,
+              deps.proxyConfigured else { return }
+        switch states[id] {
+        case .checking?, .running?, .finished?: return
+        case .offer?, .note?, nil: break
+        }
+        await read(event: event, outcome: outcome, id: id, deps: deps)
+    }
+
+    private func read(event: ScheduledEvent, outcome: ReplanOutcome, id: UUID, deps: Dependencies) async {
+        var before = states[id]
+        if case .checking? = before { before = nil }
+        states[id] = .checking
+        // Leaves the read: `counted` is false for a read that was cancelled, which is read again for the same result.
+        func leave(_ state: State?, counted: Bool) {
+            states[id] = state
+            if counted { checked[id] = outcome.checkedAt }
+        }
+        guard let activity = deps.store.activity(id: id) else { return leave(before, counted: false) }
+        let flow = ConnectionLog.beginFlow()
+        let week = BudgetWeek.start(of: activity.startDate, in: deps.zone())
+        let left = await deps.budget().left(weekStart: week, flow: flow)
+        guard !Task.isCancelled else { return leave(before, counted: false) }
+        guard case .success(let standing) = left else { return leave(nil, counted: true) }
+        let asked = await deps.delivery().options(flow: flow)
+        guard !Task.isCancelled else { return leave(before, counted: false) }
+        guard case .success(let options) = asked else { return leave(nil, counted: true) }
+
+        // The reads took time: the entry and its record are looked at again before the offer is built.
+        guard let current = deps.store.activity(id: id), let record = deps.records.record(forActivity: id), !record.switchStarted else {
+            return leave(nil, counted: true)
+        }
+        let now = deps.now()
+        let zone = deps.zone()
+        let shown = LateSwitch.shownArrival(outcome: outcome, now: now)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        // The span holds both anchors of the place suggestion, the arrival (rounded up to the minute) and now.
+        let span = DateInterval(start: min(shown, now), end: max(shown, now).addingTimeInterval(120))
+        let schedule = deps.store.activities(in: span, calendar: calendar)
+        let ledgerEntry = record.spendRequestID.flatMap { deps.ledger.entry(requestID: $0) }
+        guard let seed = LateSwitch.seed(record: record, entryStart: current.startDate, place: current.location, ledgerEntry: ledgerEntry,
+                                         standing: standing, options: options, shownArrival: shown, now: now, schedule: schedule,
+                                         legOrigin: event.origin, zone: zone) else { return leave(nil, counted: true) }
+        // The place search of the card is centred on the leg's own origin, none without one.
+        let center = event.origin.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        let card = AgentFieldCard(header: LateSwitch.cardHeader, rows: LateSwitch.rows(seed: seed), favorites: deps.store.favorites,
+                                  search: { query in await deps.placeSearch().search(query, near: center) }, now: deps.now)
+        leave(.offer(Offer(seed: seed, card: card, flow: flow, event: event, outcome: outcome, dependencies: deps)), counted: true)
+    }
+
+    // MARK: The tap
+
+    /// What the tap takes from the card, trimmed once.
+    private struct Order {
+        let line: DeliveryLine
+        let arrival: Date
+        let address: String
+        let card: DeliveryCard
+        let mealTitle: String
+    }
+
+    /// REQ-LATESWITCH-009: freezes the card, takes its one snapshot and checks, in this order, that the entry and its record are
+    /// still there with the mark clear, that the arrival is still usable, that the proxy is set and that the ledger's sum for the
+    /// week is the one the offer was made from. A failed check sends and changes nothing. Then the mark is written to disk and the
+    /// steps start in a task of their own.
+    func confirm(activityID id: UUID) {
+        guard case .offer(let offer)? = states[id], offer.card.isReady, !offer.card.isFrozen else { return }
+        let deps = offer.dependencies
+        offer.card.freeze()
+        let evaluation = LateSwitch.evaluate(offer.card.values, seed: offer.seed, now: deps.now(), zone: deps.zone())
+        guard let line = evaluation.line, let arrival = evaluation.arrival, let address = evaluation.address,
+              let card = evaluation.card, let title = evaluation.mealTitle else { return note(LateSwitch.nothingChangedNote, id) }
+        guard deps.store.activity(id: id) != nil, let record = deps.records.record(forActivity: id), !record.switchStarted else {
+            return note(LateSwitch.nothingChangedNote, id)
+        }
+        guard evaluation.arrivalUsable else { return note(LateSwitch.arrivalNote, id) }
+        guard deps.proxyConfigured else { return note(LateSwitch.nothingChangedNote, id) }
+        guard deps.ledger.spentCents(weekStart: offer.seed.weekStart) == offer.seed.spentCentsAtOffer else {
+            // The week moved on since the offer: it is dropped and read once more, under a new flow.
+            states[id] = .checking
+            Task { [self] in await read(event: offer.event, outcome: offer.outcome, id: id, deps: deps) }
+            return
+        }
+        // The mark reaches the disk before anything is sent; a failed write sends nothing and leaves the mark false.
+        guard deps.records.setSwitchStarted(true, forActivity: id) else { return note(LateSwitch.nothingChangedNote, id) }
+        states[id] = .running
+        let order = Order(line: line, arrival: arrival, address: address, card: card, mealTitle: title)
+        Task { [self] in await run(offer: offer, order: order, record: record) }
+    }
+
+    private func note(_ text: String, _ id: UUID) {
+        states[id] = .note(text)
+    }
+
+    /// REQ-LATESWITCH-010 and 011: the steps of one tap, in this order: the delivery order, the booking's cancel, the release of
+    /// the booking's estimate with the delivery's spend, the move of the entry, the order record.
+    private func run(offer: Offer, order: Order, record: PartnerRecord) async {
+        let deps = offer.dependencies
+        let id = offer.seed.activityID
+        let flow = offer.flow
+        let request = DeliveryRequest(requestID: deps.newID(), restaurant: offer.seed.restaurant,
+                                      arriveAt: LateSwitch.arrivalText(order.arrival, zone: deps.zone()), items: [order.line],
+                                      address: order.address, cardID: order.card.id)
+        let ordered = await deps.delivery().order(request, options: offer.seed.options, flow: flow)
+        let orderID: String
+        let results: [PartnerResultItem]
+        switch ordered {
+        case .success(.confirmed(let confirmedID, let confirmedResults)):
+            orderID = confirmedID
+            results = confirmedResults
+        case .success(.declined), .failure(.notSetUp), .failure(.tokenRejected):
+            // The partner provably ordered nothing: the booking may be offered again.
+            deps.records.setSwitchStarted(false, forActivity: id)
+            return note(LateSwitch.notOrderedNote, id)
+        case .failure(.offline), .failure(.other):
+            // It may have ordered: the mark stays and the booking gets no offer again.
+            return note(LateSwitch.notConfirmedNote, id)
+        }
+        guard let total = results.moneyCents, let moneyName = results.moneyName else { return note(LateSwitch.notConfirmedNote, id) }
+
+        let cancel = await deps.partners().cancel(requestID: record.requestID, partner: (name: record.partnerName, route: record.route),
+                                                  flow: flow)
+        var cancelled = false
+        if case .success(.cancelled) = cancel { cancelled = true }
+
+        // A cancelled booking gives its estimate back; the delivery's estimate is sent whatever the cancel said.
+        var released: BudgetEntry?
+        if cancelled, let spendID = record.spendRequestID, let held = deps.ledger.entry(requestID: spendID) {
+            deps.ledger.remove(requestID: spendID)
+            released = held
+        }
+        let week = BudgetWeek.start(of: order.arrival, in: deps.zone())
+        let budgetLine: String
+        switch await deps.budget().spend(amountCents: total, isEstimate: true, weekStart: week, requestID: request.requestID, flow: flow) {
+        case .success(let standing):
+            let phrase = AgentBudget.weekPhrase(weekStart: week, currentWeekStart: BudgetWeek.start(of: deps.now(), in: deps.zone()))
+            budgetLine = AgentDelivery.budgetNotice(moneyName: moneyName, totalCents: total, standing: standing, week: phrase)
+        case .failure:
+            if let released { deps.ledger.add(released) }
+            budgetLine = AgentDelivery.budgetFailureNotice
+        }
+
+        var moved = false
+        if cancelled, let current = deps.store.activity(id: id) {
+            let length = current.endDate.timeIntervalSince(current.startDate)
+            moved = deps.store.modifyActivity(id: id, newTitle: AgentDelivery.mealTitle(typed: order.mealTitle), newStart: order.arrival,
+                                              newEnd: order.arrival.addingTimeInterval(length))
+        }
+        if moved {
+            deps.records.remove(activityID: id)
+            if deps.store.activity(id: id)?.wantsCalendarSync == true {
+                deps.log.record(from: .besir, to: .appleCalendar, kind: .calendarSave, summary: "Event move sent", status: .ok, flowID: flow)
+            }
+        }
+
+        // The order record comes last; the meal id is the entry's only after a move.
+        let item = offer.seed.options.menuItem(id: order.line.itemID)
+        deps.orderLog.add(DeliveryOrderEntry(
+            orderID: orderID, requestID: request.requestID, placeName: offer.seed.restaurant, arrival: request.arriveAt,
+            items: [DeliveryOrderItem(itemID: order.line.itemID, name: item?.name ?? order.line.itemID, quantity: order.line.quantity,
+                                      unitPriceCents: item?.priceCents ?? 0)],
+            address: request.address, cardLabel: order.card.label, estimatedTotalCents: total, createdAt: deps.now(),
+            mealActivityID: moved ? id.uuidString : nil))
+
+        let delivery = LateSwitch.deliveryLine(orderID: orderID, arrival: order.arrival, zone: deps.zone())
+        var lines: [String]
+        if !cancelled {
+            lines = [delivery, LateSwitch.notCancelledLine]
+        } else if moved {
+            lines = [LateSwitch.cancelledLine, delivery, LateSwitch.movedLine(start: order.arrival, zone: deps.zone())]
+        } else {
+            lines = [LateSwitch.cancelledLine, delivery, LateSwitch.notMovedLine]
+        }
+        lines.append(budgetLine)
+        states[id] = .finished(Result(lines: lines))
     }
 }
