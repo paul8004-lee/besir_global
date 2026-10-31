@@ -106,6 +106,34 @@ final class ConnectionLogTests: XCTestCase {
         XCTAssertEqual(log.packets, good)
     }
 
+    // MARK: SPEC-DELIVERYCARD-001 (card t91) the removed delivery cases
+
+    func testDELIVERY_L01_AStoredPacketOfARemovedDeliveryCaseDropsAloneAndTheRemainingCasesKeepTheirNames() throws {
+        XCTAssertEqual(ConnectionParty.allCases.map(\.rawValue),
+                       ["instagram", "shareSheet", "besir", "museSpark", "imageReader", "googlePlaces", "googleRoutes",
+                        "appleCalendar", "partner", "budgetPartner"])
+        XCTAssertEqual(ConnectionKind.allCases.map(\.rawValue),
+                       ["share", "imageRead", "placeSearch", "route", "agentMessage", "agentToolCall", "calendarSave",
+                        "partner", "budget"])
+        // The removed cases are named only as the raw strings a stored file holds.
+        let file = makeFileURL()
+        let good = [packet(nil, .besir, .partner, at: 100, kind: .partner),
+                    packet(nil, .besir, .budgetPartner, at: 200, kind: .budget)]
+        var objects = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(good)) as? [[String: Any]])
+        var partyPacket = objects[0]
+        partyPacket["from"] = "deliveryPartner"
+        partyPacket["id"] = UUID().uuidString
+        var kindPacket = objects[1]
+        kindPacket["kind"] = "delivery"
+        kindPacket["id"] = UUID().uuidString
+        objects.append(contentsOf: [partyPacket, kindPacket])
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: objects).write(to: file)
+
+        let log = makeLog(file: file)
+        XCTAssertEqual(log.packets, good, "the packets of the removed cases drop alone; the good ones load")
+    }
+
     func testCONNECT_T13_ANewLogOnTheSameFileShowsTheSamePacketsAtOnce() async {
         let file = makeFileURL()
         let log = makeLog(file: file)

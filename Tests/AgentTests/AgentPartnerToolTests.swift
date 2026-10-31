@@ -2544,4 +2544,24 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(occurrences(hostileName, in: applied.result), 2, "the partner value and the title, and nowhere else")
         XCTAssertEqual(applied.json?["message"] as? String, AgentPartner.appliedMessage)
     }
+
+    func testDELIVERY_T05_TheRemovedDeliveryToolsAreUnknownAndTheDeclarationsAreTwelve() throws {
+        let decls = declarations()
+        XCTAssertEqual(decls.count, 12)
+        XCTAssertEqual(decls.compactMap { $0["name"] as? String },
+                       ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places",
+                        "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend",
+                        "get_partners", "request_partner"])
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
+        let fixture = try XCTUnwrap(try? JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
+        XCTAssertTrue((decls as AnyObject).isEqual(fixture), "the declarations equal Fixtures/tools.json")
+        let rig = makeRig()
+        let unknown = rig.call("no_such_tool")
+        XCTAssertEqual(unknown.status, "rejected")
+        for name in ["order_delivery", "get_delivery_options"] {
+            let outcome = rig.call(name)
+            XCTAssertEqual(outcome.status, "rejected", name)
+            XCTAssertEqual(outcome.message, unknown.message, "\(name) is rejected as a name that never existed")
+        }
+    }
 }
