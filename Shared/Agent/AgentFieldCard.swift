@@ -199,9 +199,17 @@ indirect enum AgentFieldRow {
             return nil
         }
 
-        /// The entries of one group's rows in row-number order, each dictionary keyed by member key. Skeleton of the red step;
-        /// the green step groups the entries whose key starts with the group's key and the dot.
-        func rows(of group: String) -> [[String: Entry]] { [] }
+        /// The entries of one group's rows in row-number order, each dictionary keyed by member key (a blank member included,
+        /// with its source). The dot after the group's key makes the prefix exact, so a group whose key shares it does not mix.
+        func rows(of group: String) -> [[String: Entry]] {
+            var byRow: [Int: [String: Entry]] = [:]
+            for entry in entries where entry.key.hasPrefix(group + ".") {
+                let parts = entry.key.split(separator: ".", omittingEmptySubsequences: false)
+                guard parts.count == 3, let row = Int(parts[1]) else { continue }
+                byRow[row, default: [:]][String(parts[2])] = entry
+            }
+            return byRow.keys.sorted().map { byRow[$0] ?? [:] }
+        }
     }
 
     private struct Slot {
@@ -218,6 +226,7 @@ indirect enum AgentFieldRow {
         case line(key: String, text: String)
         case field(key: String)
         case group(key: String, dependents: [Node])
+        case repeating(key: String)
     }
 
     let header: String
@@ -226,6 +235,10 @@ indirect enum AgentFieldRow {
     private(set) var isFrozen = false
 
     private var slots: [String: Slot] = [:]
+    /// The repeatable groups the card holds, by the group's key.
+    private var groups: [String: AgentFieldGroup] = [:]
+    /// The row numbers each group holds, ascending. A delete leaves a hole; a row number is only an address, never renumbered.
+    private var rowNumbers: [String: [Int]] = [:]
     private var layout: [Node] = []
     private let favoriteOptions: [EditField.Option]
     private let searchPlaces: @MainActor (String) async -> [Place]
@@ -254,7 +267,10 @@ indirect enum AgentFieldRow {
     /// Every row on the card is chosen except the optional ones, and no number lies outside its range. A row that is off the card
     /// (the dependents of a switch that is off) is not looked at. A number outside its range is never ready, optional or not.
     var isReady: Bool {
-        card.fields.allSatisfy { field in
+        let controls = controlKeys
+        return card.fields.allSatisfy { field in
+            // A control row holds no value; it is a chip the user taps, never a field that blocks the card.
+            if controls.contains(field.key) { return true }
             guard let slot = slots[field.key] else { return field.chosen != nil }
             if case .number(let number)? = slot.value, let range = slot.spec.range, !range.contains(number) { return false }
             return slot.spec.isOptional || field.chosen != nil
@@ -268,9 +284,11 @@ indirect enum AgentFieldRow {
     }
 
     /// The header, then one line per row on the card: a read-only row as its text, a field as `label: value` (`label:` while
-    /// blank; a chip field shows the word of its chosen chip). The debug transcript and the resolved card are drawn from it.
+    /// blank; a chip field shows the word of its chosen chip). The control rows print nothing. The debug transcript and the
+    /// resolved card are drawn from it.
     var lines: [String] {
-        [header] + card.fields.map { field in
+        let controls = controlKeys
+        return [header] + card.fields.filter { !controls.contains($0.key) }.map { field in
             if field.kind == .readonly { return field.chosen ?? String() }
             return (field.label + ": " + (field.chosenLabel ?? String())).trimmingCharacters(in: .whitespaces)
         }
@@ -320,9 +338,11 @@ indirect enum AgentFieldRow {
     // MARK: Changes
 
     /// Chooses a chip. `pick_one`: the value is one of the listed ids. `on_off`: the value is `true` or `false` whatever the
-    /// chip words. For the switch of a group the dependent rows are inserted after it (on) or removed (off).
+    /// chip words. For the switch of a group the dependent rows are inserted after it (on) or removed (off). The control row of
+    /// a repeatable group holds no slot, so its one tap is intercepted here, before the slot lookup, and adds a row.
     @discardableResult
     func chooseOption(_ key: String, _ value: String) -> Bool {
+        if value == Self.addValue, let groupKey = controlGroup(of: key) { return addRow(to: groupKey) }
         guard !isFrozen, let index = index(of: key), var slot = slots[key] else { return false }
         switch slot.spec.kind {
         case .pickOne:
@@ -469,16 +489,122 @@ indirect enum AgentFieldRow {
         card.fields[index].searchSeed = nil
     }
 
-    /// The Confirm tap: from now on every change, search and result changes nothing.
+    /// The Confirm tap: from now on every change, search and result changes nothing. The control rows leave the card with it:
+    /// a frozen card shows its rows only, and `values` is unaffected because a control row holds no slot.
     func freeze() {
         isFrozen = true
         debouncer.cancelAll()
+        let controls = controlKeys
+        card.fields.removeAll { controls.contains($0.key) }
     }
 
     /// Deletes the row whose fields carry `rowID`. Refused at one row, on a frozen card and for an id no field carries; every
-    /// other row keeps its values, ids and keys. Skeleton of the red step: returns false; the green step removes the row.
+    /// other row keeps its values, ids and keys (a row number is only an address, never renumbered).
     @discardableResult
-    func deleteRow(_ rowID: UUID) -> Bool { false }
+    func deleteRow(_ rowID: UUID) -> Bool {
+        guard !isFrozen, let field = card.fields.first(where: { $0.rowID == rowID }),
+              let groupKey = groups.keys.first(where: { field.key.hasPrefix($0 + ".") }),
+              let group = groups[groupKey], var numbers = rowNumbers[groupKey], numbers.count > 1 else { return false }
+        let parts = field.key.split(separator: ".")
+        guard parts.count == 3, let row = Int(parts[1]), numbers.contains(row) else { return false }
+        numbers.removeAll { $0 == row }
+        rowNumbers[groupKey] = numbers
+        let owned = group.members.map { Self.rowKey(groupKey, row, $0.key) }
+        for key in owned { slots.removeValue(forKey: key) }
+        card.fields.removeAll { owned.contains($0.key) }
+        // A group that was at its maximum regains its control row, after the last row it still holds.
+        if numbers.count < group.maxRows, index(of: Self.controlKey(groupKey)) == nil,
+           let after = card.fields.lastIndex(where: { $0.key.hasPrefix(groupKey + ".") }) {
+            card.fields.insert(controlField(of: group), at: after + 1)
+        }
+        reconcileRowIDs(of: groupKey)
+        return true
+    }
+
+    // MARK: Repeatable row groups
+
+    /// The control-row keys of the card's groups; those rows hold no value, never block and never print.
+    private var controlKeys: Set<String> { Set(groups.keys.map { Self.controlKey($0) }) }
+
+    /// The value of the control row's one option; the words it shows and reads come from the group's seed, never from here.
+    private static let addValue = "add"
+
+    /// The group a control key belongs to, when the key is the control row of a group the card holds.
+    private func controlGroup(of key: String) -> String? {
+        groups.values.first { Self.controlKey($0.key) == key }?.key
+    }
+
+    /// Adds one blank row to a group: numbered one more than the highest row it holds, its fields inserted before the control
+    /// row so the earlier fields keep their ids. Refused on a frozen card and at the group's maximum.
+    private func addRow(to groupKey: String) -> Bool {
+        guard !isFrozen, let group = groups[groupKey], var numbers = rowNumbers[groupKey], numbers.count < group.maxRows,
+              let at = index(of: Self.controlKey(groupKey)) else { return false }
+        let row = (numbers.max() ?? 0) + 1
+        numbers.append(row)
+        rowNumbers[groupKey] = numbers
+        let id = UUID()
+        var fresh: [EditField] = []
+        for member in group.members {
+            let key = Self.rowKey(groupKey, row, member.key)
+            slots[key] = slot(Self.rowSpec(of: member, group: groupKey, row: row), nil, .blank)
+            var field = editField(key)
+            field.rowID = id
+            fresh.append(field)
+        }
+        card.fields.insert(contentsOf: fresh, at: at)
+        if numbers.count >= group.maxRows {
+            card.fields.removeAll { $0.key == Self.controlKey(groupKey) }
+        }
+        reconcileRowIDs(of: groupKey)
+        return true
+    }
+
+    /// Gives every row of a group one shared rowID while it holds more than one row and clears them at one row; a field that
+    /// already carries one keeps it, so a row keeps its swipe identity.
+    private func reconcileRowIDs(of groupKey: String) {
+        guard let group = groups[groupKey], let numbers = rowNumbers[groupKey], let first = group.members.first else { return }
+        let single = numbers.count == 1
+        for row in numbers {
+            let id = single ? nil : (card.fields.first { $0.key == Self.rowKey(groupKey, row, first.key) }?.rowID ?? UUID())
+            for member in group.members {
+                if let index = index(of: Self.rowKey(groupKey, row, member.key)) { card.fields[index].rowID = id }
+            }
+        }
+    }
+
+    /// The fields of every row a group holds, in row order, then its control row while it holds fewer than the maximum.
+    private func rowFields(of groupKey: String) -> [EditField] {
+        guard let group = groups[groupKey], let numbers = rowNumbers[groupKey] else { return [] }
+        var built: [EditField] = []
+        for row in numbers {
+            let id = numbers.count > 1 ? UUID() : nil
+            for member in group.members {
+                var field = editField(Self.rowKey(groupKey, row, member.key))
+                field.rowID = id
+                built.append(field)
+            }
+        }
+        if numbers.count < group.maxRows { built.append(controlField(of: group)) }
+        return built
+    }
+
+    /// The control row of a group: one chip that adds a row, with the words the group's seed gave.
+    private func controlField(of group: AgentFieldGroup) -> EditField {
+        EditField(key: Self.controlKey(group.key), kind: .toggle, label: group.label,
+                  options: [EditField.Option(label: group.addSymbol, value: Self.addValue, accessibilityName: group.addName)],
+                  allowsCustom: false, chosen: nil)
+    }
+
+    /// One blank row of seeds: one per member, in member order.
+    private func blankRowSeeds(of group: AgentFieldGroup) -> [AgentFieldSeed] {
+        group.members.map { _ in AgentFieldSeed(value: nil, source: .blank) }
+    }
+
+    /// The member's spec under its row key: everything of the member but the key, so every rule of a scalar field applies.
+    private static func rowSpec(of member: AgentFieldSpec, group: String, row: Int) -> AgentFieldSpec {
+        AgentFieldSpec(key: rowKey(group, row, member.key), kind: member.kind, label: member.label, options: member.options,
+                       limit: member.limit, isOptional: member.isOptional, range: member.range, partnerLookup: member.partnerLookup)
+    }
 
     /// The rows besir added itself (each switch with its dependents) leave the card: a card that ended without an applied answer
     /// must not read as if they had taken effect. The partner's own rows stay.
@@ -505,10 +631,18 @@ indirect enum AgentFieldRow {
             case .switchField(let spec, let value, let source, let dependents):
                 slots[spec.key] = slot(spec, value, source)
                 built.append(.group(key: spec.key, dependents: nodes(for: dependents, lines: &lines)))
-            case .repeating:
-                // Skeleton of the red step: nothing is registered and nothing is appended, so the new tests fail on their
-                // assertions. The green step builds the row members under their row keys and the control row.
-                break
+            case .repeating(let group, let seeded):
+                groups[group.key] = group
+                // More seeds than the maximum build the maximum; no seed builds one blank row.
+                let rows = seeded.isEmpty ? [blankRowSeeds(of: group)] : Array(seeded.prefix(group.maxRows))
+                rowNumbers[group.key] = Array(1...rows.count)
+                for (index, row) in rows.enumerated() {
+                    for (member, seed) in zip(group.members, row) {
+                        slots[Self.rowKey(group.key, index + 1, member.key)] =
+                            slot(Self.rowSpec(of: member, group: group.key, row: index + 1), seed.value, seed.source)
+                    }
+                }
+                built.append(.repeating(key: group.key))
             }
         }
         return built
@@ -559,6 +693,8 @@ indirect enum AgentFieldRow {
             case .group(let key, let dependents):
                 built.append(editField(key))
                 if slots[key]?.value == .flag(true) { built += fields(for: dependents) }
+            case .repeating(let key):
+                built += rowFields(of: key)
             }
         }
         return built
@@ -629,6 +765,7 @@ indirect enum AgentFieldRow {
             switch node {
             case .line(let key, _), .field(let key): found.insert(key)
             case .group(let key, let dependents): found.insert(key); found.formUnion(keys(in: dependents))
+            case .repeating(let key): found.insert(key)
             }
         }
         return found

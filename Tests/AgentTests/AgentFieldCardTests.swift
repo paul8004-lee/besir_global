@@ -1347,9 +1347,10 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertEqual(model.values.option(AgentFieldCard.rowKey("items", 1, "item")), "ramen")
         XCTAssertEqual(model.values.int(AgentFieldCard.rowKey("items", 2, "quantity")), 1)
 
-        // Five seed rows against a maximum of 3 build three rows; no seed row builds one blank row.
+        // Five seed rows against a maximum of 3 build three rows, and at the maximum there is no control row; no seed row
+        // builds one blank row.
         let clamped = make([.repeating(itemsGroup(maxRows: 3), rows: (1...5).map { rowSeeds(item: "ramen", quantity: $0, note: nil) })])
-        XCTAssertEqual(keys(clamped), itemsKeys(3) + [AgentFieldCard.controlKey("items")])
+        XCTAssertEqual(keys(clamped), itemsKeys(3))
         let blank = make([.repeating(itemsGroup(), rows: [])])
         XCTAssertEqual(keys(blank), itemsKeys(1) + [AgentFieldCard.controlKey("items")])
 
