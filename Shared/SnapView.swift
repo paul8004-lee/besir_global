@@ -151,7 +151,7 @@ private final class SnapPreviewView: UIView {
     var preview: AVCaptureVideoPreviewLayer? { layer as? AVCaptureVideoPreviewLayer }
 }
 
-/// The camera circle above the besir circle on the root screen.
+/// The camera circle left of the besir circle on the root screen.
 struct SnapEntryButton: View {
     let isShown: Bool
     let action: () -> Void
