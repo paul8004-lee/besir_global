@@ -4,38 +4,11 @@ import { readFileSync } from "node:fs";
 import worker from "../src/index.js";
 
 const env = { APP_TOKEN: "app-test", META_API_KEY: "m", GOOGLE_MAPS_KEY: "g" };
+const envWithoutKey = { APP_TOKEN: "app-test", META_API_KEY: "m" };
 const ID = "3f2b8c1e-5d4a-4e7b-9a60-1c2d3e4f5a6b";
 const ID2 = "9a1d4c7e-2b3f-4a50-8c61-7d8e9f0a1b2c";
-const LINES = [{ item_id: "ramen", quantity: 2 }];
-const valid = (over = {}) => ({
-  op: "order",
-  request_id: ID,
-  restaurant: "Test Cafe",
-  arrive_at: "2026-11-02T19:40",
-  items: LINES,
-  address: "12 Test Street",
-  card_id: "debit-4242",
-  ...over,
-});
 
-const ORDER_KEYS = ["op", "request_id", "restaurant", "arrive_at", "items", "address", "card_id"];
-const CONFIRMED_KEYS = [
-  "address",
-  "arrive_at",
-  "card_id",
-  "items",
-  "order_id",
-  "partner",
-  "restaurant",
-  "results",
-  "simulated",
-  "status",
-];
-const DECLINED_KEYS = ["address", "arrive_at", "card_id", "items", "partner", "reason", "restaurant", "simulated", "status"];
-const OPTIONS_KEYS = ["delivery_fee_cents", "menu", "order_fields", "partner", "simulated"];
-const OLD_ANSWER_KEYS = ["arrival_estimate", "estimated_total_cents"];
-
-// The partner's fixed tables of L13, written out here on purpose: the route and the test do not share them.
+// The partner's fixed tables, written out here on purpose: the route and the test do not share them.
 const MENU = [
   { id: "ramen", name: "Ramen", price_cents: 1400 },
   { id: "gyoza", name: "Gyoza", price_cents: 700 },
@@ -45,19 +18,58 @@ const MENU = [
   { id: "lemonade", name: "Lemonade", price_cents: 400 },
 ];
 const CARDS = [
-  { id: "debit-4242", label: "Example Debit \u2022\u20224242 (Simulated)" },
-  { id: "credit-1881", label: "Example Credit \u2022\u20221881 (Simulated)" },
+  { id: "debit-4242", label: "Example Debit ••4242 (Simulated)" },
+  { id: "credit-1881", label: "Example Credit ••1881 (Simulated)" },
 ];
 const FEE = 500;
-// The fields of the order, written out here on purpose, in the partner's order and with the key order of the contract.
+const PRICE = Object.fromEntries(MENU.map((entry) => [entry.id, entry.price_cents]));
+
+// The form the fields answer holds, written out here on purpose, in the partner's order and with the key order of the contract.
 const FIELDS = [
+  { key: "restaurant", kind: "text", label: "Restaurant" },
+  {
+    key: "items",
+    kind: "group",
+    label: "Items",
+    fields: [
+      { key: "item", kind: "pick_one", label: "Item", options: MENU.map(({ id, name }) => ({ id, label: name })) },
+      { key: "quantity", kind: "number", label: "Quantity" },
+    ],
+    repeat: 6,
+  },
   { key: "arrive_at", kind: "time", label: "Arrival" },
-  { key: "address", kind: "place", label: "Delivery place" },
-  { key: "card_id", kind: "pick_one", label: "Pay with", options: CARDS },
+  { key: "address", kind: "place", label: "Delivery place", lookup: true },
+  { key: "card_id", kind: "pick_one", label: "Pay with", options: CARDS.map(({ id, label }) => ({ id, label })) },
+];
+const RESULT_FIELDS = [
+  { name: "Arrival", kind: "time" },
+  { name: "Order number", kind: "text" },
+  { name: "Estimated total", kind: "money" },
+  { name: "Status", kind: "text" },
 ];
 
+const BASE_VALUES = {
+  restaurant: "Test Cafe",
+  items: [{ item: "ramen", quantity: 2 }],
+  arrive_at: "2026-11-02T19:40",
+  address: "12 Test Street",
+  card_id: "debit-4242",
+};
+const values = (over = {}) => ({ ...BASE_VALUES, ...over });
+const submit = (over = {}) => ({ op: "submit", request_id: ID, values: values(), ...over });
+const submitValues = (over) => submit({ values: values(over) });
+const drop = (object, ...keys) => Object.fromEntries(Object.entries(object).filter(([key]) => !keys.includes(key)));
+
+// The order number of a confirmed answer, computed here from the rule the route has kept: SHA-256 of
+// "delivery:" and the lower-cased request id, six bytes, each mod 36 over A-Z0-9.
+async function expectedCode(requestId) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("delivery:" + requestId.toLowerCase()));
+  const bytes = new Uint8Array(digest).slice(0, 6);
+  return "DL-" + Array.from(bytes, (byte) => "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"[byte % 36]).join("");
+}
+
 // The money item of a confirmed answer.
-const moneyOf = (body) => body.results.find((item) => item.kind === "money").value;
+const totalOf = (body) => body.results.find((item) => item.name === "Estimated total").value;
 
 // A body object is JSON-encoded; `raw` sends the string as it is.
 const call = (body, { token = "app-test", raw, method = "POST", e = env, path = "/delivery" } = {}) =>
@@ -75,15 +87,9 @@ async function expectError(res, status, error) {
   assert.deepEqual(await res.json(), { error });
 }
 
-// The body is built from text so a number such as 2.0 reaches the Worker as written.
-const rawBody = (fields) => {
-  const parts = Object.entries(fields).map(([key, text]) => `${JSON.stringify(key)}:${text}`);
-  return `{${parts.join(",")}}`;
-};
-
 const realFetch = globalThis.fetch;
 
-test("AC-DELIVERY-001 D01: 401 for no token, a wrong token and no APP_TOKEN, before the body is read", async () => {
+test("AC-DELIVERYCARD-014 D01: 401 for no token, a wrong token and no APP_TOKEN, before the body is read", async () => {
   const unreadable = (token) => ({
     method: "POST",
     url: "https://x.test/delivery",
@@ -100,7 +106,7 @@ test("AC-DELIVERY-001 D01: 401 for no token, a wrong token and no APP_TOKEN, bef
   await assert.rejects(worker.fetch(unreadable("app-test"), env), /must not be read/);
 });
 
-test("AC-DELIVERY-001 D02: a non-POST is 405 and the other routes still answer 401 to a bad token", async () => {
+test("AC-DELIVERYCARD-014 D02: a non-POST is 405 and the other routes still answer 401 to a bad token", async () => {
   for (const method of ["GET", "PUT", "DELETE"]) {
     await expectError(await call(null, { method }), 405, "method_not_allowed");
   }
@@ -113,589 +119,103 @@ test("AC-DELIVERY-001 D02: a non-POST is 405 and the other routes still answer 4
   }
 });
 
-test("AC-CHOICECARD-003 D03: an order at 19:40 gives exactly the ten keys of a confirmed order", async () => {
-  const items = [
-    { item_id: "gyoza", quantity: 1 },
-    { item_id: "ramen", quantity: 2 },
-  ];
-  const res = await call(valid({ restaurant: "  Test Cafe  ", address: "  12 Test Street  ", items, card_id: "credit-1881" }));
+test("AC-DELIVERYCARD-002 D03: the fields answer holds exactly four keys, the five fields and the four result items", async () => {
+  const res = await call({ op: "fields" });
   assert.equal(res.status, 200);
   assert.match(res.headers.get("content-type"), /application\/json/);
   const body = await res.json();
-  assert.deepEqual(Object.keys(body).sort(), CONFIRMED_KEYS);
-  assert.equal(body.status, "confirmed");
+  assert.deepEqual(Object.keys(body), ["partner", "simulated", "fields", "result_fields"]);
   assert.equal(body.partner, "Example Delivery");
   assert.equal(body.simulated, true);
-  assert.equal(body.restaurant, "Test Cafe");
-  assert.equal(body.arrive_at, "2026-11-02T19:40");
-  assert.deepEqual(body.items, items);
-  assert.equal(body.address, "12 Test Street");
-  assert.equal(body.card_id, "credit-1881");
-  assert.equal(moneyOf(body), 700 + 2 * 1400 + 500);
-  assert.match(body.order_id, /^DL-[A-Z0-9]{6}$/);
-  for (const key of OLD_ANSWER_KEYS) {
-    assert.equal(key in body, false, key);
-  }
-});
-
-test("AC-CHOICECARD-003 D04: an order at 23:30 gives exactly the nine keys of a declined order", async () => {
-  const res = await call(valid({ arrive_at: "2026-11-02T23:30" }));
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.deepEqual(Object.keys(body).sort(), DECLINED_KEYS);
-  assert.equal(body.status, "declined");
-  assert.equal(body.reason, "outside_hours");
-  assert.equal(body.partner, "Example Delivery");
-  assert.equal(body.simulated, true);
-  assert.equal(body.restaurant, "Test Cafe");
-  assert.equal(body.arrive_at, "2026-11-02T23:30");
-  assert.deepEqual(body.items, LINES);
-  assert.equal(body.address, "12 Test Street");
-  assert.equal(body.card_id, "debit-4242");
-  for (const key of ["order_id", "results", ...OLD_ANSWER_KEYS]) {
-    assert.equal(key in body, false, key);
-  }
-});
-
-test("AC-CHOICECARD-003 D05: the hours edges are 10:00 and 22:00 confirmed, 09:59 and 22:01 declined", async () => {
-  for (const time of ["10:00", "22:00", "10:01", "21:59", "12:00"]) {
-    const body = await (await call(valid({ arrive_at: `2026-11-02T${time}` }))).json();
-    assert.equal(body.status, "confirmed", time);
-    assert.deepEqual(Object.keys(body).sort(), CONFIRMED_KEYS, time);
-  }
-  for (const time of ["09:59", "22:01", "00:00", "23:59"]) {
-    const body = await (await call(valid({ arrive_at: `2026-11-02T${time}` }))).json();
-    assert.equal(body.status, "declined", time);
-    assert.equal(body.reason, "outside_hours", time);
-    assert.deepEqual(Object.keys(body).sort(), DECLINED_KEYS, time);
-  }
-});
-
-test("AC-CHOICECARD-004 D06: the money item is the sum of price times quantity plus 500, always an integer", async () => {
-  const options = await (await call({ op: "options" })).json();
-  const price = Object.fromEntries(options.menu.map((entry) => [entry.id, entry.price_cents]));
-  const totalOf = async (items) => {
-    const body = await (await call(valid({ items }))).json();
-    assert.equal(body.status, "confirmed");
-    assert.equal(Number.isInteger(moneyOf(body)), true);
-    return moneyOf(body);
-  };
-  for (const item of MENU) {
-    assert.equal(price[item.id], item.price_cents, `the options answer prices ${item.id}`);
-    assert.equal(await totalOf([{ item_id: item.id, quantity: 1 }]), item.price_cents + 500, `${item.id} once`);
-    assert.equal(await totalOf([{ item_id: item.id, quantity: 9 }]), item.price_cents * 9 + 500, `${item.id} nine times`);
-  }
-  assert.equal(
-    await totalOf([
-      { item_id: "pizza", quantity: 3 },
-      { item_id: "lemonade", quantity: 4 },
-      { item_id: "curry", quantity: 1 },
-    ]),
-    3 * 2500 + 4 * 400 + 1300 + 500,
-  );
-  // Six lines of nine: the largest order.
-  assert.equal(await totalOf(MENU.map((item) => ({ item_id: item.id, quantity: 9 }))), 65300);
-  // The order of the lines does not change the total.
-  assert.equal(
-    await totalOf([
-      { item_id: "lemonade", quantity: 2 },
-      { item_id: "ramen", quantity: 1 },
-    ]),
-    await totalOf([
-      { item_id: "ramen", quantity: 1 },
-      { item_id: "lemonade", quantity: 2 },
-    ]),
-  );
-});
-
-test("AC-DELIVERY-002 D07: the answer depends on the request alone and the order id has its shape", async () => {
-  const a = await (await call(valid())).json();
-  const b = await (await call(valid())).json();
-  assert.deepEqual(a, b);
-  assert.match(a.order_id, /^DL-[A-Z0-9]{6}$/);
-  const other = await (await call(valid({ request_id: ID2 }))).json();
-  assert.match(other.order_id, /^DL-[A-Z0-9]{6}$/);
-  assert.notEqual(other.order_id, a.order_id);
-  // Other fields do not change the id; the case of the request id does not either.
-  const changed = await (
-    await call(
-      valid({
-        restaurant: "Another",
-        arrive_at: "2027-01-05T12:30",
-        items: [{ item_id: "pizza", quantity: 5 }],
-        address: "99 Other Road",
-        card_id: "credit-1881",
-      }),
-    )
-  ).json();
-  assert.equal(changed.order_id, a.order_id);
-  const upper = await (await call(valid({ request_id: ID.toUpperCase() }))).json();
-  assert.equal(upper.order_id, a.order_id);
-  // The order id differs from the reservation number of the booking route for the same request id.
-  const table = await (
-    await call(
-      {
-        op: "submit",
-        request_id: ID,
-        values: { restaurant: "Test Cafe", party_size: 2, start: "2026-11-02T19:40", name: "Sam" },
-      },
-      { path: "/booking" },
-    )
-  ).json();
-  const reservation = table.results.find((item) => item.name === "Reservation number");
-  assert.match(reservation.value, /^EX-[A-Z0-9]{6}$/);
-  assert.notEqual(reservation.value.slice(3), a.order_id.slice(3));
-});
-
-test("AC-DELIVERY-001 D08: the order and words of the faults", async () => {
-  await expectError(await call(null, { raw: "x".repeat(4097) }), 413, "body_too_large");
-  await expectError(await call(null, { raw: "x".repeat(4096) }), 400, "invalid_json");
-  await expectError(await call(null, { raw: "not json" }), 400, "invalid_json");
-  await expectError(await call(null, { raw: "" }), 400, "invalid_json");
-  await expectError(await call(null, { raw: "[1,2]" }), 400, "body_must_be_object");
-  await expectError(await call(null, { raw: "null" }), 400, "body_must_be_object");
-  await expectError(await call(null, { raw: "5" }), 400, "body_must_be_object");
-  // A key outside the seven names is unknown, the old `people` among them.
-  await expectError(await call({ ...valid(), people: 2 }), 400, "unknown_field");
-  await expectError(await call({ ...valid(), name: "x" }), 400, "unknown_field");
-  await expectError(await call({ op: "options", people: 2 }), 400, "unknown_field");
-  await expectError(await call({ op: "options", extra: 1 }), 400, "unknown_field");
-  // An op that is present and neither word is invalid, whatever else is missing.
-  await expectError(await call({ op: "refund" }), 400, "invalid_field");
-  await expectError(await call({ op: 5 }), 400, "invalid_field");
-  await expectError(await call({ op: null, request_id: ID }), 400, "invalid_field");
-  for (const op of ["ORDER", "Options", "", " order", "order ", "left", "spend"]) {
-    await expectError(await call(valid({ op })), 400, "invalid_field");
-  }
-  // A missing op, or a missing key of the shape, is missing_field.
-  const { op: noOp, ...withoutOp } = valid();
-  await expectError(await call(withoutOp), 400, "missing_field");
-  await expectError(await call({}), 400, "missing_field");
-  await expectError(await call({ op: "order" }), 400, "missing_field");
-  for (const key of ORDER_KEYS.filter((name) => name !== "op")) {
-    const { [key]: removed, ...rest } = valid();
-    await expectError(await call(rest), 400, "missing_field");
-  }
-  // A key that does not belong to the shape of its op is invalid_field.
-  for (const key of ORDER_KEYS.filter((name) => name !== "op")) {
-    await expectError(await call({ op: "options", [key]: valid()[key] }), 400, "invalid_field");
-  }
-  // A value outside its rule is invalid_field.
-  await expectError(await call(valid({ card_id: "nope" })), 400, "invalid_field");
-  await expectError(await call(valid({ items: [] })), 400, "invalid_field");
-  // The order of the checks: unknown beats the op word, the op word beats missing, missing beats invalid.
-  await expectError(await call({ op: "refund", people: 1 }), 400, "unknown_field");
-  await expectError(await call({ op: "refund", request_id: ID }), 400, "invalid_field");
-  const { arrive_at, ...noTime } = valid();
-  await expectError(await call({ ...noTime, name: "x" }), 400, "unknown_field");
-  await expectError(await call({ ...valid({ card_id: "nope" }), phone: "1" }), 400, "unknown_field");
-  await expectError(await call({ op: "order", request_id: ID, restaurant: "", card_id: "nope" }), 400, "missing_field");
-  await expectError(await call({ ...noTime, card_id: "nope" }), 400, "missing_field");
-  await expectError(await call(valid({ card_id: "nope", arrive_at: "bad" })), 400, "invalid_field");
-  await expectError(await call({ op: "options", items: [], people: 2 }), 400, "unknown_field");
-});
-
-test("AC-DELIVERY-001 D09: arrive_at accepts real date-times and refuses the rest", async () => {
-  const accepted = [
-    "2028-02-29T12:00",
-    "2000-02-29T12:00",
-    "2026-12-31T21:59",
-    "2000-01-01T00:00",
-    "2199-12-31T23:59",
-    "2100-02-28T12:00",
-  ];
-  for (const arrive_at of accepted) {
-    const res = await call(valid({ arrive_at }));
-    assert.equal(res.status, 200, arrive_at);
-    assert.equal((await res.json()).arrive_at, arrive_at);
-  }
-  const refused = [
-    "2026-02-29T12:00",
-    "2100-02-29T12:00",
-    "2026-13-01T12:00",
-    "2026-00-10T12:00",
-    "2026-11-00T12:00",
-    "2026-04-31T12:00",
-    "2026-02-30T12:00",
-    "2026-11-02T24:00",
-    "2026-11-02T12:60",
-    "1999-12-31T12:00",
-    "2200-01-01T12:00",
-    "2026-11-02 12:00",
-    "2026-11-02T12:00:00",
-    "2026-11-02T12:00Z",
-    "2026-11-02",
-    "",
-  ];
-  for (const arrive_at of refused) {
-    await expectError(await call(valid({ arrive_at })), 400, "invalid_field");
-  }
-  await expectError(await call(valid({ arrive_at: 20261102 })), 400, "invalid_field");
-  await expectError(await call(valid({ arrive_at: null })), 400, "invalid_field");
-});
-
-test("AC-DELIVERY-001 D10: items hold 1 to 6 lines of known items, quantity 1 to 9, no repeats", async () => {
-  // The body is built from text so that 2.0 reaches the Worker as written.
-  const two = await call(null, {
-    raw: rawBody({
-      op: '"order"',
-      request_id: JSON.stringify(ID),
-      restaurant: '"Test Cafe"',
-      arrive_at: '"2026-11-02T19:40"',
-      items: '[{"item_id":"ramen","quantity":2.0}]',
-      address: '"12 Test Street"',
-      card_id: '"debit-4242"',
-    }),
-  });
-  assert.equal(two.status, 200);
-  const body = await two.json();
-  assert.deepEqual(body.items, [{ item_id: "ramen", quantity: 2 }]);
-  assert.equal(moneyOf(body), 2 * 1400 + 500);
-  // One line, six lines (every menu item once), quantity 1 and 9.
-  for (const items of [
-    [{ item_id: "lemonade", quantity: 1 }],
-    [{ item_id: "lemonade", quantity: 9 }],
-    MENU.map((item) => ({ item_id: item.id, quantity: 1 })),
-    MENU.map((item) => ({ item_id: item.id, quantity: 9 })),
-  ]) {
-    const res = await call(valid({ items }));
-    assert.equal(res.status, 200, JSON.stringify(items));
-    assert.deepEqual((await res.json()).items, items, "the lines are echoed as sent, in order");
-  }
-  const line = { item_id: "ramen", quantity: 1 };
-  const refused = [
-    [],
-    // Seven lines: the menu holds six items, so this one also repeats or names an unknown item.
-    [...MENU.map((item) => ({ item_id: item.id, quantity: 1 })), { item_id: "sushi", quantity: 1 }],
-    [...MENU.map((item) => ({ item_id: item.id, quantity: 1 })), line],
-    [{ item_id: "ramen", quantity: 0 }],
-    [{ item_id: "ramen", quantity: 10 }],
-    [{ item_id: "ramen", quantity: -1 }],
-    [{ item_id: "ramen", quantity: "2" }],
-    [{ item_id: "ramen", quantity: true }],
-    [{ item_id: "ramen", quantity: null }],
-    [{ item_id: "ramen", quantity: 2.5 }],
-    [{ item_id: "ramen", quantity: [2] }],
-    [{ item_id: "ramen", quantity: { n: 2 } }],
-    [line, { item_id: "ramen", quantity: 2 }],
-    [{ item_id: "sushi", quantity: 1 }],
-    [{ item_id: "Ramen", quantity: 1 }],
-    [{ item_id: "", quantity: 1 }],
-    ["ramen"],
-    [null],
-    [5],
-    [[]],
-    [{ item_id: "ramen", quantity: 1, note: "x" }],
-    [{ item_id: "ramen", quantity: 1, price_cents: 1 }],
-    [{ item_id: "ramen" }],
-    [{ quantity: 1 }],
-    [{}],
-    [{ item_id: 5, quantity: 1 }],
-    [{ item_id: null, quantity: 1 }],
-    [{ item_id: ["ramen"], quantity: 1 }],
-    [line, null],
-    {},
-    { item_id: "ramen", quantity: 1 },
-    "ramen:1",
-    null,
-    5,
-    true,
-  ];
-  for (const items of refused) {
-    await expectError(await call(valid({ items })), 400, "invalid_field");
-  }
-});
-
-test("AC-DELIVERY-001 D11: restaurant is 1 to 80 code points, trimmed, with no hidden characters", async () => {
-  const wide = "\u{1D49C}"; // one code point, two UTF-16 units
-  const ok80 = await call(valid({ restaurant: wide.repeat(80) }));
-  assert.equal(ok80.status, 200);
-  assert.equal((await ok80.json()).restaurant, wide.repeat(80));
-  await expectError(await call(valid({ restaurant: wide.repeat(81) })), 400, "invalid_field");
-  const emoji = await call(valid({ restaurant: "\u{1F355}" }));
-  assert.equal(emoji.status, 200);
-  const padded = await (await call(valid({ restaurant: "  Test Cafe  " }))).json();
-  assert.equal(padded.restaurant, "Test Cafe");
-  const padded80 = await call(valid({ restaurant: `  ${"a".repeat(80)}  ` }));
-  assert.equal(padded80.status, 200);
-  assert.equal((await padded80.json()).restaurant, "a".repeat(80));
-  const name = "Café \u{1F355} 食堂 مطعم";
-  assert.equal((await (await call(valid({ restaurant: name }))).json()).restaurant, name);
-  const refused = [
-    "",
-    "   ",
-    "Test\u0007Cafe",
-    "Test​Cafe",
-    "Test Cafe",
-    "Test Cafe",
-    "Test Cafe\n",
-    "Test\tCafe",
-    5,
-    null,
-    ["Test Cafe"],
-  ];
-  for (const restaurant of refused) {
-    await expectError(await call(valid({ restaurant })), 400, "invalid_field");
-  }
-});
-
-test("AC-DELIVERY-001 D12: request_id must be a UUID in the 8-4-4-4-12 form, in either case", async () => {
-  assert.equal((await call(valid({ request_id: ID.toUpperCase() }))).status, 200);
-  for (const request_id of ["not-a-uuid", `${ID}0`, ` ${ID}`, ID.replaceAll("-", ""), "3f2b8c1e-5d4a-4e7b-9a60-1c2d3e4f5a6g", 1, null]) {
-    await expectError(await call(valid({ request_id })), 400, "invalid_field");
-  }
-});
-
-test("AC-DELIVERY-002 D13: a valid request makes no outgoing fetch and the source holds no log, storage, clock or random call", async () => {
-  let calls = 0;
-  globalThis.fetch = async () => {
-    calls += 1;
-    throw new Error("no outgoing request is allowed");
-  };
-  try {
-    assert.equal((await call(valid())).status, 200);
-    assert.equal((await call(valid({ arrive_at: "2026-11-02T23:30" }))).status, 200);
-    assert.equal((await call({ op: "options" })).status, 200);
-    assert.equal(calls, 0);
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-  const source = readFileSync(new URL("../src/delivery.js", import.meta.url), "utf8");
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/.*$/gm, "");
-  for (const word of ["console", "fetch", "env", "Date", "KV", "D1", "R2"]) {
-    assert.equal(new RegExp(`\\b${word}\\b`).test(code), false, `the source holds ${word}`);
-  }
-  for (const text of ["Math.random", "getRandomValues"]) {
-    assert.equal(code.includes(text), false, `the source holds ${text}`);
-  }
-  // Positive control: the same scan finds what the file does use.
-  assert.equal(code.includes("crypto.subtle"), true);
-  assert.equal(/\bfetch\b/.test("await fetch(x)"), true);
-  assert.equal(/\bDate\b/.test("new Date()"), true);
-  assert.equal(/\benv\b/.test("handle(request, env)"), true);
-  // The partner name is written once in this file.
-  assert.equal(code.split("Example Delivery").length - 1, 1);
-});
-
-test("AC-DELIVERY-002 D14: /delivery is routed next to the others and every answer names the simulated partner", async () => {
-  await expectError(await call(null, { method: "GET" }), 405, "method_not_allowed");
-  assert.equal((await call(valid(), { path: "/booking" })).status, 400, "the booking route keeps its own shape");
-  globalThis.fetch = async () =>
-    new Response(
-      JSON.stringify({ choices: [{ index: 0, message: { role: "assistant", content: "{}" }, finish_reason: "stop" }] }),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
-  try {
-    const image = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(60, 0x41)]).toString("base64");
-    const vision = await worker.fetch(
-      new Request("https://x.test/vision", {
-        method: "POST",
-        headers: { "x-besir-token": "app-test" },
-        body: JSON.stringify({ image, mime: "image/jpeg" }),
-      }),
-      { ...env, BASETEN_API_KEY: "k" },
-    );
-    assert.notEqual(vision.status, 404);
-    assert.notEqual(vision.status, 401);
-    const unknown = await worker.fetch(
-      new Request("https://x.test/deliveries", { method: "POST", headers: { "x-besir-token": "app-test" }, body: "{}" }),
-      env,
-    );
-    await expectError(unknown, 404, "not_found");
-  } finally {
-    globalThis.fetch = realFetch;
-  }
-  for (const body of [valid({ arrive_at: "2026-11-02T19:40" }), valid({ arrive_at: "2026-11-02T23:30" }), { op: "options" }]) {
-    const res = await call(body);
-    assert.equal(res.status, 200);
-    const answer = await res.json();
-    assert.equal(answer.partner, "Example Delivery");
-    assert.equal(answer.simulated, true);
-  }
-});
-
-test("AC-CHOICECARD-001 D15: the options answer holds exactly five keys, the fixed tables and the field list", async () => {
-  const res = await call({ op: "options" });
-  assert.equal(res.status, 200);
-  assert.match(res.headers.get("content-type"), /application\/json/);
-  const body = await res.json();
-  assert.deepEqual(Object.keys(body).sort(), OPTIONS_KEYS);
-  assert.equal("cards" in body, false);
-  assert.equal(body.partner, "Example Delivery");
-  assert.equal(body.simulated, true);
-  assert.deepEqual(body.menu, MENU);
-  assert.deepEqual(body.order_fields, FIELDS);
-  assert.equal(body.delivery_fee_cents, FEE);
-  assert.equal(body.menu.length, 6);
-  const cards = body.order_fields.find((field) => field.key === "card_id").options;
-  assert.equal(cards.length, 2);
-  for (const entry of body.menu) {
-    assert.deepEqual(Object.keys(entry).sort(), ["id", "name", "price_cents"]);
-    assert.match(entry.id, /^[a-z]+$/);
-    assert.match(entry.name, /^[\x20-\x7e]+$/);
-    assert.equal(Number.isInteger(entry.price_cents), true);
-    assert.equal(entry.price_cents >= 400 && entry.price_cents <= 2500, true);
-  }
-  const prices = body.menu.map((entry) => entry.price_cents);
-  assert.equal(Math.min(...prices), 400);
-  assert.equal(Math.max(...prices), 2500);
-  for (const entry of cards) {
-    assert.deepEqual(Object.keys(entry).sort(), ["id", "label"]);
-    assert.match(entry.id, /^[a-z0-9-]+$/);
-    assert.match(entry.label, /\(Simulated\)$/);
-  }
-  assert.equal(JSON.stringify(body).includes("\u2022\u2022"), true, "the card labels hold the bullet characters");
-  const wording = /calorie|kcal|nutrition|health|diet|vitamin/i;
-  for (const entry of [...body.menu.map((item) => item.name), ...cards.map((card) => card.label)]) {
-    assert.equal(wording.test(entry), false, entry);
-  }
-  // The same answer every time.
-  assert.deepEqual(await (await call({ op: "options" })).json(), body);
-  // An options request with a key of the order shape is invalid; with the old `people` key it is unknown.
-  await expectError(await call({ op: "options", items: LINES }), 400, "invalid_field");
-  await expectError(await call({ op: "options", request_id: ID }), 400, "invalid_field");
-  await expectError(await call({ op: "options", people: 2 }), 400, "unknown_field");
-});
-
-test("AC-DELIVERY-001 D16: address is 1 to 120 code points and card_id names one of the two cards", async () => {
-  const wide = "\u{1D49C}"; // one code point, two UTF-16 units
-  const ok120 = await call(valid({ address: wide.repeat(120) }));
-  assert.equal(ok120.status, 200);
-  assert.equal((await ok120.json()).address, wide.repeat(120));
-  await expectError(await call(valid({ address: wide.repeat(121) })), 400, "invalid_field");
-  assert.equal((await call(valid({ address: "a".repeat(120) }))).status, 200);
-  await expectError(await call(valid({ address: "a".repeat(121) })), 400, "invalid_field");
-  const padded = await (await call(valid({ address: "  12 Test Street  " }))).json();
-  assert.equal(padded.address, "12 Test Street");
-  const padded120 = await call(valid({ address: `  ${"a".repeat(120)}  ` }));
-  assert.equal(padded120.status, 200);
-  assert.equal((await padded120.json()).address, "a".repeat(120));
-  const mixed = "Caf\u00e9 \u{1F355} 12, Test Street";
-  assert.equal((await (await call(valid({ address: mixed }))).json()).address, mixed);
-  const refused = [
-    "",
-    "   ",
-    "12 Test\u0007Street",
-    "12 Test\u200bStreet",
-    "12 Test\u2028Street",
-    "12 Test\u2029Street",
-    "12 Test Street\n",
-    "12 Test\tStreet",
-    5,
-    null,
-    ["12 Test Street"],
-  ];
-  for (const address of refused) {
-    await expectError(await call(valid({ address })), 400, "invalid_field");
-  }
-  for (const card of CARDS) {
-    const body = await (await call(valid({ card_id: card.id }))).json();
-    assert.equal(body.status, "confirmed");
-    assert.equal(body.card_id, card.id);
-  }
-  for (const card_id of ["", "nope", "DEBIT-4242", "Credit-1881", " debit-4242", "debit-4242 ", "debit-4243", 5, null, ["debit-4242"]]) {
-    await expectError(await call(valid({ card_id })), 400, "invalid_field");
-  }
-});
-
-test("AC-CHOICECARD-002 D17: order_fields is the three fields in order, with the key order of the contract", async () => {
-  const body = await (await call({ op: "options" })).json();
-  assert.equal(Array.isArray(body.order_fields), true);
-  assert.deepEqual(
-    body.order_fields.map((field) => [field.key, field.kind, field.label]),
-    [
-      ["arrive_at", "time", "Arrival"],
-      ["address", "place", "Delivery place"],
-      ["card_id", "pick_one", "Pay with"],
-    ],
-  );
-  assert.deepEqual(Object.keys(body.order_fields[0]), ["key", "kind", "label"]);
-  assert.deepEqual(Object.keys(body.order_fields[1]), ["key", "kind", "label"]);
-  assert.deepEqual(Object.keys(body.order_fields[2]), ["key", "kind", "label", "options"]);
-  // The options of the card field are the partner's cards, id and label, in order: the same table the order check reads.
-  assert.deepEqual(body.order_fields[2].options, CARDS);
-  for (const option of body.order_fields[2].options) {
-    assert.deepEqual(Object.keys(option), ["id", "label"]);
-    const accepted = await (await call(valid({ card_id: option.id }))).json();
-    assert.equal(accepted.card_id, option.id);
-  }
-  // The delivery partner has no on_off field.
-  assert.equal(body.order_fields.some((field) => field.kind === "on_off"), false);
-});
-
-test("AC-CHOICECARD-004 D18: results is the arrival, the estimated total and the status, in that order", async () => {
-  const items = [
-    { item_id: "gyoza", quantity: 1 },
-    { item_id: "ramen", quantity: 2 },
-  ];
-  const body = await (await call(valid({ items }))).json();
-  assert.equal(body.status, "confirmed");
-  assert.deepEqual(body.results, [
-    { name: "Arrival", kind: "time", value: "2026-11-02T19:40" },
-    { name: "Estimated total", kind: "money", value: 700 + 2 * 1400 + 500 },
-    { name: "Status", kind: "text", value: "Preparing" },
-  ]);
-  assert.deepEqual(
-    body.results.map((item) => item.kind),
-    ["time", "money", "text"],
-  );
-  for (const item of body.results) {
-    assert.deepEqual(Object.keys(item), ["name", "kind", "value"]);
-  }
-  assert.equal(body.results[0].value, body.arrive_at);
-  assert.equal(Number.isInteger(body.results[1].value), true);
-  // The time item follows the requested arrival.
-  const later = await (await call(valid({ arrive_at: "2027-01-05T12:30" }))).json();
-  assert.equal(later.results[0].value, "2027-01-05T12:30");
-});
-
-test("AC-CHOICECARD-003 D19: no top-level cards, no old confirmed keys, and answer-side keys are unknown as request keys", async () => {
-  const options = await (await call({ op: "options" })).json();
-  assert.equal("cards" in options, false);
-  for (const time of ["10:00", "22:00", "19:40", "09:59", "22:01"]) {
-    const body = await (await call(valid({ arrive_at: `2026-11-02T${time}` }))).json();
-    for (const key of OLD_ANSWER_KEYS) {
-      assert.equal(key in body, false, `${key} at ${time}`);
+  assert.deepEqual(body.fields.map((field) => field.key), ["restaurant", "items", "arrive_at", "address", "card_id"]);
+  assert.deepEqual(body.fields, FIELDS);
+  // The key order of every field shape, including the group and its members.
+  assert.deepEqual(Object.keys(body.fields[0]), ["key", "kind", "label"]);
+  assert.deepEqual(Object.keys(body.fields[1]), ["key", "kind", "label", "fields", "repeat"]);
+  assert.deepEqual(Object.keys(body.fields[1].fields[0]), ["key", "kind", "label", "options"]);
+  assert.deepEqual(Object.keys(body.fields[1].fields[1]), ["key", "kind", "label"]);
+  assert.deepEqual(Object.keys(body.fields[3]), ["key", "kind", "label", "lookup"]);
+  assert.deepEqual(Object.keys(body.fields[4]), ["key", "kind", "label", "options"]);
+  assert.equal(body.fields[1].repeat, 6);
+  assert.deepEqual(body.fields[1].fields[0].options, MENU.map(({ id, name }) => ({ id, label: name })));
+  assert.deepEqual(body.fields[4].options, CARDS);
+  assert.deepEqual(body.result_fields, RESULT_FIELDS);
+  assert.deepEqual(Object.keys(body.result_fields[0]), ["name", "kind"]);
+  // No key anywhere holds a price, a fee or a total.
+  const keyProblems = [];
+  const walkKeys = (value, path) => {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => walkKeys(item, `${path}[${index}]`));
+      return;
     }
-  }
-  // Positive control: the confirmed answer holds the key that replaced them.
-  assert.equal(Array.isArray((await (await call(valid())).json()).results), true);
-  for (const key of ["order_fields", "results", "cards"]) {
-    await expectError(await call({ ...valid(), [key]: [] }), 400, "unknown_field");
-    await expectError(await call({ op: "options", [key]: [] }), 400, "unknown_field");
-  }
+    if (value !== null && typeof value === "object") {
+      for (const [key, inner] of Object.entries(value)) {
+        if (/price|fee|total/i.test(key)) keyProblems.push(`${path}.${key}`);
+        walkKeys(inner, `${path}.${key}`);
+      }
+    }
+  };
+  walkKeys(body, "");
+  assert.deepEqual(keyProblems, []);
+  // The same text every time.
+  const text = await (await call({ op: "fields" })).text();
+  assert.equal(text, JSON.stringify(body));
 });
 
-// An independent statement of the field and result grammar: nothing here is imported from the route.
+// An independent statement of the field grammar (SPEC-GROUPFIELD-001 v0.3.1): nothing here is imported from the route.
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
-const FIELD_KINDS = ["text", "place", "time", "pick_one", "on_off"];
-const length = (text) => [...text].length;
-const plain = (text, longest) =>
-  typeof text === "string" && !HIDDEN.test(text) && length(text) >= 1 && length(text) <= longest;
+const SCALAR_KINDS = ["text", "place", "time", "pick_one", "on_off", "number"];
+const MEMBER_KINDS = ["text", "number", "pick_one"];
+const codePoints = (text) => [...text].length;
+const plain = (text, longest) => typeof text === "string" && !HIDDEN.test(text) && codePoints(text) >= 1 && codePoints(text) <= longest;
 const plainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-const sameKeys = (value, keys) => plainObject(value) && JSON.stringify(Object.keys(value)) === JSON.stringify(keys);
+const keyForm = (key) => typeof key === "string" && /^[a-z_]{1,32}$/.test(key);
 
 function optionDefects(field) {
   const defects = [];
   const options = field.options;
-  if (!Array.isArray(options)) return [`${field.key}: options missing`];
+  if (!Array.isArray(options) || options.length < 1) return [`${field.key}: options missing`];
   for (const option of options) {
     if (!plainObject(option) || JSON.stringify(Object.keys(option).sort()) !== '["id","label"]') {
       defects.push(`${field.key}: option keys`);
-    } else if (!plain(option.label, 60)) {
-      defects.push(`${field.key}: option label`);
+    } else {
+      if (!plain(option.label, 60)) defects.push(`${field.key}: option label`);
+      if (typeof option.id !== "string" || !/^[a-z0-9_-]{1,32}$/.test(option.id)) defects.push(`${field.key}: option id`);
     }
   }
   if (defects.length > 0) return defects;
   const ids = options.map((option) => option.id);
-  if (field.kind === "pick_one") {
-    if (options.length < 1 || options.length > 4) defects.push(`${field.key}: option count`);
-    if (!ids.every((id) => typeof id === "string" && /^[a-z0-9_-]{1,32}$/.test(id))) defects.push(`${field.key}: option id`);
-    if (new Set(ids).size !== ids.length) defects.push(`${field.key}: option id repeated`);
-  } else {
+  if (new Set(ids).size !== ids.length) defects.push(`${field.key}: option id repeated`);
+  if (field.kind === "on_off") {
     if (JSON.stringify(ids) !== '["true","false"]') defects.push(`${field.key}: on_off ids`);
     if (options.length === 2 && options[0].label === options[1].label) defects.push(`${field.key}: on_off labels`);
   }
+  return defects;
+}
+
+// One scalar field: `kinds` says which kinds are allowed here (a group member allows fewer than a top-level entry).
+function scalarDefects(field, kinds, seen) {
+  const defects = [];
+  const names = Object.keys(field);
+  const withOptions = field.kind === "pick_one" || field.kind === "on_off";
+  const base = withOptions ? ["key", "kind", "label", "options"] : ["key", "kind", "label"];
+  const markers = names.filter((name) => name === "optional" || name === "lookup");
+  if (names.includes("optional") && names.includes("lookup")) defects.push(`${field.key}: optional beside lookup`);
+  if (names.slice(0, names.length - markers.length).join() !== base.join()) defects.push(`${field.key}: keys`);
+  if (names.slice(0, names.length - markers.length).join() === base.join() && markers.length > 0) {
+    // A marker must be the trailing key, and exactly the boolean true.
+    for (const marker of markers) {
+      if (names[names.length - 1] !== marker && names[names.length - 2] !== marker) defects.push(`${field.key}: marker not last`);
+    }
+  }
+  if (markers.includes("lookup") && (field.lookup !== true || field.kind !== "place")) defects.push(`${field.key}: lookup`);
+  if (markers.includes("optional") && field.optional !== true) defects.push(`${field.key}: optional`);
+  if (!keyForm(field.key)) defects.push(`${field.key}: key form`);
+  if (seen.has(field.key)) defects.push(`${field.key}: key repeated`);
+  seen.add(field.key);
+  if (!kinds.includes(field.kind)) defects.push(`${field.key}: kind`);
+  if (!plain(field.label, 40)) defects.push(`${field.key}: label`);
+  if (withOptions) defects.push(...optionDefects(field));
   return defects;
 }
 
@@ -708,147 +228,678 @@ function fieldListDefects(fields) {
       defects.push("field is not an object");
       continue;
     }
-    const withOptions = field.kind === "pick_one" || field.kind === "on_off";
-    if (!sameKeys(field, withOptions ? ["key", "kind", "label", "options"] : ["key", "kind", "label"])) {
-      defects.push(`${field.key}: keys`);
+    if (field.kind === "group") {
+      if (JSON.stringify(Object.keys(field)) !== JSON.stringify(["key", "kind", "label", "fields", "repeat"])) {
+        defects.push(`${field.key}: group keys`);
+      }
+      if (!keyForm(field.key)) defects.push(`${field.key}: key form`);
+      if (seen.has(field.key)) defects.push(`${field.key}: key repeated`);
+      seen.add(field.key);
+      if (!plain(field.label, 40)) defects.push(`${field.key}: label`);
+      const repeat = field.repeat;
+      if (typeof repeat !== "number" || !Number.isInteger(repeat) || repeat < 1 || repeat >= 1e12) {
+        defects.push(`${field.key}: repeat`);
+      }
+      if (!Array.isArray(field.fields) || field.fields.length < 1) {
+        defects.push(`${field.key}: members missing`);
+        continue;
+      }
+      let optional = 0;
+      for (const member of field.fields) {
+        if (plainObject(member) && member.optional === true) optional += 1;
+        if (!plainObject(member)) {
+          defects.push(`${field.key}: member is not an object`);
+          continue;
+        }
+        defects.push(...scalarDefects(member, MEMBER_KINDS, seen));
+      }
+      if (optional === field.fields.length) defects.push(`${field.key}: every member optional`);
+    } else {
+      defects.push(...scalarDefects(field, SCALAR_KINDS, seen));
     }
-    if (typeof field.key !== "string" || !/^[a-z_]{1,32}$/.test(field.key)) defects.push(`${field.key}: key form`);
-    if (seen.has(field.key)) defects.push(`${field.key}: key repeated`);
-    seen.add(field.key);
-    if (!FIELD_KINDS.includes(field.kind)) defects.push(`${field.key}: kind`);
-    if (!plain(field.label, 40)) defects.push(`${field.key}: label`);
-    if (withOptions) defects.push(...optionDefects(field));
   }
   return defects;
 }
 
-function realMinute(text) {
-  const parts = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(text);
-  if (!parts) return false;
-  const [year, month, day, hour, minute] = parts.slice(1).map(Number);
-  const when = new Date(Date.UTC(year, month - 1, day, hour, minute));
-  return (
-    year >= 2000 &&
-    year <= 2199 &&
-    when.getUTCFullYear() === year &&
-    when.getUTCMonth() === month - 1 &&
-    when.getUTCDate() === day &&
-    when.getUTCHours() === hour &&
-    when.getUTCMinutes() === minute
-  );
-}
-
-function resultListDefects(results) {
-  if (!Array.isArray(results) || results.length < 1 || results.length > 8) return ["item count"];
+function resultFieldsDefects(items) {
+  if (!Array.isArray(items) || items.length < 1 || items.length > 8) return ["item count"];
   const defects = [];
-  for (const item of results) {
-    if (!sameKeys(item, ["name", "kind", "value"])) {
+  for (const item of items) {
+    if (!plainObject(item) || JSON.stringify(Object.keys(item)) !== '["name","kind"]') {
       defects.push("item keys");
       continue;
     }
     if (typeof item.name !== "string" || !/^[\x20-\x7e]{1,40}$/.test(item.name)) defects.push(`${item.name}: name`);
-    if (item.kind === "time") {
-      if (typeof item.value !== "string" || !realMinute(item.value)) defects.push(`${item.name}: time value`);
-    } else if (item.kind === "money") {
-      if (!Number.isInteger(item.value) || item.value < 1 || item.value > 1000000) defects.push(`${item.name}: money value`);
-    } else if (item.kind === "text") {
-      if (!plain(item.value, 80)) defects.push(`${item.name}: text value`);
-    } else {
-      defects.push(`${item.name}: kind`);
-    }
-  }
-  for (const kind of ["time", "money"]) {
-    if (results.filter((item) => item.kind === kind).length > 1) defects.push(`two ${kind} items`);
+    if (![...SCALAR_KINDS, "money"].includes(item.kind)) defects.push(`${item.name}: kind`);
   }
   return defects;
 }
 
-test("AC-CHOICECARD-002 D20: an independent validator accepts every answer the route gives", async () => {
-  // The validator itself: it accepts a list of all five kinds, with the on_off options rule, and refuses each defect.
-  const everyKind = [
-    { key: "note", kind: "text", label: "Note" },
-    { key: "where", kind: "place", label: "Where" },
-    { key: "when", kind: "time", label: "When" },
+test("AC-DELIVERYCARD-002 D04: an independent validator accepts the fields answer and refuses planted defects", async () => {
+  // The validator itself: every scalar kind, a group with members and repeat, the trailing markers (eight entries, the cap).
+  const entry = (key, kind, extra = {}) => ({ key, kind, label: "L", ...extra });
+  const good = [
+    entry("note", "text"),
+    entry("where", "place", { lookup: true }),
+    entry("when", "time"),
+    entry("many", "number"),
     { key: "pay", kind: "pick_one", label: "Pay", options: [{ id: "a-1", label: "A" }, { id: "b_2", label: "B" }] },
     { key: "door", kind: "on_off", label: "Leave at door", options: [{ id: "true", label: "Leave" }, { id: "false", label: "Hand over" }] },
+    entry("maybe", "text", { optional: true }),
+    {
+      key: "rows",
+      kind: "group",
+      label: "Rows",
+      fields: [entry("one", "text"), { key: "pick", kind: "pick_one", label: "Pick", options: MENU.map(({ id }) => ({ id, label: id })) }],
+      repeat: 6,
+    },
   ];
-  assert.deepEqual(fieldListDefects(everyKind), []);
-  const defective = [
+  assert.deepEqual(fieldListDefects(good), []);
+  // A pick_one with any count of options from one upward is accepted.
+  assert.deepEqual(
+    fieldListDefects([entry("pick", "pick_one", { options: [{ id: "only", label: "Only" }] })]),
     [],
-    Array.from({ length: 9 }, (_, i) => ({ key: `k${"a".repeat(i)}`.replace(/\d/g, ""), kind: "text", label: "L" })),
-    [{ key: "Door", kind: "text", label: "L" }],
-    [{ key: "a".repeat(33), kind: "text", label: "L" }],
-    [{ key: "a", kind: "number", label: "L" }],
-    [{ key: "a", kind: "text", label: "" }],
-    [{ key: "a", kind: "text", label: "a​b" }],
-    [{ key: "a", kind: "text", label: "x".repeat(41) }],
-    [{ key: "a", kind: "text", label: "L", options: [] }],
-    [{ key: "a", kind: "text", label: "L", extra: 1 }],
-    [{ key: "a", kind: "text", label: "L" }, { key: "a", kind: "time", label: "M" }],
-    [{ key: "a", kind: "pick_one", label: "L" }],
-    [{ key: "a", kind: "pick_one", label: "L", options: [] }],
-    [{ key: "a", kind: "pick_one", label: "L", options: ["a", "b", "c", "d", "e"].map((id) => ({ id, label: id })) }],
-    [{ key: "a", kind: "pick_one", label: "L", options: [{ id: "x", label: "X" }, { id: "x", label: "Y" }] }],
-    [{ key: "a", kind: "pick_one", label: "L", options: [{ id: "X", label: "X" }] }],
-    [{ key: "a", kind: "pick_one", label: "L", options: [{ id: "x", label: "" }] }],
-    [{ key: "a", kind: "pick_one", label: "L", options: [{ id: "x", label: "y".repeat(61) }] }],
-    [{ key: "a", kind: "pick_one", label: "L", options: [{ id: "x", label: "X", extra: 1 }] }],
-    [{ key: "a", kind: "on_off", label: "L" }],
-    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "true", label: "Yes" }] }],
-    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "true", label: "A" }, { id: "false", label: "B" }, { id: "x", label: "C" }] }],
-    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "false", label: "A" }, { id: "true", label: "B" }] }],
-    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "yes", label: "A" }, { id: "no", label: "B" }] }],
-    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "true", label: "Same" }, { id: "false", label: "Same" }] }],
-    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "true", label: "A" }, { id: "false", label: "" }] }],
-    [{ key: "a", kind: "on_off", label: "L", options: [{ id: "true", label: "A" }, { id: "false", label: "B " }] }],
-    [{ key: "a", kind: "text", options: [], label: "L" }],
+  );
+  assert.deepEqual(
+    fieldListDefects([entry("pick", "pick_one", { options: MENU.map(({ id, name }) => ({ id, label: name })) })]),
+    [],
+  );
+  const group = (over = {}) => ({
+    key: "rows",
+    kind: "group",
+    label: "Rows",
+    fields: [{ key: "one", kind: "text", label: "One" }],
+    repeat: 2,
+    ...over,
+  });
+  const swapFirst = (list, field) => [field, ...list.slice(1)];
+  const planted = [
+    ["no field", []],
+    ["nine fields", Array.from({ length: 9 }, (_, i) => entry(`f${"i".repeat(i)}${"x".repeat(30)}`.slice(0, 32), "text"))],
+    ["an upper-case key", [entry("Door", "text")]],
+    ["a key of 33 characters", [entry("a".repeat(33), "text")]],
+    ["a kind outside the grammar", [entry("a", "flag")]],
+    ["an empty label", [entry("a", "text", { label: "" })]],
+    ["a hidden character in the label", [entry("a", "text", { label: "a​b" })]],
+    ["a label of 41 characters", [entry("a", "text", { label: "x".repeat(41) })]],
+    ["a repeated key", [entry("a", "text"), entry("a", "time")]],
+    ["a text field with options", [entry("a", "text", { options: [] })]],
+    ["a field with an extra key", [{ key: "a", kind: "text", label: "L", extra: 1 }]],
+    ["a pick_one with no options", [entry("a", "pick_one")]],
+    ["a pick_one with an empty options list", [entry("a", "pick_one", { options: [] })]],
+    ["a repeated option id", [entry("a", "pick_one", { options: [{ id: "x", label: "X" }, { id: "x", label: "Y" }] })]],
+    ["an upper-case option id", [entry("a", "pick_one", { options: [{ id: "X", label: "X" }] })]],
+    ["an empty option label", [entry("a", "pick_one", { options: [{ id: "x", label: "" }] })]],
+    ["an option label of 61 characters", [entry("a", "pick_one", { options: [{ id: "x", label: "y".repeat(61) }] })]],
+    ["an option with an extra key", [entry("a", "pick_one", { options: [{ id: "x", label: "X", extra: 1 }] })]],
+    ["an on_off with one option", [entry("a", "on_off", { options: [{ id: "true", label: "Yes" }] })]],
+    ["an on_off with three options", [entry("a", "on_off", { options: [{ id: "true", label: "A" }, { id: "false", label: "B" }, { id: "x", label: "C" }] })]],
+    ["an on_off with wrong ids", [entry("a", "on_off", { options: [{ id: "false", label: "A" }, { id: "true", label: "B" }] })]],
+    ["an on_off with equal labels", [entry("a", "on_off", { options: [{ id: "true", label: "Same" }, { id: "false", label: "Same" }] })]],
+    ["an optional of false", [entry("a", "text", { optional: false })]],
+    ["a lookup on a text field", [entry("a", "text", { lookup: true })]],
+    ["a lookup not last", [{ key: "a", kind: "place", lookup: true, label: "L" }]],
+    ["a lookup beside an optional", [{ key: "a", kind: "place", label: "L", lookup: true, optional: true }]],
+    ["a group without repeat", [{ key: "rows", kind: "group", label: "Rows", fields: [{ key: "one", kind: "text", label: "One" }] }]],
+    ["a group with repeat 0", [group({ repeat: 0 })]],
+    ["a group with a negative repeat", [group({ repeat: -1 })]],
+    ["a group with a fractional repeat", [group({ repeat: 2.5 })]],
+    ["a group with a text repeat", [group({ repeat: "2" })]],
+    ["a group with a boolean repeat", [group({ repeat: true })]],
+    ["a group with a repeat of 10^12", [group({ repeat: 1e12 })]],
+    ["a group with an optional marker", [group({ optional: true })]],
+    ["a group with a lookup marker", [group({ lookup: true })]],
+    ["a group with an extra key", [group({ extra: 1 })]],
+    ["a group without members", [group({ fields: [] })]],
+    ["a group whose member is a group", [group({ fields: [group({ key: "inner" })] })]],
+    ["a group member of kind place", [group({ fields: [{ key: "one", kind: "place", label: "One" }] })]],
+    ["a group member with a lookup marker", [group({ fields: [{ key: "one", kind: "text", label: "One", lookup: true }] })]],
+    ["a group whose members are all optional", [group({ fields: [{ key: "one", kind: "text", label: "One", optional: true }] })]],
+    ["a group key repeated by a member of another field", [{ ...group(), fields: [{ key: "rows", kind: "text", label: "One" }] }]],
+    ["a key repeated between a group member and a top-level field", [swapFirst([group()], entry("one", "text"))]],
   ];
-  for (const list of defective) {
-    assert.notDeepEqual(fieldListDefects(list), [], JSON.stringify(list));
+  for (const [name, list] of planted) {
+    assert.notDeepEqual(fieldListDefects(list), [], `the validator misses ${name}`);
   }
-  const goodResults = [
-    { name: "Arrival", kind: "time", value: "2026-11-02T19:40" },
-    { name: "Estimated total", kind: "money", value: 4000 },
-    { name: "Status", kind: "text", value: "Preparing" },
-  ];
-  assert.deepEqual(resultListDefects(goodResults), []);
-  assert.deepEqual(resultListDefects([...goodResults, { name: "Note", kind: "text", value: "Second" }]), []);
+  // The route's own answer passes both validators.
+  const body = await (await call({ op: "fields" })).json();
+  assert.deepEqual(fieldListDefects(body.fields), []);
+  assert.deepEqual(resultFieldsDefects(body.result_fields), []);
+  assert.deepEqual(resultFieldsDefects(RESULT_FIELDS), []);
   const badResults = [
     [],
-    [...goodResults, goodResults[1]],
-    [...goodResults, goodResults[0]],
-    [{ name: "Arrival", kind: "time", value: "2026-02-29T19:40" }],
-    [{ name: "Arrival", kind: "time", value: "2026-11-02T25:00" }],
-    [{ name: "Total", kind: "money", value: 4000.5 }],
-    [{ name: "Total", kind: "money", value: 0 }],
-    [{ name: "Total", kind: "money", value: 1000001 }],
-    [{ name: "Total", kind: "money", value: "4000" }],
-    [{ name: "Total", kind: "money", value: true }],
-    [{ name: "Status", kind: "text", value: "" }],
-    [{ name: "Status", kind: "text", value: "x".repeat(81) }],
-    [{ name: "Status", kind: "text", value: "a\u0007b" }],
-    [{ name: "N".repeat(41), kind: "text", value: "x" }],
-    [{ name: "Café", kind: "text", value: "x" }],
-    [{ name: "Status", kind: "flag", value: "x" }],
-    [{ name: "Status", kind: "text", value: "x", extra: 1 }],
-    [{ kind: "text", name: "Status", value: "x" }],
-    Array.from({ length: 9 }, (_, i) => ({ name: `Note ${i}`, kind: "text", value: "x" })),
+    [{ name: "Arrival", kind: "time", value: "x" }],
+    [{ name: "Arrival" }],
+    [{ name: "Arrival", kind: "time", extra: 1 }],
+    [{ name: "N".repeat(41), kind: "text" }],
+    [{ name: "Café", kind: "text" }],
+    [{ name: "Note", kind: "flag" }],
+    Array.from({ length: 9 }, (_, i) => ({ name: `Note ${i}`, kind: "text" })),
   ];
   for (const list of badResults) {
-    assert.notDeepEqual(resultListDefects(list), [], JSON.stringify(list));
+    assert.notDeepEqual(resultFieldsDefects(list), [], JSON.stringify(list));
   }
-  // Every answer of the route: the options answer, and a confirmed order at several times, mixes and cards.
-  const options = await (await call({ op: "options" })).json();
-  assert.deepEqual(fieldListDefects(options.order_fields), []);
-  const keys = options.order_fields.map((field) => field.key);
-  assert.equal(new Set(keys).size, keys.length);
-  for (const time of ["10:00", "12:30", "19:40", "22:00"]) {
-    for (const items of [LINES, MENU.map((item) => ({ item_id: item.id, quantity: 9 })), [{ item_id: "lemonade", quantity: 1 }]]) {
-      for (const card of CARDS) {
-        const body = await (await call(valid({ arrive_at: `2026-11-02T${time}`, items, card_id: card.id }))).json();
-        assert.equal(body.status, "confirmed");
-        assert.deepEqual(resultListDefects(body.results), [], `${time} ${card.id}`);
-      }
+});
+
+test("AC-DELIVERYCARD-004 D05: a valid submit gives exactly the four keys and answers by the rule", async () => {
+  const res = await call(submitValues({ restaurant: "SENTINEL-RESTAURANT", address: "SENTINEL-ADDRESS" }));
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(Object.keys(body), ["status", "partner", "simulated", "results"]);
+  assert.equal(body.status, "confirmed");
+  assert.equal(body.partner, "Example Delivery");
+  assert.equal(body.simulated, true);
+  assert.deepEqual(
+    body.results.map(({ name, kind }) => [name, kind]),
+    RESULT_FIELDS.map(({ name, kind }) => [name, kind]),
+  );
+  for (const item of body.results) {
+    assert.deepEqual(Object.keys(item), ["name", "kind", "value"]);
+  }
+  assert.equal(body.results[0].value, "2026-11-02T19:40");
+  assert.match(body.results[1].value, /^DL-[A-Z0-9]{6}$/);
+  assert.equal(body.results[1].value, await expectedCode(ID));
+  // The code depends on the request id alone and ignores its case.
+  const upper = await (
+    await call(submit({ request_id: ID.toUpperCase(), values: values({ restaurant: "SENTINEL-RESTAURANT", address: "SENTINEL-ADDRESS" }) }))
+  ).json();
+  assert.equal(upper.results[1].value, body.results[1].value);
+  const changed = await (
+    await call(
+      submitValues({ items: [{ item: "pizza", quantity: 1 }], card_id: "credit-1881", arrive_at: "2027-01-05T12:30" }),
+    )
+  ).json();
+  assert.equal(changed.results[1].value, body.results[1].value);
+  const other = await (await call(submit({ request_id: ID2 }))).json();
+  assert.notEqual(other.results[1].value, body.results[1].value);
+  // No free-text value, no item and no card is echoed.
+  const text = JSON.stringify(body);
+  for (const secret of ["SENTINEL-RESTAURANT", "SENTINEL-ADDRESS", "ramen", "debit-4242"]) {
+    assert.equal(text.includes(secret), false, secret);
+  }
+  for (const key of ["order_id", "restaurant", "items", "address", "card_id"]) {
+    assert.equal(key in body, false, key);
+  }
+});
+
+test("AC-DELIVERYCARD-004 D06: hours and quantity declines, the hours first", async () => {
+  const answerOf = async (over) => (await call(submitValues(over))).json();
+  for (const time of ["10:00", "22:00", "19:40"]) {
+    const body = await answerOf({ arrive_at: `2026-11-02T${time}` });
+    assert.equal(body.status, "confirmed", time);
+  }
+  for (const [name, over, reason] of [
+    ["09:59", { arrive_at: "2026-11-02T09:59" }, "outside_hours"],
+    ["22:01", { arrive_at: "2026-11-02T22:01" }, "outside_hours"],
+    ["quantity 0", { items: [{ item: "ramen", quantity: 0 }] }, "quantity_out_of_range"],
+    ["quantity 10", { items: [{ item: "ramen", quantity: 10 }] }, "quantity_out_of_range"],
+    ["a second row out of range", { items: [{ item: "ramen", quantity: 1 }, { item: "gyoza", quantity: 99 }] }, "quantity_out_of_range"],
+  ]) {
+    const body = await answerOf(over);
+    assert.equal(body.status, "declined", name);
+    assert.deepEqual(Object.keys(body), ["status", "partner", "simulated", "reason"], name);
+    assert.equal(body.reason, reason, name);
+    assert.equal(body.partner, "Example Delivery", name);
+    assert.equal(body.simulated, true, name);
+    assert.equal("results" in body, false, name);
+  }
+  for (const quantity of [1, 9]) {
+    const body = await answerOf({ items: [{ item: "ramen", quantity }] });
+    assert.equal(body.status, "confirmed", `quantity ${quantity}`);
+  }
+  // A request with both faults gives the hours answer.
+  const both = await answerOf({ arrive_at: "2026-11-02T22:01", items: [{ item: "ramen", quantity: 10 }] });
+  assert.equal(both.status, "declined");
+  assert.equal(both.reason, "outside_hours");
+});
+
+test("AC-DELIVERYCARD-004 D07: the estimated total is the sum of price times quantity plus the fee", async () => {
+  const totalOfRows = async (items) => {
+    const body = await (await call(submitValues({ items }))).json();
+    assert.equal(body.status, "confirmed", JSON.stringify(items));
+    assert.equal(Number.isInteger(totalOf(body)), true);
+    return totalOf(body);
+  };
+  assert.equal(await totalOfRows([{ item: "ramen", quantity: 1 }]), PRICE.ramen + FEE);
+  assert.equal(
+    await totalOfRows([
+      { item: "gyoza", quantity: 1 },
+      { item: "ramen", quantity: 2 },
+    ]),
+    PRICE.gyoza + 2 * PRICE.ramen + FEE,
+  );
+  // Six rows, every menu item once.
+  assert.equal(
+    await totalOfRows(MENU.map(({ id }) => ({ item: id, quantity: 1 }))),
+    MENU.reduce((sum, { price_cents }) => sum + price_cents, FEE),
+  );
+  // A repeated item is priced per row.
+  assert.equal(
+    await totalOfRows([
+      { item: "ramen", quantity: 2 },
+      { item: "ramen", quantity: 3 },
+    ]),
+    5 * PRICE.ramen + FEE,
+  );
+  // Every item at 1 and at 9.
+  for (const { id, price_cents } of MENU) {
+    assert.equal(await totalOfRows([{ item: id, quantity: 1 }]), price_cents + FEE, `${id} once`);
+    assert.equal(await totalOfRows([{ item: id, quantity: 9 }]), price_cents * 9 + FEE, `${id} nine times`);
+  }
+});
+
+test("AC-DELIVERYCARD-003 D08: the ladder of the faults, step by step and two at once", async () => {
+  await expectError(await call(null, { raw: "x".repeat(4097) }), 413, "body_too_large");
+  await expectError(await call(null, { raw: "x".repeat(4096) }), 400, "invalid_json");
+  await expectError(await call(null, { raw: "not json" }), 400, "invalid_json");
+  await expectError(await call(null, { raw: "" }), 400, "invalid_json");
+  await expectError(await call(null, { raw: "[1,2]" }), 400, "body_must_be_object");
+  await expectError(await call(null, { raw: "null" }), 400, "body_must_be_object");
+  await expectError(await call(null, { raw: "5" }), 400, "body_must_be_object");
+  // (1) a key outside the six.
+  await expectError(await call({ ...submit(), people: 2 }), 400, "unknown_field");
+  await expectError(await call({ op: "fields", people: 2 }), 400, "unknown_field");
+  // (2) an op that is present and none of the three words.
+  for (const op of ["options", "order", "ORDER", "Submit", "", 5, null, true]) {
+    await expectError(await call(submit({ op })), 400, "invalid_field", `op ${JSON.stringify(op)}`);
+  }
+  // (3) no op, or a key the op needs missing.
+  const { op: withoutOpValue, ...noOp } = submit();
+  await expectError(await call(noOp), 400, "missing_field");
+  await expectError(await call({}), 400, "missing_field");
+  await expectError(await call({ op: "submit" }), 400, "missing_field");
+  await expectError(await call({ op: "submit", values: values() }), 400, "missing_field");
+  await expectError(await call({ op: "submit", request_id: ID }), 400, "missing_field");
+  await expectError(await call({ op: "lookup" }), 400, "missing_field");
+  await expectError(await call({ op: "lookup", field: "address" }), 400, "missing_field");
+  await expectError(await call({ op: "lookup", text: "Tartine" }), 400, "missing_field");
+  // (4) a key the op does not allow.
+  await expectError(await call({ op: "fields", request_id: ID }), 400, "invalid_field");
+  await expectError(await call(submit({ field: "address" })), 400, "invalid_field");
+  await expectError(await call({ op: "lookup", field: "address", text: "Tartine", request_id: ID }), 400, "invalid_field");
+  // (5) values is not an object.
+  for (const bad of [[], "x", 5, null, true]) {
+    await expectError(await call({ op: "submit", request_id: ID, values: bad }), 400, "invalid_field");
+  }
+  // (5b) items present and not an array of 1 to 6 objects.
+  for (const items of [[], "x", 5, null, {}, ["x"], [5], [null], [[]], [{ item: "ramen", quantity: 1 }, "x"]]) {
+    await expectError(await call(submitValues({ items })), 400, "invalid_field", `items ${JSON.stringify(items)}`);
+  }
+  for (let count of [0, 7]) {
+    const rows = Array.from({ length: count === 0 ? 2 : 7 }, () => ({ item: "ramen", quantity: 1 }));
+    const items = count === 0 ? [] : rows;
+    await expectError(await call(submitValues({ items })), 400, "invalid_field", `${count} rows`);
+  }
+  // (6) a key of values outside the five, then of a row outside the two.
+  await expectError(await call(submitValues({ extra: 1 })), 400, "unknown_field");
+  await expectError(await call(submitValues({ note: "x" })), 400, "unknown_field");
+  await expectError(
+    await call(submitValues({ items: [{ item: "ramen", quantity: 1, note: "x" }] })),
+    400,
+    "unknown_field",
+  );
+  // (7) a required key of values, then of a row, missing.
+  for (const key of Object.keys(BASE_VALUES)) {
+    await expectError(await call(submit({ values: drop(BASE_VALUES, key) })), 400, "missing_field", `no ${key}`);
+  }
+  await expectError(await call(submitValues({ items: [{ quantity: 1 }] })), 400, "missing_field");
+  await expectError(await call(submitValues({ items: [{ item: "ramen" }] })), 400, "missing_field");
+  // (8) types and ranges.
+  await expectError(await call(submit({ request_id: "not-a-uuid" })), 400, "invalid_field");
+  await expectError(await call(submitValues({ restaurant: "x".repeat(121) })), 400, "invalid_field");
+  await expectError(await call(submitValues({ arrive_at: "2026-13-01T12:00" })), 400, "invalid_field");
+  await expectError(await call(submitValues({ address: "12 Test\u0007Street" })), 400, "invalid_field");
+  await expectError(await call(submitValues({ card_id: "nope" })), 400, "invalid_field");
+  await expectError(await call(submitValues({ items: [{ item: "sushi", quantity: 1 }] })), 400, "invalid_field");
+  for (const quantity of ["2", 2.5, true, null]) {
+    await expectError(await call(submitValues({ items: [{ item: "ramen", quantity }] })), 400, "invalid_field");
+  }
+  // Each adjacent pair that can co-occur, broken at once: the earlier step answers.
+  await expectError(await call({ op: "options", people: 1 }), 400, "unknown_field");
+  await expectError(await call({ op: "refund", request_id: ID }), 400, "invalid_field");
+  await expectError(await call({ op: "submit", request_id: ID, text: "x" }), 400, "missing_field");
+  await expectError(await call({ op: "submit", request_id: ID, values: values(), text: "x" }), 400, "invalid_field");
+  await expectError(await call({ op: "submit", request_id: ID, values: [], text: "x" }), 400, "invalid_field");
+  await expectError(await call(submitValues({ items: [], extra: 1 })), 400, "invalid_field");
+  await expectError(await call(submit({ values: { ...drop(BASE_VALUES, "restaurant"), extra: 1 } })), 400, "unknown_field");
+  await expectError(
+    await call(submit({ values: { ...drop(BASE_VALUES, "restaurant"), card_id: "nope" } })),
+    400,
+    "missing_field",
+  );
+  await expectError(
+    await call(submitValues({ items: [{ item: "ramen", quantity: 1, note: "x" }, { quantity: 1 }] })),
+    400,
+    "unknown_field",
+  );
+});
+
+test("AC-DELIVERYCARD-003 D09: the value rules of the five fields and the request id", async () => {
+  // restaurant and address: 1 to 120 code points, trimmed, no hidden character.
+  const wide = "\u{1D49C}"; // one code point, two UTF-16 units
+  for (const key of ["restaurant", "address"]) {
+    assert.equal((await call(submitValues({ [key]: wide.repeat(120) }))).status, 200, `${key} 120`);
+    await expectError(await call(submitValues({ [key]: wide.repeat(121) })), 400, "invalid_field");
+    const padded = await (await call(submitValues({ [key]: `  Test Cafe  ` }))).json();
+    assert.equal(padded.status, "confirmed");
+    const trimmed120 = await call(submitValues({ [key]: `  ${"a".repeat(120)}  ` }));
+    assert.equal(trimmed120.status, 200);
+    for (const bad of ["", "   ", "Test\u0007Cafe", "Test​Cafe", "Test Cafe", "Test Cafe", "Test Cafe\n", "Test\tCafe", 5, null, ["Test Cafe"]]) {
+      await expectError(await call(submitValues({ [key]: bad })), 400, "invalid_field", `${key} ${JSON.stringify(bad)}`);
     }
   }
+  // arrive_at: a real local date-time of the years 2000 to 2199. The year edges fall outside the open hours, and a
+  // date the rule accepts answers the hours decline, so both prove the date itself passed.
+  for (const arrive_at of ["2028-02-29T12:00", "2000-02-29T12:00", "2100-02-28T12:00"]) {
+    const body = await (await call(submitValues({ arrive_at }))).json();
+    assert.equal(body.status, "confirmed", arrive_at);
+    assert.equal(body.results[0].value, arrive_at);
+  }
+  for (const arrive_at of ["2000-01-01T00:00", "2199-12-31T23:59"]) {
+    const res = await call(submitValues({ arrive_at }));
+    assert.equal(res.status, 200, arrive_at);
+    const body = await res.json();
+    assert.equal(body.status, "declined", arrive_at);
+    assert.equal(body.reason, "outside_hours", arrive_at);
+  }
+  for (const arrive_at of ["2026-02-29T12:00", "2100-02-29T12:00", "2026-13-01T12:00", "2026-11-02T24:00", "2026-11-02T12:60", "1999-12-31T12:00", "2200-01-01T12:00", "2026-11-02 12:00", "2026-11-02T12:00:00", "2026-11-02", "", 20261102, null]) {
+    await expectError(await call(submitValues({ arrive_at })), 400, "invalid_field", arrive_at);
+  }
+  // card_id: one of the two cards.
+  for (const card of CARDS) {
+    assert.equal((await call(submitValues({ card_id: card.id }))).status, 200);
+  }
+  for (const card_id of ["", "nope", "DEBIT-4242", " debit-4242", "debit-4243", 5, null, ["debit-4242"]]) {
+    await expectError(await call(submitValues({ card_id })), 400, "invalid_field");
+  }
+  // item: the id of a menu item.
+  for (const item of ["sushi", "Ramen", "", 5, null, ["ramen"]]) {
+    await expectError(await call(submitValues({ items: [{ item, quantity: 1 }] })), 400, "invalid_field", JSON.stringify(item));
+  }
+  // quantity: a JSON number with a whole value; 2.0 is accepted as sent.
+  const twoPointZero = await call(null, {
+    raw: `{"op":"submit","request_id":${JSON.stringify(ID)},"values":{"restaurant":"Test Cafe","items":[{"item":"ramen","quantity":2.0}],"arrive_at":"2026-11-02T19:40","address":"12 Test Street","card_id":"debit-4242"}}`,
+  });
+  assert.equal(twoPointZero.status, 200);
+  assert.equal(totalOf(await twoPointZero.json()), 2 * PRICE.ramen + FEE);
+  // request_id: a UUID in either case.
+  assert.equal((await call(submit({ request_id: ID.toUpperCase() }))).status, 200);
+  for (const request_id of ["not-a-uuid", `${ID}0`, ` ${ID}`, ID.replaceAll("-", ""), "3f2b8c1e-5d4a-4e7b-9a60-1c2d3e4f5a6g", 1, null]) {
+    await expectError(await call(submit({ request_id })), 400, "invalid_field");
+  }
+});
+
+test("AC-DELIVERYCARD-003 D10: the row rules of the group", async () => {
+  // One row and six rows are accepted, in the order sent.
+  for (const items of [
+    [{ item: "lemonade", quantity: 1 }],
+    MENU.map(({ id }) => ({ item: id, quantity: 1 })),
+  ]) {
+    assert.equal((await call(submitValues({ items }))).status, 200, JSON.stringify(items));
+  }
+  // A repeated item is accepted and priced per row.
+  const repeated = await (await call(submitValues({ items: [{ item: "ramen", quantity: 2 }, { item: "ramen", quantity: 3 }] }))).json();
+  assert.equal(repeated.status, "confirmed");
+  assert.equal(totalOf(repeated), 5 * PRICE.ramen + FEE);
+  // Zero rows and seven rows are invalid (the count is step 5b, before any key of a row is read).
+  await expectError(await call(submitValues({ items: [] })), 400, "invalid_field");
+  await expectError(
+    await call(submitValues({ items: Array.from({ length: 7 }, () => ({ item: "ramen", quantity: 1 })) })),
+    400,
+    "invalid_field",
+  );
+  await expectError(await call(submitValues({ items: "ramen:1" })), 400, "invalid_field");
+  await expectError(await call(submitValues({ items: { item: "ramen", quantity: 1 } })), 400, "invalid_field");
+  await expectError(await call(submitValues({ items: [5, null, [], "x"] })), 400, "invalid_field");
+  // A row key outside item and quantity is unknown; a missing member is missing.
+  await expectError(
+    await call(submitValues({ items: [{ item: "ramen", quantity: 1, price_cents: 1 }] })),
+    400,
+    "unknown_field",
+  );
+  await expectError(await call(submitValues({ items: [{ item: "ramen" }] })), 400, "missing_field");
+  await expectError(await call(submitValues({ items: [{ quantity: 1 }] })), 400, "missing_field");
+  await expectError(await call(submitValues({ items: [{}] })), 400, "missing_field");
+});
+
+test("AC-DELIVERYCARD-003 D11: the old ops and shapes are refused", async () => {
+  await expectError(await call({ op: "options" }), 400, "invalid_field");
+  // An old order body: the old keys at the top level.
+  await expectError(
+    await call({
+      op: "order",
+      request_id: ID,
+      restaurant: "Test Cafe",
+      arrive_at: "2026-11-02T19:40",
+      items: [{ item_id: "ramen", quantity: 2 }],
+      address: "12 Test Street",
+      card_id: "debit-4242",
+    }),
+    400,
+    "unknown_field",
+  );
+  // Each answer-side key as a request key is unknown.
+  for (const key of ["fields", "result_fields", "results", "reason", "order_id", "status", "partner", "simulated"]) {
+    await expectError(await call({ ...submit(), [key]: [] }), 400, "unknown_field", key);
+  }
+  // `fields` beside the op that does not take it.
+  await expectError(await call({ op: "fields", values: values() }), 400, "invalid_field");
+  await expectError(await call({ op: "fields", field: "address" }), 400, "invalid_field");
+});
+
+test("AC-DELIVERYCARD-005 D12: the lookup request is validated in order and an invalid one makes no fetch", async () => {
+  const lookupBody = (over = {}) => ({ op: "lookup", field: "address", text: "Tartine Bakery", ...over });
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new Error("no outgoing request is allowed");
+  };
+  try {
+    // (1) a stray key beside a lookup.
+    await expectError(await call({ ...lookupBody(), x: 1 }), 400, "unknown_field");
+    // (3) a key a lookup needs missing.
+    await expectError(await call({ op: "lookup", field: "address" }), 400, "missing_field");
+    await expectError(await call({ op: "lookup", text: "Tartine" }), 400, "missing_field");
+    await expectError(await call({ op: "lookup" }), 400, "missing_field");
+    // (4) a key of another op beside a lookup.
+    await expectError(await call(lookupBody({ request_id: ID })), 400, "invalid_field");
+    await expectError(await call(lookupBody({ values: values() })), 400, "invalid_field");
+    // (4) the lookup keys beside the other ops.
+    await expectError(await call({ op: "fields", field: "address" }), 400, "invalid_field");
+    await expectError(await call(submit({ text: "Tartine" })), 400, "invalid_field");
+    // (5) a field other than address: the old order keys and the other fields of this form.
+    for (const field of ["restaurant", "items", "arrive_at", "card_id", "order_id", "nope", "", 5, null, true]) {
+      await expectError(await call(lookupBody({ field })), 400, "invalid_field", `field ${JSON.stringify(field)}`);
+    }
+    // (5) the text: under 2 or over 80 code points.
+    for (const text of ["", "x", "x".repeat(81), " \nx", 5, null, ["Tartine"]]) {
+      await expectError(await call(lookupBody({ text })), 400, "invalid_field", `text ${JSON.stringify(text)}`);
+    }
+    // (5) the shape of near, (6) its keys, (7) a missing key, (8) a bad value.
+    for (const near of ["x", 5, null, true, [], "1,2"]) {
+      await expectError(await call(lookupBody({ near })), 400, "invalid_field", `near ${JSON.stringify(near)}`);
+    }
+    await expectError(await call(lookupBody({ near: { latitude: 1, longitude: 2, altitude: 3 } })), 400, "unknown_field");
+    await expectError(await call(lookupBody({ near: { latitude: 1 } })), 400, "missing_field");
+    await expectError(await call(lookupBody({ near: { latitude: 91, longitude: 0 } })), 400, "invalid_field");
+    await expectError(await call(lookupBody({ near: { latitude: 0, longitude: 181 } })), 400, "invalid_field");
+    await expectError(await call(lookupBody({ near: { latitude: "1", longitude: 2 } })), 400, "invalid_field");
+    // The order: the field before the text, the text before the keys of near.
+    await expectError(await call(lookupBody({ field: "restaurant", text: "" })), 400, "invalid_field");
+    await expectError(await call(lookupBody({ text: "", near: { latitude: 1, longitude: 2, altitude: 3 } })), 400, "invalid_field");
+    await expectError(await call(lookupBody({ field: "restaurant", request_id: ID })), 400, "invalid_field");
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("AC-DELIVERYCARD-005 D13: one valid lookup asks Google Places once, with the Worker's own key and mask", async () => {
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), init });
+    return new Response(
+      JSON.stringify({ places: [{ displayName: { text: "Tartine Bakery" }, formattedAddress: "600 Guerrero St", location: { latitude: 37.76, longitude: -122.42 } }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  };
+  try {
+    const hostile = { "x-goog-fieldmask": "places.id", "x-goog-api-key": "client-key", authorization: "Bearer client" };
+    const res = await worker.fetch(
+      new Request("https://x.test/delivery", {
+        method: "POST",
+        headers: { "x-besir-token": "app-test", ...hostile },
+        body: JSON.stringify({ op: "lookup", field: "address", text: "  Tartine Bakery  " }),
+      }),
+      env,
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.deepEqual(Object.keys(body), ["partner", "simulated", "field", "candidates"]);
+    assert.equal(body.partner, "Example Delivery");
+    assert.equal(body.simulated, true);
+    assert.equal(body.field, "address");
+    assert.equal(body.candidates.length, 1);
+    // The one outgoing request: the Worker's key, the fixed mask, no client header.
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, "https://places.googleapis.com/v1/places:searchText");
+    const sent = new Headers(seen[0].init.headers);
+    assert.equal(sent.get("x-goog-api-key"), "g");
+    assert.equal(sent.get("x-goog-fieldmask"), "places.displayName,places.formattedAddress,places.location");
+    assert.equal(sent.get("authorization"), null);
+    const sentBody = JSON.parse(seen[0].init.body);
+    assert.deepEqual(Object.keys(sentBody), ["textQuery", "languageCode", "regionCode", "pageSize"]);
+    assert.equal(sentBody.textQuery, "Tartine Bakery");
+    assert.equal(sentBody.languageCode, "en");
+    assert.equal(sentBody.regionCode, "US");
+    assert.equal(sentBody.pageSize, 5);
+    // A bias circle only with near.
+    const biased = await call({ op: "lookup", field: "address", text: "Tartine Bakery", near: { latitude: 1.5, longitude: -2.25 } });
+    assert.equal(biased.status, 200);
+    assert.equal(seen.length, 2);
+    const biasedBody = JSON.parse(seen[1].init.body);
+    assert.deepEqual(Object.keys(biasedBody), ["textQuery", "languageCode", "regionCode", "pageSize", "locationBias"]);
+    assert.deepEqual(biasedBody.locationBias, { circle: { center: { latitude: 1.5, longitude: -2.25 }, radius: 50000 } });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("AC-DELIVERYCARD-005 D14: a bad Google result is dropped alone, no candidate is an empty list, and the failures are fixed words", async () => {
+  const upstream = (places, status = 200) =>
+    async () => new Response(JSON.stringify({ places, note: "SECRET-UPSTREAM-TEXT" }), { status, headers: { "content-type": "application/json" } });
+  const place = (id, over = {}) => ({
+    displayName: { text: `Place ${id}` },
+    formattedAddress: `${id} Test Street`,
+    location: { latitude: 37.7, longitude: -122.4 },
+    ...over,
+  });
+  // A bad result is dropped alone.
+  globalThis.fetch = upstream([place("1"), "x", null, 5, {}, place("2", { displayName: { text: "" } }), place("3")]);
+  const mixed = await (await call({ op: "lookup", field: "address", text: "Tartine" })).json();
+  assert.deepEqual(mixed.candidates.map((candidate) => candidate.name), ["Place 1", "Place 3"]);
+  // At most five candidates; none is an empty list.
+  globalThis.fetch = upstream([place("1"), place("2"), place("3"), place("4"), place("5"), place("6")]);
+  const six = await (await call({ op: "lookup", field: "address", text: "Tartine" })).json();
+  assert.equal(six.candidates.length, 5);
+  for (const candidate of six.candidates) {
+    assert.deepEqual(Object.keys(candidate), ["name", "address", "location"]);
+  }
+  globalThis.fetch = upstream([]);
+  const none = await (await call({ op: "lookup", field: "address", text: "Zzzz" })).json();
+  assert.deepEqual(none.candidates, []);
+  // A failing upstream is 502 and a missing key 503, both with no upstream text.
+  globalThis.fetch = upstream([], 500);
+  const failed = await call({ op: "lookup", field: "address", text: "Tartine" });
+  assert.equal(failed.status, 502);
+  const failedText = await failed.text();
+  assert.equal(failedText.includes("SECRET-UPSTREAM-TEXT"), false);
+  assert.deepEqual(JSON.parse(failedText), { error: "upstream_failed" });
+  const noKey = await call({ op: "lookup", field: "address", text: "Tartine" }, { e: envWithoutKey });
+  await expectError(noKey, 503, "google_key_not_configured");
+  try {
+    globalThis.fetch = async () => {
+      throw new Error("network down");
+    };
+    const thrown = await call({ op: "lookup", field: "address", text: "Tartine" });
+    await expectError(thrown, 502, "upstream_failed");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("AC-DELIVERYCARD-005 D15: fields and submit make no fetch, and the sources hold no log, storage, clock or random call", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new Error("no outgoing request is allowed");
+  };
+  try {
+    assert.equal((await call({ op: "fields" })).status, 200);
+    assert.equal((await call(submit())).status, 200);
+    assert.equal((await call(submitValues({ arrive_at: "2026-11-02T23:30" }))).status, 200);
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  for (const file of ["../src/delivery.js", "../src/lookup.js"]) {
+    const source = readFileSync(new URL(file, import.meta.url), "utf8");
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "").replace(/\s\/\/.*$/gm, "");
+    for (const word of ["console", "fetch", "env", "Date", "KV", "D1", "R2"]) {
+      assert.equal(new RegExp(`\\b${word}\\b`).test(code), false, `${file} holds ${word}`);
+    }
+    for (const text of ["Math.random", "getRandomValues"]) {
+      assert.equal(code.includes(text), false, `${file} holds ${text}`);
+    }
+    assert.equal(code.includes("crypto.subtle"), file === "../src/delivery.js", `${file} crypto.subtle`);
+  }
+  // Positive controls: the same scan finds what it looks for.
+  assert.equal(/\bfetch\b/.test("await fetch(x)"), true);
+  assert.equal(/\bDate\b/.test("new Date()"), true);
+  assert.equal(/\benv\b/.test("handle(request, env)"), true);
+  // The partner name is written once in delivery.js.
+  const delivery = readFileSync(new URL("../src/delivery.js", import.meta.url), "utf8");
+  assert.equal(delivery.split("Example Delivery").length - 1, 1);
+});
+
+test("AC-DELIVERYCARD-001 D16: the route sits beside the others and has no cancel route", async () => {
+  // After the token check and the method check.
+  await expectError(await call({ op: "fields" }, { token: "nope" }), 401, "unauthorized");
+  await expectError(await call(null, { method: "GET" }), 405, "method_not_allowed");
+  // No cancel route and no list of deliveries.
+  for (const path of ["/delivery/cancel", "/deliveries"]) {
+    const res = await worker.fetch(
+      new Request(`https://x.test${path}`, { method: "POST", headers: { "x-besir-token": "app-test" }, body: "{}" }),
+      env,
+    );
+    await expectError(res, 404, "not_found");
+  }
+  // Every answer names the partner and says it is simulated.
+  for (const body of [
+    await (await call({ op: "fields" })).json(),
+    await (await call(submit())).json(),
+    await (await call(submitValues({ arrive_at: "2026-11-02T23:30" }))).json(),
+  ]) {
+    assert.equal(body.partner, "Example Delivery");
+    assert.equal(body.simulated, true);
+  }
+});
+
+test("AC-DELIVERYCARD-004 D17: the order number differs from the reservation number of the booking route", async () => {
+  const table = await (
+    await call(
+      {
+        op: "submit",
+        request_id: ID,
+        values: { restaurant: "Test Cafe", party_size: 2, start: "2026-11-02T19:40", name: "Sam" },
+      },
+      { path: "/booking" },
+    )
+  ).json();
+  const reservation = table.results.find((item) => item.name === "Reservation number");
+  assert.match(reservation.value, /^EX-[A-Z0-9]{6}$/);
+  const order = await (await call(submit())).json();
+  assert.match(order.results[1].value, /^DL-[A-Z0-9]{6}$/);
+  assert.notEqual(order.results[1].value.slice(3), reservation.value.slice(3));
+  assert.equal(order.results[1].value, await expectedCode(ID));
 });
