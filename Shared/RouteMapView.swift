@@ -120,7 +120,7 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
 
         /// What the map shows now, so a redraw that changes nothing leaves the markers and the camera alone.
         private var lastMarkers: [MapMarkerSpec] = []
-        private var lastFraming: MapFraming?
+        private var lastFit: MapFitBasis?
         private var lastDark: Bool?
         private var lastLine: RouteLineSpec?
         private var lastLineDark: Bool?
@@ -170,10 +170,11 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
             reselect()
 
             guard hasSize else { return }
-            let plan = MapFraming.plan(origin: origin, destination: destination, path: routeLine)
-            if plan != lastFraming {
-                apply(plan, to: map)
-                lastFraming = plan
+            let fit = MapFitBasis(frame: MapFraming.plan(origin: origin, destination: destination, path: routeLine),
+                                  labelWidth: labelWidth())
+            if MapFitRule.needsFit(last: lastFit, next: fit) {
+                apply(fit, to: map)
+                lastFit = fit
             }
         }
 
@@ -265,13 +266,13 @@ private struct GoogleMapRepresentable: UIViewRepresentable {
             return ceil(text) + 32
         }
 
-        private func apply(_ plan: MapFraming, to map: GMSMapView) {
-            switch plan {
+        private func apply(_ fit: MapFitBasis, to map: GMSMapView) {
+            switch fit.frame {
             case let .bounds(south, west, north, east):
                 let bounds = GMSCoordinateBounds(
                     coordinate: CLLocationCoordinate2D(latitude: south, longitude: west),
                     coordinate: CLLocationCoordinate2D(latitude: north, longitude: east))
-                let insets = MapFitInsets.make(labelWidth: labelWidth(), mapWidth: map.bounds.width, mapHeight: map.bounds.height)
+                let insets = MapFitInsets.make(labelWidth: fit.labelWidth, mapWidth: map.bounds.width, mapHeight: map.bounds.height)
                 map.moveCamera(GMSCameraUpdate.fit(bounds, with: UIEdgeInsets(top: insets.top, left: insets.left, bottom: insets.bottom, right: insets.right)))
                 if map.camera.zoom > GoogleMapRepresentable.maxFitZoom {
                     map.moveCamera(GMSCameraUpdate.zoom(to: GoogleMapRepresentable.maxFitZoom))

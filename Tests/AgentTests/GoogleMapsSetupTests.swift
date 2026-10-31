@@ -224,4 +224,65 @@ final class GoogleMapsSetupTests: XCTestCase {
         XCTAssertGreaterThan(delays.first ?? 0, 0)
         XCTAssertLessThan(delays.last ?? .infinity, LabelReassert.window)
     }
+
+    // MARK: - refit when the label width changes (card t49)
+
+    private let tall = MapFraming.bounds(south: 37.7694, west: -122.4862, north: 37.7955, east: -122.3937)
+    private let wide = MapFraming.bounds(south: 37.70, west: -122.50, north: 37.80, east: -122.39)
+    private let spot = MapFraming.point(latitude: 37.7694, longitude: -122.4862, zoom: 15)
+    private let otherSpot = MapFraming.point(latitude: 37.7955, longitude: -122.3937, zoom: 15)
+
+    private func basis(_ frame: MapFraming, _ width: CGFloat) -> MapFitBasis {
+        MapFitBasis(frame: frame, labelWidth: width)
+    }
+
+    func testMAPREFIT_FirstFitAlwaysFits() {
+        XCTAssertTrue(MapFitRule.needsFit(last: nil, next: basis(tall, 120)), "the first fit on a bounds frame must fit")
+        XCTAssertTrue(MapFitRule.needsFit(last: nil, next: basis(spot, 120)), "the first fit on a point frame must fit")
+    }
+
+    func testMAPREFIT_SameBoundsSameWidthDoesNotRefit() {
+        XCTAssertFalse(MapFitRule.needsFit(last: basis(tall, 120), next: basis(tall, 120)),
+                       "the same bounds and the same width must leave the camera alone")
+    }
+
+    func testMAPREFIT_WiderLabelOnSameBoundsRefits() {
+        XCTAssertTrue(MapFitRule.needsFit(last: basis(tall, 120), next: basis(tall, 180)),
+                      "a wider label on the same bounds must refit")
+    }
+
+    func testMAPREFIT_NarrowerLabelOnSameBoundsRefits() {
+        XCTAssertTrue(MapFitRule.needsFit(last: basis(tall, 180), next: basis(tall, 120)),
+                      "a narrower label on the same bounds must refit")
+    }
+
+    func testMAPREFIT_ChangedFrameOfTheSameKindRefits() {
+        XCTAssertTrue(MapFitRule.needsFit(last: basis(tall, 120), next: basis(wide, 120)),
+                      "other bounds with the same width must refit")
+        XCTAssertTrue(MapFitRule.needsFit(last: basis(spot, 120), next: basis(otherSpot, 120)),
+                      "another point with the same width must refit")
+    }
+
+    func testMAPREFIT_FrameKindChangeRefits() {
+        XCTAssertTrue(MapFitRule.needsFit(last: basis(tall, 120), next: basis(spot, 120)),
+                      "bounds turning into a point must refit")
+        XCTAssertTrue(MapFitRule.needsFit(last: basis(spot, 120), next: basis(tall, 120)),
+                      "a point turning into bounds must refit")
+    }
+
+    func testMAPREFIT_PointFrameIgnoresLabelWidth() {
+        XCTAssertFalse(MapFitRule.needsFit(last: basis(spot, 120), next: basis(spot, 180)),
+                       "a single point uses no insets, so a different label width must not refit")
+    }
+
+    func testMAPREFIT_FrameAndWidthBothChangeRefit() {
+        XCTAssertTrue(MapFitRule.needsFit(last: basis(tall, 120), next: basis(spot, 180)),
+                      "bounds to a point with a new width must refit")
+        XCTAssertTrue(MapFitRule.needsFit(last: basis(spot, 120), next: basis(tall, 180)),
+                      "a point to bounds with a new width must refit")
+        XCTAssertTrue(MapFitRule.needsFit(last: basis(tall, 120), next: basis(wide, 180)),
+                      "other bounds with a new width must refit")
+        XCTAssertTrue(MapFitRule.needsFit(last: basis(spot, 120), next: basis(otherSpot, 180)),
+                      "another point with a new width must refit")
+    }
 }

@@ -114,6 +114,28 @@ struct RouteLineSpec: Equatable {
     }
 }
 
+// Not Equatable: the rule compares the two parts, and nothing compares the whole value.
+/// What one camera fit was made from: the frame, and the width of the destination's name label
+/// that the fit's insets were made for.
+struct MapFitBasis {
+    let frame: MapFraming
+    let labelWidth: CGFloat
+}
+
+enum MapFitRule {
+    /// Whether the camera must be fitted: first fit, a different frame, or - for a bounds frame only -
+    /// a label of a different width (wider or narrower). A single-point frame uses no insets, so its width never matters.
+    // @MX:NOTE: The key is the label width, not the computed MapFitInsets and not the map size: a map-size change
+    // (rotation, a sheet) must not refit, because that would reset the user's pan and zoom (card t49, decision D2).
+    // `labelWidth()` is ceil(text) + 32 of the same string at the same font, so an unchanged name gives an identical value.
+    static func needsFit(last: MapFitBasis?, next: MapFitBasis) -> Bool {
+        guard let last else { return true }
+        if last.frame != next.frame { return true }
+        guard case .bounds = next.frame else { return false }
+        return last.labelWidth != next.labelWidth
+    }
+}
+
 /// How far the camera fit keeps the markers from each edge so the destination's name label
 /// (the SDK's info window above the pin) stays inside the map.
 struct MapFitInsets: Equatable {
