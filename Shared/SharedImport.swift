@@ -69,13 +69,15 @@ final class SharedImport: ObservableObject {
               hand: (_ message: String, _ shown: String) -> Bool) async {
         guard !inFlight else { return }
         inFlight = true
-        defer { inFlight = false; isReading = false }
+        // A @Published property announces a change on every assignment, equal value or not, and RootView redraws the screen under
+        // the chat on each announcement. The automatic pass runs when the chat sheet closes, so it assigns only a changed value.
+        defer { inFlight = false; if isReading { isReading = false } }
         guard canHand() else { return }
         let items = inbox.pending(now: now())
         if holdForPlan {
             // Two or more waiting items, or a held plan, belong to Plan my day: the automatic pass takes none of them, unless
             // a one-item message is held for its retry.
-            waitingCount = items.count
+            if waitingCount != items.count { waitingCount = items.count }
             if items.count >= 2 || held != nil, kept.isEmpty { return }
         }
         guard let item = items.first else { return }

@@ -521,6 +521,10 @@ struct ContentView: View {
             dayTitlePill((id: UUID(), title: Self.monthTemplateTitle))
             Text(Self.monthTemplateMore).font(.caption2).foregroundStyle(Theme.muted)
         }
+        // The same pin as the app's (App.swift): the first layout pass runs with the device's text size, a fraction of a second
+        // before the pin reaches this view, and monthTemplateHeight only grows. Measured at the largest device size that first
+        // pass gave 215 pt against 78.7 pt, which stretched the grid for good (t96).
+        .environment(\.dynamicTypeSize, .xLarge)
         .fixedSize(horizontal: false, vertical: true)
         .hidden()
     }
@@ -610,7 +614,9 @@ struct ContentView: View {
         // 제목 알약은 frame(maxWidth: .infinity)라 칸 너비 그대로 펴진다. 본보기도 같은 정렬로 둔다 —
         // 높이는 정렬과 무관하지만 둘이 다르면 다음에 한쪽만 읽고 고치게 된다(계약 5).
         return ZStack(alignment: .top) {
-            monthCellTemplate
+            // The cell is as tall as the template, and that height is measured once (monthTemplateHeight, read by the grid's
+            // height too). A hidden template in every cell put several hundred extra Text views in the pager's pages (t96).
+            Color.clear.frame(height: monthTemplateHeight)
             VStack(alignment: .center, spacing: Self.monthCellVSpacing) {
                 Text("\(calendar.component(.day, from: day))")
                     .font(.callout)
