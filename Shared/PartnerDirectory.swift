@@ -118,16 +118,23 @@ extension PartnerSpec {
 extension PartnerRequest {
     /// The body of a `submit`: the id and the values, each typed by its kind; a field with no value has no entry.
     var body: [String: Any] {
-        var typed: [String: Any] = [:]
-        for item in values {
+        ["op": "submit", "request_id": requestID, "values": Self.typed(values)]
+    }
+
+    /// The wire object of a list of items: one entry per item, each typed by its kind — a `text` as a string, a `number` as
+    /// a JSON number, a `flag` as a JSON boolean — and a `rows` group as an array of one such object per row, in card order
+    /// (a row holds only scalar items).
+    private static func typed(_ items: [Item]) -> [String: Any] {
+        var object: [String: Any] = [:]
+        for item in items {
             switch item.value {
-            case .text(let text): typed[item.key] = text
-            case .number(let number): typed[item.key] = number
-            case .flag(let flag): typed[item.key] = flag
-            case .rows: break
+            case .text(let text): object[item.key] = text
+            case .number(let number): object[item.key] = number
+            case .flag(let flag): object[item.key] = flag
+            case .rows(let rows): object[item.key] = rows.map { typed($0) }
             }
         }
-        return ["op": "submit", "request_id": requestID, "values": typed]
+        return object
     }
 }
 
