@@ -1397,4 +1397,63 @@ final class PartnerClientTests: XCTestCase {
             }
         }
     }
+
+    // MARK: GROUP the repeatable row group (card t102, SPEC-GROUPFIELD-001)
+
+    func testGROUP_GC1_AGroupIsSentAsAnArrayOfRowObjectsWithOnlyItsValuedMembersAndNoPacketOrFileHoldsAValue() async throws {
+        let note = "SENTINEL-ROW-NOTE-731"
+        let group = PartnerField(key: "items", kind: .group, label: "Items", options: [], members: [
+            PartnerField(key: "item", kind: .pickOne, label: "Item",
+                         options: [PartnerOption(id: "ramen", label: "Ramen"), PartnerOption(id: "gyoza", label: "Gyoza")]),
+            PartnerField(key: "quantity", kind: .number, label: "Quantity", options: []),
+            PartnerField(key: "row_note", kind: .text, label: "Note", options: [], isOptional: true)
+        ], maxRows: 6)
+        let menu = PartnerSpec(entry: entry, fields: [PartnerField(key: "table", kind: .text, label: "Table", options: []), group],
+                               results: announced)
+        let request = PartnerRequest(requestID: "3F2B8C1E-5D4A-4E7B-9A60-1C2D3E4F5A6B", values: [
+            .init(key: "table", value: .text("Nine")),
+            .init(key: "items", value: .rows([
+                [.init(key: "item", value: .text("ramen")), .init(key: "quantity", value: .number(2)),
+                 .init(key: "row_note", value: .text(note))],
+                [.init(key: "item", value: .text("gyoza")), .init(key: "quantity", value: .number(1))]
+            ]))])
+        let (log, file) = makeLog()
+        let recorder = BookingSendRecorder(body: object())
+        let result = await client(recorder.send, log: log).submit(request, to: menu, flow: flow)
+        XCTAssertEqual(result, .success(.confirmed(results: items)))
+        let sent = try XCTUnwrap(recorder.requests.first)
+        let text = String(decoding: try XCTUnwrap(sent.httpBody), as: UTF8.self)
+        let sentBody = try body(of: sent)
+        XCTAssertEqual(Set(sentBody.keys), ["op", "request_id", "values"])
+        XCTAssertEqual(sentBody["op"] as? String, "submit")
+        XCTAssertEqual(sentBody["request_id"] as? String, request.requestID)
+        let values = try XCTUnwrap(sentBody["values"] as? [String: Any])
+        // The group key holds an array of two row objects in card order; the keys outside the group are as before.
+        let rows = values["items"] as? [[String: Any]]
+        XCTAssertEqual(rows?.count, 2)
+        guard let rows, rows.count == 2 else { return }
+        XCTAssertEqual(Set(values.keys), ["table", "items"])
+        XCTAssertEqual(values["table"] as? String, "Nine")
+        // Each row holds only its members that have a value: a text as a string, a number as a JSON number, a `pick_one`
+        // member as the option id; the blank optional member of the second row has no entry.
+        XCTAssertEqual(Set(rows[0].keys), ["item", "quantity", "row_note"])
+        XCTAssertEqual(rows[0]["item"] as? String, "ramen")
+        XCTAssertEqual(rows[0]["quantity"] as? Int, 2)
+        XCTAssertEqual(rows[0]["row_note"] as? String, note)
+        XCTAssertEqual(Set(rows[1].keys), ["item", "quantity"])
+        XCTAssertEqual(rows[1]["item"] as? String, "gyoza")
+        XCTAssertEqual(rows[1]["quantity"] as? Int, 1)
+        XCTAssertTrue(text.contains(#""quantity":2"#), text)
+        XCTAssertTrue(text.contains(note), text)
+
+        // The packets are the partner's name and fixed words; no row value is in any of them or in the file.
+        await log.flush()
+        XCTAssertEqual(lines(log), ["besir>partner partner ok Example Tables: Request sent",
+                                    "partner>besir partner ok Example Tables: Request confirmed"])
+        let stored = try String(contentsOf: file, encoding: .utf8).lowercased()
+        for secret in ["sentinel", "ramen", "gyoza", "nine", "row_note", token, host, request.requestID.lowercased()] {
+            XCTAssertFalse(stored.contains(secret), "connections.json holds \(secret)")
+            XCTAssertFalse(lines(log).joined().lowercased().contains(secret), "a packet holds \(secret)")
+        }
+    }
 }

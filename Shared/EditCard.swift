@@ -521,6 +521,8 @@ enum PlaceLine {
         /// 붙어 있어야 한다(REQ-005: 같은 라벨 즐겨찾기 둘의 좌표가 라벨로 섞이지 않게). 좌표
         /// 없는 옵션(옛 생성부)은 라벨로 고르는 길로 남는다. 기본값이 있어 기존 생성부는 무변경이다.
         var place: Place? = nil
+        /// The VoiceOver name of this chip; nil keeps the chip's own text as its name.
+        var accessibilityName: String? = nil
     }
     let id = UUID()
     /// 툴 인자 이름. 확인 시 이 키로 값이 실린다.
@@ -587,6 +589,8 @@ enum PlaceLine {
     var pendingCommit: Bool = false
     /// The text a typed row shows while empty; nil keeps the view's own wording for the row's kind.
     var placeholder: String? = nil
+    /// The repeatable row group this field belongs to; nil for every field that is not a member of one.
+    var rowID: UUID? = nil
 
     var chosenLabel: String? {
         guard let chosen else { return nil }
@@ -1836,6 +1840,8 @@ struct EditCardActions {
     /// '반복' 칸을 마칠 때(바깥 탭·Return — SPEC-UIKIT-019 REQ-004) — 해석은 칸을 마칠 때 한 번이라 매 입력
     /// 통로(setTitleText)와 따로 둔다. setTitleText와 같은 이유로 옵셔널이다: '반복' 줄이 없는 화면은 잇지 않는다.
     var commitRecurrence: (@MainActor (UUID) async -> Void)? = nil
+    /// Deletes the row a swipe removed; nil when the card has no deletable rows.
+    var deleteRow: (@MainActor (UUID) -> Void)? = nil
     var confirm: @MainActor () async -> Void
 }
 

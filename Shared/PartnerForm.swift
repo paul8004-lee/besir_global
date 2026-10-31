@@ -5,6 +5,7 @@ enum PartnerFieldKind: String, CaseIterable, Equatable {
     case text, place, time, number
     case pickOne = "pick_one"
     case onOff = "on_off"
+    case group
 
     /// A `pick_one` or `on_off` field carries the words of its chips; no other kind does.
     var hasOptions: Bool { self == .pickOne || self == .onOff }
@@ -28,6 +29,10 @@ struct PartnerField: Equatable {
     /// True when the partner marked a `place` field as one it resolves itself (`"lookup": true`): the card asks that partner for the
     /// candidates. Defaulted, so a field written without it is an ordinary place field.
     var canLookUp = false
+    /// The members of a `group` field, in the partner's order. Defaulted, so a scalar field is written without it.
+    var members: [PartnerField] = []
+    /// The partner's maximum number of rows of a `group` field. Defaulted, so a scalar field is written without it.
+    var maxRows = 0
 }
 
 /// One entry of the result-field list a partner announces before the card is drawn: the name and the kind of a result item.
@@ -70,7 +75,6 @@ enum PartnerForm {
     static let maxKeyLength = 32
     static let maxFieldLabelLength = 40
     static let maxOptionLabelLength = 60
-    static let maxPickOptions = 4
     static let maxItems = 8
     static let maxNameLength = 40
     static let maxTextLength = 80
@@ -85,9 +89,15 @@ enum PartnerForm {
         guard let list = value as? [Any], (1...maxFields).contains(list.count) else { return nil }
         var fields: [PartnerField] = []
         for element in list {
-            guard let object = element as? [String: Any], let field = field(from: object),
-                  !fields.contains(where: { $0.key == field.key }) else { return nil }
+            guard let object = element as? [String: Any], let field = field(from: object) else { return nil }
             fields.append(field)
+        }
+        // Keys are unique across the whole list: every top-level key, a group's own key and each of its member keys.
+        var keys: Set<String> = []
+        for field in fields {
+            for key in [field.key] + field.members.map(\.key) {
+                guard keys.insert(key).inserted else { return nil }
+            }
         }
         return fields
     }
@@ -96,6 +106,22 @@ enum PartnerForm {
         guard let key = object["key"] as? String, isFieldKey(key),
               let word = object["kind"] as? String, let kind = PartnerFieldKind(rawValue: word),
               let label = object["label"] as? String, isLabel(label, upTo: maxFieldLabelLength) else { return nil }
+        // A group is exactly `key`, `kind`, `label`, `fields`, `repeat`: it carries no `optional` and no `lookup`. `fields`
+        // holds its members, each read by this same reader and restricted to the scalar kinds a row can hold; at least one
+        // member is required, so a row with every member blank is never a valid row. `repeat` is the partner's maximum
+        // number of rows, a whole number of 1 or more.
+        if kind == .group {
+            guard object.count == 5, let listed = object["fields"] as? [Any], !listed.isEmpty,
+                  let maximum = integer(object["repeat"]), maximum > 0 else { return nil }
+            var members: [PartnerField] = []
+            for element in listed {
+                guard let memberObject = element as? [String: Any], let member = field(from: memberObject),
+                      member.kind == .text || member.kind == .number || member.kind == .pickOne else { return nil }
+                members.append(member)
+            }
+            guard members.contains(where: { !$0.isOptional }) else { return nil }
+            return PartnerField(key: key, kind: kind, label: label, options: [], members: members, maxRows: maximum)
+        }
         // `optional` is looked up as a key of the parsed dictionary, never as a position. Only the boolean `true` is a marker:
         // `false`, a text, a number and null are refused, and so is the marker on a switch.
         var optional = false
@@ -121,10 +147,10 @@ enum PartnerForm {
         return PartnerField(key: key, kind: kind, label: label, options: options, isOptional: optional)
     }
 
-    /// `pick_one`: 1 to 4 entries with unique ids of `a-z0-9-_`. `on_off`: exactly two, the ids `true` then `false`, two
+    /// `pick_one`: one or more entries with unique ids of `a-z0-9-_`. `on_off`: exactly two, the ids `true` then `false`, two
     /// different labels. Every entry is exactly `{id, label}`; every label is 1 to 60 characters with no hidden one.
     private static func options(from list: [Any], kind: PartnerFieldKind) -> [PartnerOption]? {
-        let count = kind == .onOff ? list.count == 2 : (1...maxPickOptions).contains(list.count)
+        let count = kind == .onOff ? list.count == 2 : !list.isEmpty
         guard count else { return nil }
         var options: [PartnerOption] = []
         for (index, element) in list.enumerated() {
