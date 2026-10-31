@@ -194,7 +194,7 @@ enum AgentTools {
           "type": "object",
           "properties": {
             "partner": {"type": "string", "description": "The id of a partner returned by get_partners."},
-            "fields": {"type": "string", "description": "A JSON array text of objects with the members key, value and quote, all strings, one object for each field the user mentioned. key is a field key from get_partners. value is written as the field needs it: a time as a local date-time YYYY-MM-DDTHH:MM, a number as digits only (2, not two), a text as the user said it; never fill a field that has options. The quote is the user's exact words. Leave the field out when the user did not say it. Never guess."}
+            "fields": {"type": "string", "description": "A JSON array text of objects with the members key, value and quote, all strings, one object for each field the user mentioned. key is a field key from get_partners. value is written as the field needs it: a time as a local date-time YYYY-MM-DDTHH:MM, a number as digits only (2, not two), a text as the user said it; never fill a field that has options outside a group. A field of kind group is a list of rows. Pass one entry for each member of each row the user named, with the key written group.row.member and the row counted from 1 (for example lines.1.size, lines.2.size); a text or number member is filled like any other field, the value of a member that has options is the id of the option, and its quote is only the user's words for that row. Leave out a row the user did not name. The quote is the user's exact words. Leave the field out when the user did not say it. Never guess."}
           },
           "required": ["partner"],
           "additionalProperties": false
@@ -1044,6 +1044,20 @@ final class AgentToolbox {
                                          calendar: f.calendar)
         var rows: [AgentFieldRow] = []
         for field in spec.fields {
+            if field.kind == .group {
+                guard let group = AgentFieldGroup(field, addSymbol: AgentPartner.groupAddSymbol, addName: AgentPartner.groupAddName)
+                else { throw Rejection(Say.partnerUnavailable) }
+                // The kept row numbers are compacted: numbers 1 and 3 give two rows. No kept number gives one blank row.
+                let numbers = AgentPrefill.rowNumbers(kept: filled, group: field.key)
+                let seeded = (numbers.isEmpty ? [0] : numbers).map { number in
+                    group.members.map { member -> AgentFieldSeed in
+                        let value = filled[AgentFieldCard.rowKey(field.key, number, member.key)]
+                        return AgentFieldSeed(value: value, source: value == nil ? .blank : .stated)
+                    }
+                }
+                rows.append(.repeating(group, rows: seeded))
+                continue
+            }
             guard let seed = AgentFieldSpec(field) else { throw Rejection(Say.partnerUnavailable) }
             let kept = filled[field.key]
             rows.append(.field(seed, value: kept, source: kept == nil ? .blank : .stated))
@@ -1095,6 +1109,29 @@ final class AgentToolbox {
             case .number: value = taken.int(field.key).map { PartnerValue.number($0) }
             case .pickOne: value = taken.option(field.key).map { PartnerValue.text($0) }
             case .onOff: value = taken.flag(field.key).map { PartnerValue.flag($0) }
+            case .group:
+                let groupRows = taken.rows(of: field.key)
+                guard !groupRows.isEmpty else { return partnerEditRejected() }
+                var sent: [[PartnerRequest.Item]] = []
+                for row in groupRows {
+                    var rowItems: [PartnerRequest.Item] = []
+                    for member in field.members {
+                        let memberValue: PartnerValue?
+                        switch (member.kind, row[member.key]?.value) {
+                        case (.text, .text(let text)?): memberValue = AgentDelivery.snapshotText(text).map { PartnerValue.text($0) }
+                        case (.number, .number(let number)?): memberValue = .number(number)
+                        case (.pickOne, .option(let id)?): memberValue = .text(id)
+                        default: memberValue = nil
+                        }
+                        if let memberValue {
+                            rowItems.append(PartnerRequest.Item(key: member.key, value: memberValue))
+                        } else if !member.isOptional {
+                            return partnerEditRejected()
+                        }
+                    }
+                    sent.append(rowItems)
+                }
+                value = .rows(sent)
             }
             if let value {
                 items.append(PartnerRequest.Item(key: field.key, value: value))

@@ -13,27 +13,152 @@ enum AgentPrefill {
     static let windowDays = 366
 
     /// `fieldsText` is a JSON array of objects with the string members `key`, `value` and `quote`. Returns the kept values by
-    /// key. `userLines` are the lines the user wrote in this chat; `now` and `calendar` (with its zone) decide what a time means.
+    /// key, a member of a row of a repeatable group under its row key `group.row.member`. `userLines` are the lines the user
+    /// wrote in this chat; `now` and `calendar` (with its zone) decide what a time means.
     static func values(fieldsText: String?, fields: [PartnerField], userLines: [String], now: Date,
                        calendar: Calendar) -> [String: AgentFieldValue] {
         guard let fieldsText, let data = fieldsText.data(using: .utf8),
               let list = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return [:] }
         var kinds: [String: PartnerFieldKind] = [:]
-        for field in fields { kinds[field.key] = field.kind }
+        var groups: [String: PartnerField] = [:]
+        for field in fields {
+            kinds[field.key] = field.kind
+            if field.kind == .group { groups[field.key] = field }
+        }
+        // Each element is classified once (SPEC-GROUPFIELD-001 design 5.2): row-addressed when the form holds a group and the
+        // element is a JSON object whose `key` is a string containing a dot, whatever its value and quote are; every other
+        // element is plain, a malformed one included. The first `maxEntries` plain elements are read as before, and besides
+        // them the first N row-addressed ones.
+        var plain: [Any] = []
+        var rowAddressed: [Any] = []
+        for element in list {
+            if !groups.isEmpty, let object = element as? [String: Any], let key = object["key"] as? String, key.contains(".") {
+                rowAddressed.append(element)
+            } else {
+                plain.append(element)
+            }
+        }
         var claimed: Set<String> = []
         var kept: [String: AgentFieldValue] = [:]
-        for element in list.prefix(maxEntries) {
+        for element in plain.prefix(maxEntries) {
             // An entry that is not an object of three strings is skipped alone and claims no key.
             guard let entry = element as? [String: Any], let key = entry["key"] as? String, let value = entry["value"] as? String,
                   let quote = entry["quote"] as? String else { continue }
             // A switch or a chip field is never filled; an unknown key is skipped; the first entry for a key is the only one.
             guard let kind = kinds[key], kind != .pickOne, kind != .onOff, !claimed.contains(key) else { continue }
             claimed.insert(key)
-            guard let cleanQuote = cleaned(quote, limit: maxQuoteLength),
-                  userLines.contains(where: { contains($0, cleanQuote) }) else { continue }
+            guard let cleanQuote = quoted(quote, in: userLines) else { continue }
             if let read = read(value, kind: kind, quote: cleanQuote, now: now, calendar: calendar) { kept[key] = read }
         }
+        for element in rowAddressed.prefix(rowCap(held: rowAddressed.count, groups: Array(groups.values))) {
+            // An entry that is not an object of three strings is skipped alone and claims no key.
+            guard let entry = element as? [String: Any], let key = entry["key"] as? String, let value = entry["value"] as? String,
+                  let quote = entry["quote"] as? String else { continue }
+            // A key that names no row member of the form is skipped alone; the first entry for a key is the only one; an
+            // on_off or group-kind member is never filled.
+            guard let member = rowMember(of: key, groups: groups), member.kind != .onOff, member.kind != .group,
+                  !claimed.contains(key) else { continue }
+            claimed.insert(key)
+            guard let cleanQuote = quoted(quote, in: userLines) else { continue }
+            if member.kind == .pickOne {
+                if let read = optionRead(value, member: member, quote: cleanQuote) { kept[key] = read }
+            } else if let read = read(value, kind: member.kind, quote: cleanQuote, now: now, calendar: calendar) {
+                kept[key] = read
+            }
+        }
         return kept
+    }
+
+    /// The distinct row numbers of `kept`'s keys that are row keys of `group`, ascending (SPEC-GROUPFIELD-001 REQ-008).
+    static func rowNumbers(kept: [String: AgentFieldValue], group: String) -> [Int] {
+        var numbers: Set<Int> = []
+        for key in kept.keys {
+            let parts = key.split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 3, parts[0] == group, let row = Int(parts[1]) else { continue }
+            numbers.insert(row)
+        }
+        return numbers.sorted()
+    }
+
+    // MARK: Rows of a repeatable group
+
+    /// The cleaned quote when it occurs character for character in a line the user wrote; nil when it does not.
+    private static func quoted(_ quote: String, in userLines: [String]) -> String? {
+        guard let cleanQuote = cleaned(quote, limit: maxQuoteLength),
+              userLines.contains(where: { contains($0, cleanQuote) }) else { return nil }
+        return cleanQuote
+    }
+
+    /// The member a row key addresses: the key splits on `.` keeping empty parts into exactly three, the group and the member
+    /// exist in the form, and the row is ASCII digits only with no leading zero, from 1 to the group's maximum (a row part
+    /// too long for `Int` fails here); nil for anything else, and the entry is skipped alone.
+    private static func rowMember(of key: String, groups: [String: PartnerField]) -> PartnerField? {
+        let parts = key.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return nil }
+        let row = String(parts[1])
+        guard row.unicodeScalars.allSatisfy(isDigit), !row.hasPrefix("0"), let number = Int(row),
+              let group = groups[String(parts[0])], number >= 1, number <= group.maxRows,
+              let member = group.members.first(where: { $0.key == parts[2] }) else { return nil }
+        return member
+    }
+
+    /// The number of row-addressed elements read: the sum over the form's groups of the group's maximum times its number of
+    /// members, computed with overflow-checked arithmetic and clamped to the number of row-addressed elements held, so an
+    /// absurd maximum cannot overflow.
+    private static func rowCap(held: Int, groups: [PartnerField]) -> Int {
+        var total = 0
+        for group in groups {
+            let (product, productOverflow) = group.maxRows.multipliedReportingOverflow(by: group.members.count)
+            guard !productOverflow else { return held }
+            let (sum, sumOverflow) = total.addingReportingOverflow(product)
+            guard !sumOverflow else { return held }
+            total = sum
+        }
+        return min(total, held)
+    }
+
+    /// The value of a `pick_one` member of a group row (REQ-009): kept only when the value is the id of one of the member's
+    /// options and the quote names exactly that option. The quote is searched, case-insensitively and literally, for the
+    /// label and the id of every option; a hit counts only when the character before it and the character after it are not a
+    /// letter or a digit, or the quote ends on that side (each side judged on its own, both must hold); a hit whose span is
+    /// contained in the span of another option's hit is dropped, so the longer name wins, and equal spans of two options
+    /// both stay.
+    private static func optionRead(_ value: String, member: PartnerField, quote: String) -> AgentFieldValue? {
+        guard member.options.contains(where: { $0.id == value }) else { return nil }
+        struct Hit { let id: String; let range: Range<String.Index> }
+        var hits: [Hit] = []
+        for option in member.options {
+            for name in [option.label, option.id] {
+                for range in occurrences(of: name, in: quote) { hits.append(Hit(id: option.id, range: range)) }
+            }
+        }
+        let whole = hits.filter { hit in
+            (hit.range.lowerBound == quote.startIndex
+                || !isWordCharacter(quote[quote.index(before: hit.range.lowerBound)]))
+                && (hit.range.upperBound == quote.endIndex || !isWordCharacter(quote[hit.range.upperBound]))
+        }
+        let named = Set(whole.filter { hit in
+            !whole.contains { other in other.id != hit.id && other.range.lowerBound <= hit.range.lowerBound
+                && other.range.upperBound >= hit.range.upperBound && other.range != hit.range }
+        }.map(\.id))
+        return named == Set([value]) ? .option(value) : nil
+    }
+
+    /// Every range where `name` occurs in `text`, case-insensitively and literally.
+    private static func occurrences(of name: String, in text: String) -> [Range<String.Index>] {
+        guard !name.isEmpty else { return [] }
+        var found: [Range<String.Index>] = []
+        var start = text.startIndex
+        while let range = text.range(of: name, options: [.caseInsensitive, .literal], range: start..<text.endIndex) {
+            found.append(range)
+            start = text.index(after: range.lowerBound)
+        }
+        return found
+    }
+
+    /// A letter or a digit, the boundary a whole name is judged against.
+    private static func isWordCharacter(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { CharacterSet.alphanumerics.contains($0) }
     }
 
     // MARK: Reading a value back from its quote
@@ -51,6 +176,8 @@ enum AgentPrefill {
         case .time:
             return time(value, quote: quote, now: now, calendar: calendar)
         case .pickOne, .onOff:
+            return nil
+        case .group:
             return nil
         }
     }

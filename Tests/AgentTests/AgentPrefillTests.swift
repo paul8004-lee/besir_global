@@ -24,6 +24,22 @@ final class AgentPrefillTests: XCTestCase {
                      options: [PartnerOption(id: "true", label: "Open"), PartnerOption(id: "false", label: "Shut")]),
     ]
 
+    /// The form of the GROUP tests: one repeatable group `items` of at most 3 rows with the members `item`, `quantity` and
+    /// `row_note` (so the row-addressed cap is 3 x 3 = 9), beside the plain fields those tests read.
+    private let groupFields: [PartnerField] = [
+        PartnerField(key: "name", kind: .text, label: "Name", options: []),
+        PartnerField(key: "side", kind: .pickOne, label: "Side", options: [PartnerOption(id: "small", label: "Small")]),
+        PartnerField(key: "door", kind: .onOff, label: "Door",
+                     options: [PartnerOption(id: "true", label: "Open"), PartnerOption(id: "false", label: "Shut")]),
+        PartnerField(key: "items", kind: .group, label: "Items", options: [], members: [
+            PartnerField(key: "item", kind: .pickOne, label: "Item",
+                         options: [PartnerOption(id: "ramen", label: "Ramen"), PartnerOption(id: "gyoza", label: "Gyoza"),
+                                   PartnerOption(id: "curry", label: "Curry"), PartnerOption(id: "curry_rice", label: "Curry rice")]),
+            PartnerField(key: "quantity", kind: .number, label: "Quantity", options: []),
+            PartnerField(key: "row_note", kind: .text, label: "Note", options: [], isOptional: true),
+        ], maxRows: 3),
+    ]
+
     // MARK: Helpers
 
     private func entry(_ key: String, _ value: String, _ quote: String?) -> [String: Any] {
@@ -37,12 +53,12 @@ final class AgentPrefillTests: XCTestCase {
         return String(decoding: data, as: UTF8.self)
     }
 
-    private func fill(_ entries: [Any], lines: [String]) -> [String: AgentFieldValue] {
-        fillText(json(entries), lines: lines)
+    private func fill(_ entries: [Any], lines: [String], fields: [PartnerField]? = nil) -> [String: AgentFieldValue] {
+        fillText(json(entries), lines: lines, fields: fields)
     }
 
-    private func fillText(_ text: String?, lines: [String]) -> [String: AgentFieldValue] {
-        AgentPrefill.values(fieldsText: text, fields: fields, userLines: lines, now: now, calendar: calendar)
+    private func fillText(_ text: String?, lines: [String], fields: [PartnerField]? = nil) -> [String: AgentFieldValue] {
+        AgentPrefill.values(fieldsText: text, fields: fields ?? self.fields, userLines: lines, now: now, calendar: calendar)
     }
 
     /// What the check keeps for one `start` entry whose quote is the only line the user wrote.
@@ -217,5 +233,141 @@ final class AgentPrefillTests: XCTestCase {
         // One bad entry does not drop a good one.
         XCTAssertEqual(fill([entry("name", "Sam Lee", "Someone else"), size, entry("start", "2026-10-28T19:00", "7 PM")], lines: lines), ["size": .number(2)])
         XCTAssertEqual(fill([size, entry("start", "2026-10-28T19:00", "7 PM"), name], lines: lines).count, 2)
+    }
+
+    // MARK: GROUP the fill of row members (card t102, SPEC-GROUPFIELD-001)
+
+    func testGROUP_GR1_ARowKeyIsKeptWhenItsGroupMemberRowAndQuoteAreGoodAndEveryOtherKeyIsSkippedAlone() {
+        let lines = ["ramen 2, gyoza 1, note: no onions"]
+        func rows(_ entries: [[String: Any]]) -> [String: AgentFieldValue] { fill(entries, lines: lines, fields: groupFields) }
+        let expected: [String: AgentFieldValue] = ["items.1.quantity": .number(2), "items.2.quantity": .number(1),
+                                                   "items.1.row_note": .text("no onions")]
+
+        // The three good entries of AC-008, kept under their row keys.
+        let good = rows([entry("items.1.quantity", "2", "ramen 2"), entry("items.2.quantity", "1", "gyoza 1"),
+                         entry("items.1.row_note", "no onions", "no onions")])
+        XCTAssertEqual(good, expected)
+        // Stop here on a tree that keeps no row key, so the red of this test is exactly the kept-rows failure.
+        guard good == expected else { return }
+
+        // A key that names no existing row member is skipped alone beside a good neighbour.
+        let neighbour = entry("items.1.row_note", "no onions", "no onions")
+        let skipped = ["items.0.quantity", "items.4.quantity", "items.01.quantity", "items.x.quantity", "items..1.quantity",
+                       "items.+1.quantity", "items." + String(repeating: "1", count: 30) + ".quantity", "items.1.nosuch",
+                       "nogroup.1.quantity", "items.1", "items.1.quantity.extra"]
+        for key in skipped {
+            XCTAssertEqual(rows([entry(key, "2", "ramen 2"), neighbour]), ["items.1.row_note": .text("no onions")], key)
+        }
+
+        // The first entry for a row key is the only one considered, and a first entry that fails the check claims its key.
+        XCTAssertEqual(rows([entry("items.1.quantity", "2", "ramen 2"), entry("items.1.quantity", "1", "gyoza 1")]),
+                       ["items.1.quantity": .number(2)])
+        XCTAssertEqual(rows([entry("items.1.quantity", "1", "gyoza 1"), entry("items.1.quantity", "2", "ramen 2")]),
+                       ["items.1.quantity": .number(1)])
+        XCTAssertEqual(rows([entry("items.1.quantity", "5", "ramen 2"), entry("items.1.quantity", "2", "ramen 2")]), [:])
+
+        // A quote in no user line, a text its quote does not hold and a number its quote does not name leave the member blank.
+        XCTAssertEqual(rows([entry("items.2.quantity", "1", "two ramen")]), [:])
+        XCTAssertEqual(rows([entry("items.1.row_note", "garlic", "no onions")]), [:])
+        XCTAssertEqual(rows([entry("items.3.quantity", "3", "ramen 2")]), [:])
+
+        // The distinct kept row numbers of the one group, ascending; another group holds none.
+        let keptRows = rows([entry("items.1.quantity", "2", "ramen 2"), entry("items.1.row_note", "no onions", "no onions"),
+                             entry("items.3.quantity", "1", "gyoza 1")])
+        XCTAssertEqual(AgentPrefill.rowNumbers(kept: keptRows, group: "items"), [1, 3])
+        XCTAssertEqual(AgentPrefill.rowNumbers(kept: keptRows, group: "extras"), [])
+    }
+
+    func testGROUP_GR2_APickOneMemberIsKeptOnlyWhenItsQuoteNamesExactlyTheOptionItsValueNames() {
+        let lines = ["ramen 2, gyoza 1, note: no onions", "RAMEN please", "curry rice please", "Curry rice", "ramenx it is",
+                     "start xramen now", "ramen or gyoza", "the small one, door open", "frame"]
+        func item(_ value: String, _ quote: String) -> [String: AgentFieldValue] {
+            fill([entry("items.1.item", value, quote)], lines: lines, fields: groupFields)
+        }
+
+        // Kept: the value is the id of one of the member's options and the quote names exactly that option.
+        let kept = item("ramen", "ramen 2")
+        XCTAssertEqual(kept, ["items.1.item": .option("ramen")])
+        // Stop here on a tree that keeps no row key, so the red of this test is exactly the first kept option.
+        guard kept == ["items.1.item": .option("ramen")] else { return }
+        XCTAssertEqual(item("ramen", "RAMEN"), ["items.1.item": .option("ramen")], "the search is case-insensitive")
+        XCTAssertEqual(item("curry_rice", "curry rice please"), ["items.1.item": .option("curry_rice")], "the longer name wins")
+        XCTAssertEqual(item("ramen", "ramen"), ["items.1.item": .option("ramen")], "a quote that is exactly the match")
+        XCTAssertEqual(item("curry", "Curry"), ["items.1.item": .option("curry")],
+                       "the checks run on the quote: a fragment cut out of the user's longer line names only what it names")
+
+        // Blank: the boundary fails on either side (joined by AND), two options are named, another option is named, the
+        // value is not an option id, or the quote is in no user line.
+        XCTAssertEqual(item("ramen", "ramenx"), [:])
+        XCTAssertEqual(item("ramen", "xramen"), [:])
+        XCTAssertEqual(item("ramen", "ramen or gyoza"), [:], "two named")
+        XCTAssertEqual(item("ramen", "gyoza 1"), [:], "another option is named")
+        XCTAssertEqual(item("curry", "curry rice"), [:], "the longer name wins")
+        XCTAssertEqual(item("tempura", "ramen 2"), [:], "not an option id")
+        XCTAssertEqual(item("Ramen", "ramen 2"), [:], "a label is not an id")
+        XCTAssertEqual(item("ramen", "no such words"), [:], "a quote in no user line")
+        XCTAssertEqual(item("ramen", "frame"), [:], "no option is named")
+
+        // One quote over two rows: neither row's item is kept.
+        XCTAssertEqual(fill([entry("items.1.item", "ramen", "ramen 2, gyoza 1"), entry("items.2.item", "gyoza", "ramen 2, gyoza 1")],
+                            lines: ["ramen 2, gyoza 1"], fields: groupFields), [:])
+
+        // Two options with one label are both named by that label: blank.
+        let twins: [PartnerField] = [PartnerField(key: "items", kind: .group, label: "Items", options: [], members: [
+            PartnerField(key: "item", kind: .pickOne, label: "Item",
+                         options: [PartnerOption(id: "one", label: "Salad"), PartnerOption(id: "two", label: "Salad")])],
+            maxRows: 1)]
+        XCTAssertEqual(fill([entry("items.1.item", "one", "Salad")], lines: ["Salad please"], fields: twins), [:])
+
+        // A top-level pick_one and on_off with the same quote are still never kept.
+        XCTAssertEqual(fill([entry("side", "small", "the small one"), entry("door", "true", "door open")], lines: lines,
+                            fields: groupFields), [:])
+    }
+
+    func testGROUP_GR3_TheEightPlainEntriesAndTheNRowAddressedEntriesAreCappedApart() {
+        let lines = ["Sam Lee here, ramen 2 and gyoza 1, note: no onions"]
+        let name = entry("name", "Sam Lee", "Sam Lee here")
+        let rowEntry = entry("items.1.quantity", "2", "ramen 2")
+        func plainFillers(_ count: Int) -> [[String: Any]] { (0..<count).map { entry("zzz\($0)", "x", "Sam Lee here") } }
+        func rowFillers(_ count: Int) -> [[String: Any]] {
+            (0..<count).map { index in entry("items.\(index % 3 + 1).row_note", "filler\(index)", "Sam Lee here") }
+        }
+
+        // The plain cap of eight is unchanged: a good plain entry after eight plain fillers is not read, after seven it is.
+        XCTAssertEqual(fill(plainFillers(8) + [name], lines: lines, fields: groupFields), [:])
+        XCTAssertEqual(fill(plainFillers(7) + [name], lines: lines, fields: groupFields), ["name": .text("Sam Lee")])
+
+        // Row-addressed elements do not use up the plain eight.
+        let afterRows = fill(rowFillers(9) + [name], lines: lines, fields: groupFields)
+        XCTAssertEqual(afterRows, ["name": .text("Sam Lee")], "a good plain entry after nine row-addressed fillers is read")
+        // Stop here on a tree that counts every element against the plain eight, so the red of this test is exactly this case.
+        guard afterRows == ["name": .text("Sam Lee")] else { return }
+
+        // The row-addressed cap is N = 9 (the maximum of 3 rows times 3 members): a good row entry after nine
+        // row-addressed fillers is not read, after eight it is.
+        XCTAssertEqual(fill(rowFillers(9) + [rowEntry], lines: lines, fields: groupFields), [:])
+        XCTAssertEqual(fill(rowFillers(8) + [rowEntry], lines: lines, fields: groupFields), ["items.1.quantity": .number(2)])
+
+        // The definition's classification: a malformed element is plain, a dotted-key element with no quote is row-addressed.
+        XCTAssertEqual(fill(plainFillers(7) + [5, name], lines: lines, fields: groupFields), [:],
+                       "the malformed element is plain, so the entry after it is the ninth plain one")
+        XCTAssertEqual(fill(rowFillers(8) + [["key": "items.2.quantity"], rowEntry], lines: lines, fields: groupFields), [:],
+                       "the quote-less dotted element is row-addressed, so the entry after it is the tenth row one")
+
+        // N of a form with two groups is the sum of both: 3 x 3 + 2 x 1 = 11.
+        let twoGroups = groupFields + [PartnerField(key: "extras", kind: .group, label: "Extras", options: [],
+                                                    members: [PartnerField(key: "thing", kind: .text, label: "Thing", options: [])],
+                                                    maxRows: 2)]
+        let eleven = rowFillers(9) + [entry("extras.1.thing", "filler", "Sam Lee here"),
+                                      entry("extras.2.thing", "filler", "Sam Lee here")]
+        XCTAssertEqual(fill(eleven + [rowEntry], lines: lines, fields: twoGroups), [:],
+                       "twelve row-addressed elements: the last is not read")
+        XCTAssertEqual(fill(Array(eleven.prefix(10)) + [rowEntry], lines: lines, fields: twoGroups),
+                       ["items.1.quantity": .number(2)], "the eleventh row-addressed element is still read")
+
+        // In a form with no group every element is plain, a dotted key included.
+        XCTAssertEqual(fill(plainFillers(7) + [rowEntry, name], lines: lines), [:],
+                       "the dotted key is plain, so the entry after it is the ninth plain one")
+        XCTAssertEqual(fill(plainFillers(6) + [rowEntry, name], lines: lines), ["name": .text("Sam Lee")])
     }
 }

@@ -12,6 +12,11 @@ final class PartnerFormTests: XCTestCase {
         return try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
     }
 
+    /// The value as JSON text gives it: parsed once and never re-serialized, so a number written `2.0` reaches the reader as written.
+    private func wireText(_ text: String) -> Any? {
+        try? JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])
+    }
+
     private func fields(_ value: Any) -> [PartnerField]? { PartnerForm.fields(from: wire(value)) }
 
     private func results(_ value: Any) -> [PartnerResultItem]? { PartnerForm.results(from: wire(value)) }
@@ -23,6 +28,11 @@ final class PartnerFormTests: XCTestCase {
         if let options { object["options"] = options }
         if let optional { object["optional"] = optional }
         return object
+    }
+
+    /// A group entry of the field list, its `repeat` the partner's maximum number of rows.
+    private func group(_ key: String, _ label: String, members: [[String: Any]], repeat maximum: Int) -> [String: Any] {
+        ["key": key, "kind": "group", "label": label, "fields": members, "repeat": maximum]
     }
 
     private func resultFields(_ value: Any) -> [PartnerResultSpec]? { PartnerForm.resultFields(from: wire(value)) }
@@ -112,7 +122,6 @@ final class PartnerFormTests: XCTestCase {
             ("empty options on a text field", [field("a", "text", "A", options: [])]),
             ("pick_one with no options key", [field("a", "pick_one", "A")]),
             ("pick_one with 0 options", [field("a", "pick_one", "A", options: [])]),
-            ("pick_one with 5 options", [field("a", "pick_one", "A", options: (0..<5).map { option("o\($0)", "O\($0)") })]),
             ("duplicate option ids", [field("a", "pick_one", "A", options: [option("x", "X"), option("x", "Y")])]),
             ("empty option id", [field("a", "pick_one", "A", options: [option("", "X")])]),
             ("option id of 33 characters", [field("a", "pick_one", "A", options: [option(String(repeating: "i", count: 33), "X")])]),
@@ -151,6 +160,161 @@ final class PartnerFormTests: XCTestCase {
         // Positive counterpart: the same shapes without the defect are accepted.
         XCTAssertNotNil(fields([field("a", "on_off", "A", options: [option("true", "Add"), option("false", "Skip")])]))
         XCTAssertNotNil(fields([field("a", "pick_one", "A", options: [option("x", "Wide \u{2022} dot")])]))
+    }
+
+    // MARK: G-W1 no cap on the options of a pick_one (SPEC-GROUPFIELD-001)
+
+    func testGROUP_GW1_APickOneDecodesWithEveryOptionCountInOrderAndEachDefectIsRefused() throws {
+        // 1, 4, 6, 40 and 500 options decode, each option in the partner's order.
+        for count in [1, 4, 6, 40, 500] {
+            let list = [field("size", "pick_one", "Size", options: (0..<count).map { option("o\($0)", "O\($0)") })]
+            let decoded = try XCTUnwrap(fields(list), "\(count) options")
+            XCTAssertEqual(decoded[0].options.map(\.id), (0..<count).map { "o\($0)" }, "\(count) options")
+            XCTAssertEqual(decoded[0].options.map(\.label), (0..<count).map { "O\($0)" }, "\(count) options")
+        }
+        // The defects stay refused: no option at all, a repeated id, an over-long id or label, three chips on an on/off field.
+        let cases: [(String, Any)] = [
+            ("pick_one with 0 options", [field("a", "pick_one", "A", options: [])]),
+            ("pick_one with a repeated id", [field("a", "pick_one", "A", options: [option("x", "X"), option("x", "Y")])]),
+            ("pick_one with an id of 33 characters", [field("a", "pick_one", "A", options: [option(String(repeating: "i", count: 33), "X")])]),
+            ("pick_one with a label of 61 characters", [field("a", "pick_one", "A", options: [option("x", String(repeating: "L", count: 61))])]),
+            ("on_off with three options", [field("a", "on_off", "A", options: [option("true", "Add"), option("false", "Skip"), option("maybe", "Maybe")])]),
+        ]
+        for (name, list) in cases { XCTAssertNil(fields(list), name) }
+    }
+
+    // MARK: G-W2 to G-W3 the group entry in the field list (SPEC-GROUPFIELD-001)
+
+    func testGROUP_GW2_AGroupEntryDecodesWithItsMembersAndEveryAcceptedEdge() throws {
+        let menu: [[String: Any]] = [
+            option("ramen", "Ramen"), option("gyoza", "Gyoza"), option("curry", "Curry rice"),
+            option("pizza", "Cheese pizza"), option("salad", "Garden salad"), option("lemonade", "Lemonade")]
+        let members: [[String: Any]] = [field("item", "pick_one", "Item", options: menu), field("quantity", "number", "Quantity")]
+        // The design example: a scalar, the group `items` with its two members, an optional text, in that order.
+        let decoded = try XCTUnwrap(fields([field("when_at", "time", "When"), group("items", "Items", members: members, repeat: 6),
+                                            field("note", "text", "Note", optional: true)]))
+        XCTAssertEqual(decoded.map(\.key), ["when_at", "items", "note"])
+        XCTAssertEqual(decoded.map(\.kind), [.time, .group, .text])
+        let items = decoded[1]
+        XCTAssertEqual(items.label, "Items")
+        XCTAssertEqual(items.maxRows, 6)
+        XCTAssertEqual(items.members.map(\.key), ["item", "quantity"])
+        XCTAssertEqual(items.members.map(\.kind), [.pickOne, .number])
+        XCTAssertEqual(items.members[0].options.map(\.id), ["ramen", "gyoza", "curry", "pizza", "salad", "lemonade"])
+        XCTAssertEqual(items.members[0].options.map(\.label), ["Ramen", "Gyoza", "Curry rice", "Cheese pizza", "Garden salad", "Lemonade"])
+        XCTAssertEqual(items.members.map(\.isOptional), [false, false])
+
+        // The maximum is the partner's: `repeat` 1, 2, 6, 1000000 and 999999999999 all decode with that maximum.
+        for maximum in [1, 2, 6, 1_000_000, 999_999_999_999] {
+            let one = try XCTUnwrap(fields([group("items", "Items", members: members, repeat: maximum)]), "repeat \(maximum)")
+            XCTAssertEqual(one[0].maxRows, maximum, "repeat \(maximum)")
+        }
+        // `2.0` and the 10^12 boundary are built from JSON text so the numbers reach the reader as written (the `wire` round
+        // trip would rewrite `2.0` as `2`): `2.0` is 2, and the whole-number reader's own limit refuses 10^12.
+        let membersText = #"{"key":"item","kind":"pick_one","label":"Item","options":[{"id":"ramen","label":"Ramen"},{"id":"gyoza","label":"Gyoza"},{"id":"curry","label":"Curry rice"},{"id":"pizza","label":"Cheese pizza"},{"id":"salad","label":"Garden salad"},{"id":"lemonade","label":"Lemonade"}]},{"key":"quantity","kind":"number","label":"Quantity"}"#
+        func listText(_ repeatText: String, repeatFirst: Bool = false) -> String {
+            let groupBody = repeatFirst
+                ? "\"repeat\":\(repeatText),\"fields\":[\(membersText)]"
+                : "\"fields\":[\(membersText)],\"repeat\":\(repeatText)"
+            return "[{\"key\":\"when_at\",\"kind\":\"time\",\"label\":\"When\"}"
+                + ",{\"key\":\"items\",\"kind\":\"group\",\"label\":\"Items\"," + groupBody + "}"
+                + ",{\"key\":\"note\",\"kind\":\"text\",\"label\":\"Note\",\"optional\":true}]"
+        }
+        let two = try XCTUnwrap(PartnerForm.fields(from: wireText(listText("2.0"))))
+        XCTAssertEqual(two.map(\.kind), [.time, .group, .text])
+        XCTAssertEqual(two[1].maxRows, 2)
+        XCTAssertNil(PartnerForm.fields(from: wireText(listText("1000000000000"))))
+        // `repeat` is a key of the parsed dictionary, never a position: written before `fields` it decodes alike.
+        let reordered = try XCTUnwrap(PartnerForm.fields(from: wireText(listText("6", repeatFirst: true))))
+        XCTAssertEqual(reordered[1].maxRows, 6)
+
+        // One member and twenty members decode.
+        let single = try XCTUnwrap(fields([group("items", "Items", members: [field("item", "pick_one", "Item", options: menu)], repeat: 3)]))
+        XCTAssertEqual(single[0].members.count, 1)
+        let twentyKeys = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t"]
+        let twenty = try XCTUnwrap(fields([group("items", "Items", members: twentyKeys.map { field($0, "text", $0.capitalized) }, repeat: 3)]))
+        XCTAssertEqual(twenty[0].members.count, 20)
+
+        // The group is one of the eight entries; its members are not counted.
+        let seven = (0..<7).map { field(String(repeating: "a", count: $0 + 1), "text", "L") }
+        let eighth = try XCTUnwrap(fields(seven + [group("items", "Items", members: members, repeat: 2)]))
+        XCTAssertEqual(eighth.count, 8)
+        XCTAssertEqual(eighth[7].kind, .group)
+
+        // A group label of 40 characters, the label rule of any field.
+        let wide = try XCTUnwrap(fields([group("items", String(repeating: "L", count: 40), members: members, repeat: 2)]))
+        XCTAssertEqual(wide[0].label.count, 40)
+
+        // A member with `optional: true` beside a required one decodes.
+        let mixed = try XCTUnwrap(fields([group("items", "Items", members: [field("item", "pick_one", "Item", options: menu),
+                                                                            field("note", "text", "Note", optional: true)], repeat: 2)]))
+        XCTAssertEqual(mixed[0].members.map(\.isOptional), [false, true])
+    }
+
+    func testGROUP_GW3_ADefectInTheGroupEntryMakesTheWholeListUnusable() throws {
+        let menu: [[String: Any]] = [
+            option("ramen", "Ramen"), option("gyoza", "Gyoza"), option("curry", "Curry rice"),
+            option("pizza", "Cheese pizza"), option("salad", "Garden salad"), option("lemonade", "Lemonade")]
+        let members: [[String: Any]] = [field("item", "pick_one", "Item", options: menu), field("quantity", "number", "Quantity")]
+        // Positive first: the G-W2 list decodes (a reader that refuses a group cannot satisfy this).
+        let good = try XCTUnwrap(fields([field("when_at", "time", "When"), group("items", "Items", members: members, repeat: 6),
+                                         field("note", "text", "Note", optional: true)]))
+        XCTAssertEqual(good.map(\.kind), [.time, .group, .text])
+
+        // One group entry carrying the defect of the case, inside the same list as the positive.
+        func entry(key: String = "items", label: String = "Items", extra: [String: Any]? = nil, members memberList: Any? = nil,
+                   omitFields: Bool = false, repeat maximum: Any? = 6) -> [String: Any] {
+            var object: [String: Any] = ["key": key, "kind": "group", "label": label]
+            if !omitFields { object["fields"] = memberList ?? members }
+            if let maximum { object["repeat"] = maximum }
+            if let extra { object.merge(extra) { _, new in new } }
+            return object
+        }
+        func list(_ entry: [String: Any]) -> [[String: Any]] {
+            [field("when_at", "time", "When"), entry, field("note", "text", "Note", optional: true)]
+        }
+        var lookupMember = field("note", "text", "Note")
+        lookupMember["lookup"] = true
+        let cases: [(String, Any)] = [
+            ("repeat 0", list(entry(repeat: 0))),
+            ("repeat -1", list(entry(repeat: -1))),
+            ("repeat false", list(entry(repeat: false))),
+            ("repeat true", list(entry(repeat: true))),
+            ("repeat as the text 3", list(entry(repeat: "3"))),
+            ("repeat 2.5", list(entry(repeat: 2.5))),
+            ("repeat null", list(entry(repeat: NSNull()))),
+            ("repeat 1000000000000", list(entry(repeat: 1_000_000_000_000))),
+            ("repeat missing", list(entry(repeat: nil))),
+            ("fields missing", list(entry(omitFields: true))),
+            ("fields not an array", list(entry(members: "x"))),
+            ("fields empty", list(entry(members: [Any]()))),
+            ("an optional key on the group", list(entry(extra: ["optional": true]))),
+            ("a lookup key on the group", list(entry(extra: ["lookup": true]))),
+            ("an extra key on the group", list(entry(extra: ["hint": "x"]))),
+            ("a member of kind place", list(entry(members: [field("place_at", "place", "Where")]))),
+            ("a member of kind time", list(entry(members: [field("when_at", "time", "When")]))),
+            ("a member of kind on_off", list(entry(members: [field("door", "on_off", "Door",
+                                                                   options: [option("true", "Add"), option("false", "Don't Add")])]))),
+            ("a member of kind group", list(entry(members: [group("inner", "Inner", members: [field("item", "pick_one", "Item", options: menu)],
+                                                                                              repeat: 2)]))),
+            ("a member of an unknown kind", list(entry(members: [field("size", "integer", "Size")]))),
+            ("a member with lookup", list(entry(members: [lookupMember]))),
+            ("a member key equal to the group key", list(entry(members: [field("items", "text", "Row")]))),
+            ("a member key equal to another entry's key", list(entry(members: [field("note", "text", "Row")]))),
+            ("a member key equal to a second group's member key",
+             [entry(key: "first", members: [field("item", "text", "Row")]), entry(key: "second", members: [field("item", "text", "Row")])]),
+            ("a member key equal to another member's key of the same group",
+             list(entry(members: [field("item", "text", "Row"), field("item", "number", "Row again")]))),
+            ("a member key with a digit", list(entry(members: [field("item2", "text", "Row")]))),
+            ("every member optional", list(entry(members: [field("item", "pick_one", "Item", options: menu, optional: true),
+                                                            field("quantity", "number", "Quantity", optional: true)]))),
+            ("a member that is not an object", list(entry(members: ["x"]))),
+            ("an empty group label", list(entry(label: ""))),
+            ("a group label of 41 characters", list(entry(label: String(repeating: "L", count: 41)))),
+            ("an invalid group key", list(entry(key: "Items"))),
+            ("a ninth entry", (0..<8).map { field(String(repeating: "a", count: $0 + 1), "text", "L") } + [entry()]),
+        ]
+        for (name, value) in cases { XCTAssertNil(fields(value), name) }
     }
 
     // MARK: W05-W07 the number kind and the optional marker

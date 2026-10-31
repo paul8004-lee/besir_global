@@ -70,8 +70,18 @@ struct EditCardView: View {
             // 정해진 값은 별도 안내 줄이 아니라 값이 채워진 줄로 보인다(REQ-009) — 안내 줄에만
             // 적혀 있던 값은 사용자가 고칠 수 없는, 조용히 적용되는 값이었다(b303f41).
 
-            ForEach(card.fields) { field in
-                fieldRow(field, depBasis: departureAnchored)
+            // A field of a repeatable row group is drawn inside the group's swipe container; every other field exactly as
+            // before, with no wrapper, so a card that sets no rowID draws as it always did.
+            ForEach(FieldRun.of(card.fields)) { run in
+                if let rowID = run.rowID {
+                    SwipeRow(rowID: rowID, actions: actions) {
+                        ForEach(run.fields) { field in
+                            fieldRow(field, depBasis: departureAnchored)
+                        }
+                    }
+                } else {
+                    fieldRow(run.fields[0], depBasis: departureAnchored)
+                }
             }
 
             confirmButton
@@ -181,7 +191,8 @@ struct EditCardView: View {
             } else {
                 ChipFlow(spacing: 6, lineSpacing: 6) {
                     ForEach(field.options) { option in
-                        chip(option.label, selected: field.chosen == option.value, detail: option.detail) {
+                        chip(option.label, selected: field.chosen == option.value, detail: option.detail,
+                             name: option.accessibilityName) {
                             // 떠나기 전의 직접 값을 먼저 기록하고 선택을 바꾼다 — 클로저가 잡은
                             // field는 렌더 시점 값이라 어느 쪽을 먼저 부르든 옛 chosen을 읽지만,
                             // 이 순서(떠남 → 기록 → 선택)가 읽는 사람에게 자연스럽다.
@@ -366,9 +377,9 @@ struct EditCardView: View {
     /// 다시 짜이므로, 운영자가 2026-10-10에 글리프·굵기 신호를 모두 철회했다. 덕분에 칩 폭은
     /// 어느 상태에서나 미선택 폭 그대로다. 직접입력 칩도 같은 실선이다(2026-09-24 사용자
     /// 요청으로 통일 — 칩마다 테두리가 다르면 버튼 문법이 흔들린다).
-    private func chip(_ label: String, selected: Bool, detail: String? = nil,
+    private func chip(_ label: String, selected: Bool, detail: String? = nil, name: String? = nil,
                       action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        named(Button(action: action) {
             HStack(spacing: 4) {
                 Text(label).font(.callout)
                 // 칩 안의 작은 근거 글(소요시간). 한 단계 작게, 미선택일 때는 색도 흐리게 둬
@@ -386,7 +397,13 @@ struct EditCardView: View {
             .overlay(Capsule().strokeBorder(selected ? Color.clear : Theme.line, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton), name)
+    }
+
+    /// The VoiceOver name of one chip, applied only when there is one: an empty label would silence every unnamed chip.
+    @ViewBuilder
+    private func named<Chip: View>(_ chip: Chip, _ name: String?) -> some View {
+        if let name { chip.accessibilityLabel(name) } else { chip }
     }
 
     // MARK: 제목 줄 — 입력칸 하나(REQ-001, S1)
@@ -849,6 +866,69 @@ struct EditCardView: View {
                 .accessibilityLabel(card.remainingVariants.first ?? "All set")
             }
         }
+    }
+}
+
+// MARK: - Repeatable row groups (SPEC-GROUPFIELD-001)
+
+/// One draw run of the card: a single field that belongs to no row group, or all adjacent fields that share one row of one.
+/// The run's id is its first field's id, so a row keeps its view state while its fields keep their ids.
+private struct FieldRun: Identifiable {
+    let id: UUID
+    let rowID: UUID?
+    var fields: [EditField]
+
+    /// Splits the card's fields into runs: a field with no rowID is a run of its own; adjacent fields with the same rowID one.
+    static func of(_ fields: [EditField]) -> [FieldRun] {
+        var runs: [FieldRun] = []
+        for field in fields {
+            if let rowID = field.rowID, let last = runs.indices.last, runs[last].rowID == rowID {
+                runs[last].fields.append(field)
+            } else {
+                runs.append(FieldRun(id: field.id, rowID: field.rowID, fields: [field]))
+            }
+        }
+        return runs
+    }
+}
+
+/// The swipe-to-delete container of one row of a repeatable group: the row follows a leftwards drag only while the drag is
+/// mostly horizontal (the horizontal distance more than twice the vertical); 80 points leftwards is the release threshold and
+/// the offset clamp, never the follow gate. A trash symbol shows behind the row; VoiceOver deletes through the named action.
+private struct SwipeRow<Content: View>: View {
+    let rowID: UUID
+    let actions: EditCardActions
+    private let content: Content
+    @State private var offset: CGFloat = 0
+
+    init(rowID: UUID, actions: EditCardActions, @ViewBuilder content: () -> Content) {
+        self.rowID = rowID
+        self.actions = actions
+        self.content = content()
+    }
+
+    var body: some View {
+        ZStack {
+            Image(systemName: "trash")
+                .foregroundStyle(Theme.muted)
+                .accessibilityHidden(true)
+            // The row's members stack like the card's own fields; a bare ForEach inside a ZStack would draw them on top of each other.
+            VStack(alignment: .leading, spacing: 12) { content }
+                .offset(x: offset)
+        }
+        .simultaneousGesture(DragGesture(minimumDistance: 20)
+            .onChanged { drag in offset = follows(drag) ? max(drag.translation.width, -80) : 0 }
+            .onEnded { drag in
+                if follows(drag), drag.translation.width <= -80 { actions.deleteRow?(rowID) }
+                offset = 0
+            })
+        .accessibilityElement(children: .contain)
+        .accessibilityAction(named: "Delete row") { actions.deleteRow?(rowID) }
+    }
+
+    /// The dominance test of the swipe: a leftwards drag whose horizontal distance is more than twice its vertical distance.
+    private func follows(_ drag: DragGesture.Value) -> Bool {
+        drag.translation.width < 0 && abs(drag.translation.width) > 2 * abs(drag.translation.height)
     }
 }
 
