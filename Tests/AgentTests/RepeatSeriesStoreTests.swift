@@ -109,7 +109,7 @@ final class RepeatSeriesStoreTests: XCTestCase {
     /// (30 minutes after the start unless given); the Repeat row empty and the travel toggles off.
     private func makeForm(start: Date, end: Date? = nil, place: Place? = nil) -> LegCardForm {
         let rows = LegCardForm.manualNewActivityRows(favorites: [], defaultDay: start, now: start,
-                                                     presetStart: nil, calendarDefaultOn: nil)
+                                                     presetStart: nil)
         var f = LegCardForm(card: EditCard(fields: rows), favoriteOptions: [])
         f.setTitleText(field: rowId(f, "title"), text: "Standup")
         if let place {
@@ -2905,7 +2905,7 @@ final class RepeatSeriesStoreTests: XCTestCase {
         let checks: [Bool] = [
             a.id == b.id, a.title == b.title, a.origin == b.origin, a.destination == b.destination, a.mode == b.mode,
             a.bufferMinutes == b.bufferMinutes, a.notifyLeadMinutes == b.notifyLeadMinutes,
-            a.notifyEnabled == b.notifyEnabled, a.syncToCalendar == b.syncToCalendar,
+            a.notifyEnabled == b.notifyEnabled,
             a.recurrenceId == b.recurrenceId, a.linkedActivityId == b.linkedActivityId, a.anchor == b.anchor,
             a.travelSeconds == b.travelSeconds,
         ]
@@ -3188,7 +3188,6 @@ final class RepeatSeriesStoreTests: XCTestCase {
         var bufferMinutes: Int
         var notifyLeadMinutes: Int
         var notifyEnabled: Bool?
-        var syncToCalendar: Bool?
         var recurrenceId: UUID?
         var linkedActivityId: UUID?
         var anchor: ScheduleAnchor?
@@ -3206,7 +3205,6 @@ final class RepeatSeriesStoreTests: XCTestCase {
             bufferMinutes = e.bufferMinutes
             notifyLeadMinutes = e.notifyLeadMinutes
             notifyEnabled = e.notifyEnabled
-            syncToCalendar = e.syncToCalendar
             recurrenceId = e.recurrenceId
             linkedActivityId = e.linkedActivityId
             anchor = e.anchor

@@ -118,13 +118,11 @@ struct AddActivityView: View {
     /// 시트가 뜨는 동안 딱 한 번 카드를 만든다(REQ-013(a)).
     private func bootstrap() {
         guard form == nil else { return }
-        // 줄 목록(제목 → 장소 → 시작·종료 → 캘린더 → '반복')은 모델 쪽 한 정의에서 받는다(SPEC-UIKIT-019 REQ-001) —
-        // 뷰에 literal로 두면 드라이버가 '반복' 줄이 마지막인지를 재지 못한다. 캘린더 줄은 카드 생성 시점의 구글
-        // 연결 상태로 정한다(D2): 연결이 없으면 줄 없이 기본값만 저장에 쓰이고, 나중에 연결하면 서버가 그 값을 따른다.
+        // 줄 목록(제목 → 장소 → 시작·종료 → '반복')은 모델 쪽 한 정의에서 받는다(SPEC-UIKIT-019 REQ-001) —
+        // 뷰에 literal로 두면 드라이버가 '반복' 줄이 마지막인지를 재지 못한다.
         calendarDefault = store.calendarSyncDefault
         let fields = LegCardForm.manualNewActivityRows(
-            favorites: favoriteOptions, defaultDay: defaultDay, now: Date(), presetStart: presetStart,
-            calendarDefaultOn: nil)
+            favorites: favoriteOptions, defaultDay: defaultDay, now: Date(), presetStart: presetStart)
         var f = LegCardForm(card: EditCard(fields: fields), favoriteOptions: favoriteOptions)
         // 즐겨찾기는 줄이 서는 시점에 좌표까지 확정해 둔다(REQ-010) — 라벨로 고르는 옛 길의 씨앗이다.
         for fav in store.favorites { f.favoritePlaces[fav.label] = fav.place }
