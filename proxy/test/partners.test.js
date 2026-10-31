@@ -14,6 +14,13 @@ const EXPECTED_DIRECTORY = {
       summary: "Reserves a table at a restaurant.",
       route: "/booking",
     },
+    {
+      id: "delivery",
+      name: "Example Delivery",
+      title: "Order delivery",
+      summary: "Delivers food to a place at a set time.",
+      route: "/delivery",
+    },
   ],
 };
 
@@ -198,6 +205,7 @@ test("AC-PARTNERS-001 N03: the plumbing of the directory route", async () => {
   assert.equal(code.includes("handlePartners"), true);
   assert.equal(code.includes("Math.random"), false);
   assert.equal("x = Math.random()".includes("Math.random"), true);
-  // The partner name is written once in this file.
+  // The partner names are written once each in this file.
   assert.equal(code.split("Example Tables").length - 1, 1);
+  assert.equal(code.split("Example Delivery").length - 1, 1);
 });

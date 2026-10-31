@@ -15,7 +15,6 @@ enum ConnectionParty: String, Codable, CaseIterable {
     case appleCalendar
     case partner
     case budgetPartner
-    case deliveryPartner
 
     var displayName: String {
         switch self {
@@ -29,7 +28,6 @@ enum ConnectionParty: String, Codable, CaseIterable {
         case .appleCalendar: return "Apple Calendar"
         case .partner: return "Partner (Simulated)"
         case .budgetPartner: return BudgetClient.partnerName + " (Simulated)"
-        case .deliveryPartner: return DeliveryClient.partnerName + " (Simulated)"
         }
     }
 
@@ -60,7 +58,6 @@ enum ConnectionKind: String, Codable, CaseIterable {
     case calendarSave
     case partner
     case budget
-    case delivery
 
     var displayName: String {
         switch self {
@@ -73,7 +70,6 @@ enum ConnectionKind: String, Codable, CaseIterable {
         case .calendarSave: return "Calendar save"
         case .partner: return "Partner"
         case .budget: return "Budget"
-        case .delivery: return "Delivery"
         }
     }
 
@@ -89,7 +85,6 @@ enum ConnectionKind: String, Codable, CaseIterable {
         case .calendarSave: return "Event saved"
         case .partner: return "Partner request"
         case .budget: return "Budget"
-        case .delivery: return "Delivery"
         }
     }
 }
