@@ -56,7 +56,7 @@ struct AgentFieldSpec: Equatable {
     let key: String
     let kind: AgentFieldKind
     let label: String
-    /// `pick_one`: the partner's 1 to 4 chips. `on_off`: the two chips, the words being the field's own; the first stands for
+    /// `pick_one`: the partner's chips, one or more. `on_off`: the two chips, the words being the field's own; the first stands for
     /// the on side and the second for the off side whatever their ids.
     var options: [AgentFieldOption] = []
     /// Text only: the most characters the field holds. Without one the field holds `AgentDelivery.maxDeliveryText`.
