@@ -381,6 +381,28 @@ enum PlaceLine {
     /// 화면에서 가를 수 없어 "다른 이름으로 적어보세요" 같은 처방이 틀린 안내가 되는 날이 있다.
     static let noResultNote = "Couldn't find any matches."
 
+    /// The two notes of a place row the partner resolves itself (SPEC-PARTNERPLACE-001): the partner answered with no match, or
+    /// could not be reached. Two states, two notes, never shown together or beside candidate rows.
+    static let partnerNoResultNote = "The partner found no matches."
+    static let partnerFailedNote = "Couldn't reach the partner."
+
+    /// The seed a partner row searches when its list is opened: a non-empty seed while the lookup is still idle, else nil.
+    static func seedToSearchOnOpen(seed: String?, lookup: EditField.Lookup) -> String? {
+        guard let seed, !seed.isEmpty, case .idle = lookup else { return nil }
+        return seed
+    }
+
+    /// The note a partner row shows for its lookup: the no-match words for an empty answer, the failed words for a failed one,
+    /// nil for any other state and for a row that is not the partner's.
+    static func partnerNote(partnerLookup: Bool, lookup: EditField.Lookup) -> String? {
+        guard partnerLookup else { return nil }
+        switch lookup {
+        case .empty: return partnerNoResultNote
+        case .failed: return partnerFailedNote
+        case .idle, .searching, .results: return nil
+        }
+    }
+
     /// "후보를 찾지 못했어요" 문구를 띄울지의 단일 판정(REQ-004, 보완 F2) — 검색 0건이어도 맞는
     /// 즐겨찾기가 하나라도 있으면 목록이 비어 있지 않으므로 띄우지 않는다. 목록 구성(rows)과 빈
     /// 상태 판정이 저마다 계산되면 어긋나는 날 문구가 잘못된 쪽만 말한다(계약 5) — 같은 질의·
@@ -520,8 +542,10 @@ enum PlaceLine {
     /// 그대로 확정하면 좌표가 없어, 카드를 다 채우고 확인을 누른 **뒤에야** 실행부의 검색이
     /// 실패한다("'ㅁㄴㅇㄹ' 위치를 찾지 못했어요" — 2026-09-16 실기기 결함 P). 가장 늦게
     /// 알게 되는 실패를 가장 이른 자리로 옮기는 것이 이 상태의 존재 이유다.
-    enum Lookup { case idle, searching, results([Place]), empty }
+    enum Lookup { case idle, searching, results([Place]), empty, failed }
     var lookup: Lookup = .idle
+    /// True for a place row the partner resolves itself: its empty and failed lookups are the partner's, not the place search's.
+    var partnerLookup: Bool = false
     /// 사용자가 고른 원시 값. nil이면 아직 안 골랐다 — 확인 버튼이 잠긴다.
     var chosen: String? = nil
     /// 줄이 진행 중임을 알리는 깃발. 카드 뷰는 순수 값 뷰라 외부 상태를 스스로 관찰할 수

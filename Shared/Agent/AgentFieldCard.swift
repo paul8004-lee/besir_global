@@ -64,9 +64,12 @@ struct AgentFieldSpec: Equatable {
     var isOptional = false
     /// Number only: the values the field may hold. Only a seed besir writes itself sets one.
     var range: ClosedRange<Int>?
+    /// Place only: true when the partner resolves the field itself, so the card lists the partner's candidates (never besir's own
+    /// place search) and the value is the candidate the user taps.
+    var partnerLookup = false
 
     init(key: String, kind: AgentFieldKind, label: String, options: [AgentFieldOption] = [], limit: Int? = nil,
-         isOptional: Bool = false, range: ClosedRange<Int>? = nil) {
+         isOptional: Bool = false, range: ClosedRange<Int>? = nil, partnerLookup: Bool = false) {
         self.key = key
         self.kind = kind
         self.label = label
@@ -74,6 +77,7 @@ struct AgentFieldSpec: Equatable {
         self.limit = limit
         self.isOptional = isOptional
         self.range = range
+        self.partnerLookup = partnerLookup
     }
 
     /// The seed of a field the partner named; nil when its chips do not fit its kind.
@@ -85,7 +89,7 @@ struct AgentFieldSpec: Equatable {
         case .text, .place, .time, .number: break
         }
         self.init(key: field.key, kind: kind, label: field.label, options: field.options.map { AgentFieldOption(id: $0.id, label: $0.label) },
-                  isOptional: field.isOptional)
+                  isOptional: field.isOptional, partnerLookup: field.canLookUp)
     }
 
     /// The two sides of an `on_off` field are the values the edit card's own toggles hold, whatever the chip words.
@@ -154,12 +158,21 @@ indirect enum AgentFieldRow {
             if case .number(let number)? = entry(key)?.value { return number }
             return nil
         }
+
+        /// The place of a place field, whole: name, address and coordinates as the user tapped them.
+        func place(_ key: String) -> Place? {
+            if case .place(let place)? = entry(key)?.value { return place }
+            return nil
+        }
     }
 
     private struct Slot {
         var spec: AgentFieldSpec
         var value: AgentFieldValue?
         var source: AgentFieldSource
+        /// A partner-resolved place row only: the text the model stated, kept as the row's search seed (never as its value) until
+        /// the row's first search spends it.
+        var seed: String?
     }
 
     /// The layout of the rows. A line has a key of its own (its position among the lines) so the edit card can tell rows apart.
@@ -178,16 +191,19 @@ indirect enum AgentFieldRow {
     private var layout: [Node] = []
     private let favoriteOptions: [EditField.Option]
     private let searchPlaces: @MainActor (String) async -> [Place]
+    private let partnerCandidates: (@MainActor (String, String) async -> PlaceLookup)?
     private let now: () -> Date
     private var debouncer = PlaceSearchDebouncer()
 
     /// `search` answers a place query (the caller decides the provider and the search centre); `now` is the clock the dial
-    /// reads when its owner passes none.
+    /// reads when its owner passes none. `candidates` answers the lookup of a place row the partner resolves itself, given the
+    /// row's key and the lookup text; without it such a row fails.
     init(header: String, rows: [AgentFieldRow], favorites: [FavoritePlace], search: @escaping @MainActor (String) async -> [Place],
-         now: @escaping () -> Date) {
+         now: @escaping () -> Date, candidates: (@MainActor (String, String) async -> PlaceLookup)? = nil) {
         self.header = header
         self.favoriteOptions = favorites.map { EditField.Option(label: $0.label, value: $0.label, place: $0.place) }
         self.searchPlaces = search
+        self.partnerCandidates = candidates
         self.now = now
         card = EditCard(fields: [])
         var lineCount = 0
@@ -285,7 +301,13 @@ indirect enum AgentFieldRow {
     @discardableResult
     func choosePlace(_ key: String, _ place: Place) -> Bool {
         guard !isFrozen, let index = index(of: key), var slot = slots[key], slot.spec.kind == .place,
-              let text = AgentDelivery.placeText(place) else { return false }
+              var text = AgentDelivery.placeText(place) else { return false }
+        if slot.spec.partnerLookup {
+            // @MX:NOTE a partner-resolved row takes only a candidate the partner listed and the row still shows; a place of an older
+            // list, a favorite or an unlisted place changes nothing. The check is of the tap, not of a value already held.
+            guard case .results(let listed) = card.fields[index].lookup, listed.contains(place) else { return false }
+            text = Self.chosenText(of: place)
+        }
         slot.value = .place(place)
         slot.source = .entered
         slots[key] = slot
@@ -293,6 +315,9 @@ indirect enum AgentFieldRow {
         card.fields[index].note = nil
         return true
     }
+
+    /// What a closed partner-resolved row shows for its chosen candidate: the name, then the address.
+    private static func chosenText(of place: Place) -> String { "\(place.name), \(place.address)" }
 
     /// Types text: hidden characters go, the text is cut at the field's limit, nothing is trimmed, and a blank text clears the
     /// value. The view passes the whole draft each time. A number field keeps only ASCII digits, cut at its limit (at most
@@ -356,22 +381,47 @@ indirect enum AgentFieldRow {
 
     /// A query typed in a place row: the debouncer decides whether, when and with what text the search closure is called.
     func search(_ key: String, _ query: String) {
-        guard !isFrozen, let index = index(of: key), slots[key]?.spec.kind == .place else { return }
+        guard !isFrozen, let index = index(of: key), let spec = slots[key]?.spec, spec.kind == .place else { return }
         let id = card.fields[index].id
+        // The first search of a partner-resolved row spends its seed, whatever that search asks (even nothing).
+        if spec.partnerLookup { spendSeed(key, index) }
         switch debouncer.gate(id, query) {
         case .clear:
             setLookup(id, .idle)
         case .skip:
             break
         case .fire(let cleaned):
+            guard spec.partnerLookup else {
+                setLookup(id, .searching)
+                debouncer.arm(id, cleaned) { [weak self] in
+                    guard let self else { return }
+                    let found = await self.searchPlaces(cleaned)
+                    guard !Task.isCancelled else { return }
+                    self.finishSearch(id, cleaned, .found(found))
+                }
+                return
+            }
+            // The gate has already cancelled a lookup in flight. A text that is too short once normalised asks nothing, and is
+            // recorded as done so a later different text is not skipped as a repeat.
+            guard let asked = PartnerCandidates.requestText(cleaned) else {
+                setLookup(id, .idle)
+                debouncer.noteDone(id, cleaned)
+                return
+            }
             setLookup(id, .searching)
             debouncer.arm(id, cleaned) { [weak self] in
                 guard let self else { return }
-                let found = await self.searchPlaces(cleaned)
+                // Never the place search: a row the partner resolves fails when the card has no partner to ask.
+                let found = await self.partnerCandidates?(key, asked) ?? .failed
                 guard !Task.isCancelled else { return }
                 self.finishSearch(id, cleaned, found)
             }
         }
+    }
+
+    private func spendSeed(_ key: String, _ index: Int) {
+        slots[key]?.seed = nil
+        card.fields[index].searchSeed = nil
     }
 
     /// The Confirm tap: from now on every change, search and result changes nothing.
@@ -415,7 +465,14 @@ indirect enum AgentFieldRow {
     /// inferred.
     private func slot(_ spec: AgentFieldSpec, _ value: AgentFieldValue?, _ source: AgentFieldSource) -> Slot {
         var kept: AgentFieldValue?
+        var seed: String?
         switch (spec.kind, value) {
+        case (.place, .place?) where spec.partnerLookup:
+            // A partner-resolved row holds only a candidate the user tapped: no seeded place is a value.
+            kept = nil
+        case (.place, .text(let text)?) where spec.partnerLookup:
+            // The stated text only seeds the row's search; it is never the value, so Confirm cannot pass on unresolved text.
+            seed = text.trimmingCharacters(in: .whitespaces).isEmpty ? nil : text
         case (.text, .text(let text)?):
             let cleaned = AgentDelivery.cleanedTyped(text, limit: spec.limit ?? AgentDelivery.maxDeliveryText)
             kept = cleaned.trimmingCharacters(in: .whitespaces).isEmpty ? nil : .text(cleaned)
@@ -434,7 +491,7 @@ indirect enum AgentFieldRow {
         default:
             kept = nil
         }
-        return Slot(spec: spec, value: kept, source: kept == nil ? .blank : (source == .blank ? .inferred : source))
+        return Slot(spec: spec, value: kept, source: kept == nil ? .blank : (source == .blank ? .inferred : source), seed: seed)
     }
 
     private func fields(for nodes: [Node]) -> [EditField] {
@@ -462,7 +519,15 @@ indirect enum AgentFieldRow {
             return EditField(key: key, kind: .title, label: spec.label, options: [], allowsCustom: true,
                              chosen: chosen.map { $0.trimmingCharacters(in: .whitespaces) }, placeholder: String())
         case .place:
-            return EditField(key: key, kind: .place, label: spec.label, options: favoriteOptions, allowsCustom: true, chosen: chosen)
+            guard spec.partnerLookup else {
+                return EditField(key: key, kind: .place, label: spec.label, options: favoriteOptions, allowsCustom: true, chosen: chosen)
+            }
+            // The partner lists the candidates: no favorites ride the row, and a held place shows as its name and address.
+            var row = EditField(key: key, kind: .place, label: spec.label, options: [], allowsCustom: true, chosen: nil)
+            if case .place(let place)? = slot.value { row.chosen = Self.chosenText(of: place) }
+            row.partnerLookup = true
+            row.searchSeed = slot.seed
+            return row
         case .time:
             return EditField(key: key, kind: .datetime, label: spec.label, options: [], allowsCustom: false, chosen: chosen, anchored: false)
         case .pickOne:
@@ -535,9 +600,14 @@ indirect enum AgentFieldRow {
 
     /// The answer of a search. The done mark comes before the state, so a query typed again while the first one runs is not
     /// dropped as a repeat. A frozen card, or a row that is gone, drops the answer.
-    private func finishSearch(_ id: UUID, _ query: String, _ found: [Place]) {
+    private func finishSearch(_ id: UUID, _ query: String, _ found: PlaceLookup) {
         guard !isFrozen else { return }
         debouncer.noteDone(id, query)
-        setLookup(id, found.isEmpty ? .empty : .results(Array(found.prefix(PlaceSearch.maxSuggestions))))
+        switch found {
+        case .found(let places):
+            setLookup(id, places.isEmpty ? .empty : .results(Array(places.prefix(PlaceSearch.maxSuggestions))))
+        case .failed:
+            setLookup(id, .failed)
+        }
     }
 }

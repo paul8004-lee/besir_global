@@ -25,6 +25,9 @@ struct PartnerField: Equatable {
     let options: [PartnerOption]
     /// True when the partner marked the field optional. Defaulted, so a field written without it is required.
     var isOptional = false
+    /// True when the partner marked a `place` field as one it resolves itself (`"lookup": true`): the card asks that partner for the
+    /// candidates. Defaulted, so a field written without it is an ordinary place field.
+    var canLookUp = false
 }
 
 /// One entry of the result-field list a partner announces before the card is drawn: the name and the kind of a result item.
@@ -76,7 +79,8 @@ enum PartnerForm {
     // MARK: The field list
 
     /// 1 to 8 fields, each `key`, `kind`, `label`, then `options` for `pick_one` and `on_off` only, then `optional` (the boolean
-    /// `true`, on any kind but `on_off`) when the field is optional; keys unique.
+    /// `true`, on any kind but `on_off`) when the field is optional, or `lookup` (the boolean `true`, on a `place` field that is not
+    /// optional) when the partner resolves the place itself; keys unique.
     static func fields(from value: Any?) -> [PartnerField]? {
         guard let list = value as? [Any], (1...maxFields).contains(list.count) else { return nil }
         var fields: [PartnerField] = []
@@ -101,8 +105,17 @@ enum PartnerForm {
             optional = true
             keyCount += 1
         }
+        // `lookup` follows the same rule, and only on a `place` field: a required value is what the card's tap rule gates, so the
+        // marker is refused beside `optional` too.
+        var lookup = false
+        if let marker = object["lookup"] {
+            guard kind == .place, !optional, let flag = marker as? NSNumber, isBoolean(flag), flag.boolValue else { return nil }
+            lookup = true
+            keyCount += 1
+        }
         guard kind.hasOptions else {
-            return object.count == keyCount ? PartnerField(key: key, kind: kind, label: label, options: [], isOptional: optional) : nil
+            return object.count == keyCount
+                ? PartnerField(key: key, kind: kind, label: label, options: [], isOptional: optional, canLookUp: lookup) : nil
         }
         guard object.count == keyCount + 1, let listed = object["options"] as? [Any], let options = options(from: listed, kind: kind) else { return nil }
         return PartnerField(key: key, kind: kind, label: label, options: options, isOptional: optional)

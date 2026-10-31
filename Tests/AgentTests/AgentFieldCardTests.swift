@@ -822,6 +822,502 @@ final class AgentFieldCardTests: XCTestCase {
         off.removeOwnRows()
         XCTAssertEqual(keys(off), ["note"])
     }
+
+    // MARK: PLACE the partner resolves a place row itself (card t98, SPEC-PARTNERPLACE-001)
+
+    private var venueSpec: AgentFieldSpec { AgentFieldSpec(key: "venue", kind: .place, label: "Venue", partnerLookup: true) }
+    private var originSpec: AgentFieldSpec { AgentFieldSpec(key: "origin", kind: .place, label: "From") }
+
+    /// `count` candidates in a fixed order, each with an address of its own.
+    private func branches(_ count: Int) -> [Place] {
+        (0..<count).map { place("Branch \($0)", "\($0 + 1) Main Street", 37.5 + Double($0) / 100, -122.4) }
+    }
+
+    /// A card whose marked rows ask `lookups` and whose unmarked rows ask `searches`.
+    private func makeLookupCard(_ rows: [AgentFieldRow], favorites: [FavoritePlace] = [], searches: Searches = Searches(),
+                                lookups: LookupGate) -> AgentFieldCard {
+        AgentFieldCard(header: "Book a table", rows: rows, favorites: favorites, search: { await searches.run($0) },
+                       now: { [now] in now }, candidates: { await lookups.run($0, $1) })
+    }
+
+    private func isFailedLookup(_ lookup: EditField.Lookup?) -> Bool {
+        if case .failed? = lookup { return true }
+        return false
+    }
+
+    func testPLACE_M01_AMarkedRowListsAtMostFiveCandidatesWithNoFavoritesAndNoSpecialRows() async throws {
+        let searches = Searches()
+        let lookups = LookupGate()
+        lookups.reply = .found(branches(7))
+        let model = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], favorites: [home, cafeNorth], searches: searches, lookups: lookups)
+        let row = try XCTUnwrap(model.field("venue"))
+        XCTAssertEqual(row.kind, .place, "positive: the card was built")
+        XCTAssertTrue(row.partnerLookup)
+        XCTAssertTrue(row.options.isEmpty, "the favorites the card was given do not ride a marked row")
+        XCTAssertTrue(row.placeSpecials.isEmpty)
+        XCTAssertTrue(isIdle(row.lookup))
+
+        // The lookup goes searching at once, asks the partner once after the debounce, and never the Google closure.
+        model.search("venue", "branch")
+        XCTAssertTrue(isSearching(model.field("venue")?.lookup))
+        XCTAssertEqual(lookups.calls, [], "nothing is asked before the debounce")
+        await settle()
+        XCTAssertEqual(lookups.calls, [LookupCall(key: "venue", text: "branch")])
+        XCTAssertEqual(searches.queries, [], "a marked row never asks the Google closure")
+        let listed = try XCTUnwrap(results(model.field("venue")?.lookup))
+        XCTAssertEqual(listed, Array(branches(7).prefix(5)), "at most five, in the partner's order")
+        XCTAssertEqual(listed.map(\.name), (0..<5).map { "Branch \($0)" })
+        XCTAssertEqual(listed.map(\.address), (1...5).map { "\($0) Main Street" })
+
+        // The list is the candidates alone: no favorite row and no special row, with a typed query and with an empty one.
+        let current = try XCTUnwrap(model.field("venue"))
+        let expected = listed.map { PlaceLine.Row.candidate($0) }
+        XCTAssertEqual(PlaceLine.rows(query: "branch", specials: current.placeSpecials, favorites: current.options, candidates: listed), expected)
+        XCTAssertEqual(PlaceLine.rows(query: "", specials: current.placeSpecials, favorites: current.options, candidates: listed), expected)
+        XCTAssertEqual(PlaceLine.rows(query: "home", specials: current.placeSpecials, favorites: current.options, candidates: listed), expected,
+                       "a favorite that matches the typed text is not listed")
+        XCTAssertFalse(model.isReady)
+
+        // A shorter answer keeps its order and its length.
+        lookups.reply = .found(branches(3))
+        model.search("venue", "branch 2")
+        await settle()
+        XCTAssertEqual(lookups.calls.map(\.text), ["branch", "branch 2"])
+        XCTAssertEqual(results(model.field("venue")?.lookup), branches(3))
+        XCTAssertEqual(searches.queries, [])
+    }
+
+    func testPLACE_M02_AnExactNameOrASingleCandidateIsNeverChosenWithoutATap() async throws {
+        // An exact name among two candidates.
+        let exact = place("McDonald's", "100 Market Street", 37.79, -122.40)
+        let other = place("McDonald's", "200 Mission Street", 37.78, -122.41)
+        let lookups = LookupGate()
+        lookups.reply = .found([exact, other])
+        let model = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], lookups: lookups)
+        model.search("venue", "McDonald's")
+        await settle()
+        XCTAssertEqual(lookups.calls, [LookupCall(key: "venue", text: "McDonald's")], "positive: the partner was asked")
+        XCTAssertEqual(results(model.field("venue")?.lookup), [exact, other], "positive: the exact name is in the list")
+        XCTAssertNil(try XCTUnwrap(model.field("venue")).chosen)
+        XCTAssertFalse(model.isReady)
+        XCTAssertNil(model.values.entry("venue")?.value)
+        XCTAssertNil(model.values.place("venue"))
+        XCTAssertEqual(model.source(of: "venue"), .blank)
+        // One tap on the candidate sets the value.
+        XCTAssertTrue(model.choosePlace("venue", exact))
+        XCTAssertEqual(try XCTUnwrap(model.field("venue")).chosen, "McDonald's, 100 Market Street")
+        XCTAssertTrue(model.isReady)
+        XCTAssertEqual(model.values.place("venue"), exact)
+
+        // A single candidate is not chosen on its own, even when its name is the typed name.
+        let only = place("Tartine Bakery", "600 Guerrero Street", 37.76, -122.42)
+        let single = LookupGate()
+        single.reply = .found([only])
+        let alone = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], lookups: single)
+        alone.search("venue", "Tartine Bakery")
+        await settle()
+        XCTAssertEqual(single.calls, [LookupCall(key: "venue", text: "Tartine Bakery")], "positive: the partner was asked")
+        XCTAssertEqual(results(alone.field("venue")?.lookup), [only], "positive: the one candidate is listed")
+        XCTAssertNil(try XCTUnwrap(alone.field("venue")).chosen)
+        XCTAssertFalse(alone.isReady)
+        XCTAssertNil(alone.values.place("venue"))
+        XCTAssertEqual(alone.source(of: "venue"), .blank)
+        XCTAssertTrue(alone.choosePlace("venue", only))
+        XCTAssertEqual(try XCTUnwrap(alone.field("venue")).chosen, "Tartine Bakery, 600 Guerrero Street")
+        XCTAssertTrue(alone.isReady)
+        XCTAssertEqual(alone.values.place("venue"), only)
+        XCTAssertEqual(alone.source(of: "venue"), .entered)
+    }
+
+    func testPLACE_M03_AStatedTextIsOnlyTheSeedAndNeverTheValue() async throws {
+        let searches = Searches()
+        let lookups = LookupGate()
+        let stated = makeLookupCard([.field(venueSpec, value: .text("McDonald's"), source: .stated)], searches: searches, lookups: lookups)
+        let row = try XCTUnwrap(stated.field("venue"))
+        XCTAssertEqual(row.kind, .place, "positive: the card was built")
+        XCTAssertNil(stated.values.entry("venue")?.value)
+        XCTAssertNil(stated.values.place("venue"))
+        XCTAssertNil(stated.values.text("venue"))
+        XCTAssertEqual(stated.source(of: "venue"), .blank)
+        XCTAssertNil(row.chosen)
+        XCTAssertFalse(stated.isReady)
+        XCTAssertEqual(row.searchSeed, "McDonald's")
+        XCTAssertEqual(stated.lines, ["Book a table", "Venue:"], "the stated text is not drawn as the value")
+        // Building the card asks nobody.
+        await settle(0.55)
+        XCTAssertEqual(lookups.calls, [])
+        XCTAssertEqual(searches.queries, [])
+
+        // An inferred text is the same.
+        let inferred = makeLookupCard([.field(venueSpec, value: .text("Tartine"), source: .inferred)], lookups: lookups)
+        XCTAssertNil(inferred.values.entry("venue")?.value)
+        XCTAssertEqual(inferred.source(of: "venue"), .blank)
+        XCTAssertNil(try XCTUnwrap(inferred.field("venue")).chosen)
+        XCTAssertFalse(inferred.isReady)
+        XCTAssertEqual(try XCTUnwrap(inferred.field("venue")).searchSeed, "Tartine")
+
+        // A place seed on a marked row is dropped: only a tapped candidate is a value.
+        let dropped = makeLookupCard([.field(venueSpec, value: .place(home.place), source: .stated)], lookups: lookups)
+        XCTAssertNotNil(dropped.field("venue"), "positive: the card was built")
+        XCTAssertNil(dropped.values.entry("venue")?.value)
+        XCTAssertNil(dropped.values.place("venue"))
+        XCTAssertEqual(dropped.source(of: "venue"), .blank)
+        XCTAssertNil(try XCTUnwrap(dropped.field("venue")).chosen)
+        XCTAssertFalse(dropped.isReady)
+        XCTAssertEqual(lookups.calls, [])
+    }
+
+    func testPLACE_M04_OnlyACurrentCandidateCanBeTappedAndAChosenValueStaysWhenTheListChanges() async throws {
+        let first = branches(3)
+        let second = [place("Corner", "7 Second Avenue", 37.6, -122.5), place("Plaza", "8 Second Avenue", 37.7, -122.6)]
+        let unlisted = place("Unlisted", "9 Nowhere Road", 37.0, -122.0)
+        let lookups = LookupGate()
+        lookups.reply = .found(first)
+        let model = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], favorites: [home], lookups: lookups)
+        model.search("venue", "branch")
+        await settle()
+        XCTAssertEqual(results(model.field("venue")?.lookup), first, "positive: the first list is shown")
+
+        // A tap on a favorite or on a place nobody listed changes nothing.
+        XCTAssertFalse(model.choosePlace("venue", home.place))
+        XCTAssertFalse(model.choosePlace("venue", unlisted))
+        model.actions.choosePlace(try XCTUnwrap(model.field("venue")).id, unlisted)
+        XCTAssertNil(try XCTUnwrap(model.field("venue")).chosen)
+        XCTAssertNil(model.values.place("venue"))
+        XCTAssertEqual(model.source(of: "venue"), .blank)
+        XCTAssertFalse(model.isReady)
+
+        // A tap on a current candidate sets the value: the row's text is the name and the address, the value the whole place.
+        XCTAssertTrue(model.choosePlace("venue", first[0]))
+        XCTAssertEqual(try XCTUnwrap(model.field("venue")).chosen, "Branch 0, 1 Main Street")
+        XCTAssertEqual(model.values.place("venue"), first[0])
+        XCTAssertTrue(model.isReady)
+
+        // A new query is typed: while it runs the older list is gone, so a tap on one of its rows changes nothing.
+        lookups.holds = true
+        model.search("venue", "other")
+        await settle(0.55)
+        XCTAssertEqual(lookups.calls.map(\.text), ["branch", "other"], "positive: the second lookup is waiting")
+        XCTAssertTrue(isSearching(model.field("venue")?.lookup))
+        XCTAssertFalse(model.choosePlace("venue", first[1]))
+        XCTAssertEqual(try XCTUnwrap(model.field("venue")).chosen, "Branch 0, 1 Main Street")
+        XCTAssertEqual(model.values.place("venue"), first[0])
+
+        // The new list does not hold the chosen place: the value stays, and so does readiness.
+        lookups.release("other", .found(second))
+        await settle(0.2)
+        XCTAssertEqual(results(model.field("venue")?.lookup), second, "positive: the new list is shown")
+        XCTAssertEqual(try XCTUnwrap(model.field("venue")).chosen, "Branch 0, 1 Main Street")
+        XCTAssertEqual(model.values.place("venue"), first[0])
+        XCTAssertTrue(model.isReady)
+        XCTAssertEqual(model.source(of: "venue"), .entered)
+        // The chosen place and a row of the older list are not current candidates now.
+        XCTAssertFalse(model.choosePlace("venue", first[0]))
+        XCTAssertFalse(model.choosePlace("venue", first[2]))
+        XCTAssertEqual(model.values.place("venue"), first[0])
+        // Another current candidate replaces the value.
+        XCTAssertTrue(model.choosePlace("venue", second[1]))
+        XCTAssertEqual(try XCTUnwrap(model.field("venue")).chosen, "Plaza, 8 Second Avenue")
+        XCTAssertEqual(model.values.place("venue"), second[1])
+
+        // An empty answer and a failed lookup keep the value as well, and nothing is a current candidate then.
+        lookups.holds = false
+        lookups.reply = .found([])
+        model.search("venue", "zzz")
+        await settle()
+        XCTAssertTrue(isEmptyLookup(model.field("venue")?.lookup))
+        XCTAssertEqual(model.values.place("venue"), second[1])
+        XCTAssertTrue(model.isReady)
+        XCTAssertFalse(model.choosePlace("venue", second[0]))
+        lookups.reply = .failed
+        model.search("venue", "yyy")
+        await settle()
+        XCTAssertTrue(isFailedLookup(model.field("venue")?.lookup))
+        XCTAssertEqual(try XCTUnwrap(model.field("venue")).chosen, "Plaza, 8 Second Avenue")
+        XCTAssertEqual(model.values.place("venue"), second[1])
+        XCTAssertTrue(model.isReady)
+        XCTAssertFalse(model.choosePlace("venue", second[1]))
+        XCTAssertEqual(model.values.place("venue"), second[1])
+    }
+
+    /// A card whose marked row has listed candidates and has one of them chosen, ready for the next lookup to answer.
+    private func chosenVenueCard(_ lookups: LookupGate) async throws -> (model: AgentFieldCard, chosen: Place) {
+        let listed = branches(3)
+        lookups.reply = .found(listed)
+        let model = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], lookups: lookups)
+        model.search("venue", "branch")
+        await settle()
+        XCTAssertEqual(results(model.field("venue")?.lookup), listed, "positive: the list is shown")
+        XCTAssertTrue(model.choosePlace("venue", listed[1]))
+        XCTAssertTrue(model.isReady, "positive: the choice made the card ready")
+        return (model, listed[1])
+    }
+
+    func testPLACE_M08_AnEmptyAnswerAfterAChoiceLeavesTheValueAndReadinessUnchanged() async throws {
+        let lookups = LookupGate()
+        let (model, chosen) = try await chosenVenueCard(lookups)
+        let shown = try XCTUnwrap(model.field("venue")).chosen
+        lookups.reply = .found([])
+        model.search("venue", "nothing like it")
+        await settle()
+        XCTAssertTrue(isEmptyLookup(model.field("venue")?.lookup), "positive: the empty answer arrived")
+        XCTAssertEqual(try XCTUnwrap(model.field("venue")).chosen, shown)
+        XCTAssertEqual(model.values.place("venue"), chosen)
+        XCTAssertEqual(model.source(of: "venue"), .entered)
+        XCTAssertTrue(model.isReady)
+    }
+
+    func testPLACE_M09_AFailedLookupAfterAChoiceLeavesTheValueAndReadinessUnchanged() async throws {
+        let lookups = LookupGate()
+        let (model, chosen) = try await chosenVenueCard(lookups)
+        let shown = try XCTUnwrap(model.field("venue")).chosen
+        lookups.reply = .failed
+        model.search("venue", "unreachable")
+        await settle()
+        XCTAssertTrue(isFailedLookup(model.field("venue")?.lookup), "positive: the failure arrived")
+        XCTAssertEqual(try XCTUnwrap(model.field("venue")).chosen, shown)
+        XCTAssertEqual(model.values.place("venue"), chosen)
+        XCTAssertEqual(model.source(of: "venue"), .entered)
+        XCTAssertTrue(model.isReady)
+    }
+
+    func testPLACE_M05_EmptyAndFailedAreDifferentStatesWithDifferentNotes() async throws {
+        // The exact words, and the pure choice the view makes: the partner's two notes only for a partner row.
+        XCTAssertEqual(PlaceLine.partnerNoResultNote, "The partner found no matches.")
+        XCTAssertEqual(PlaceLine.partnerFailedNote, "Couldn't reach the partner.")
+        XCTAssertNotEqual(PlaceLine.partnerNoResultNote, PlaceLine.partnerFailedNote)
+        let states: [(name: String, lookup: EditField.Lookup, note: String?)] = [
+            ("idle", .idle, nil), ("searching", .searching, nil), ("results", .results(branches(2)), nil),
+            ("empty", .empty, "The partner found no matches."), ("failed", .failed, "Couldn't reach the partner.")]
+        for state in states {
+            XCTAssertEqual(PlaceLine.partnerNote(partnerLookup: true, lookup: state.lookup), state.note, state.name)
+            XCTAssertNil(PlaceLine.partnerNote(partnerLookup: false, lookup: state.lookup), "a non-partner row: " + state.name)
+        }
+
+        let lookups = LookupGate()
+        lookups.reply = .found(branches(2))
+        let model = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], lookups: lookups)
+        func note() -> String? {
+            let row = model.field("venue")
+            return PlaceLine.partnerNote(partnerLookup: row?.partnerLookup ?? false, lookup: row?.lookup ?? .idle)
+        }
+        // Candidates: no note.
+        model.search("venue", "ab")
+        await settle()
+        XCTAssertEqual(results(model.field("venue")?.lookup), branches(2), "positive: candidates are listed")
+        XCTAssertNil(note())
+        XCTAssertFalse(model.isReady)
+
+        // An empty answer: the empty state with the no-match note, not the failed one.
+        lookups.reply = .found([])
+        model.search("venue", "abc")
+        await settle()
+        XCTAssertTrue(isEmptyLookup(model.field("venue")?.lookup))
+        XCTAssertFalse(isFailedLookup(model.field("venue")?.lookup))
+        XCTAssertEqual(note(), "The partner found no matches.")
+        XCTAssertFalse(model.isReady)
+
+        // A failed lookup: the failed state with the failed note, not the empty one.
+        lookups.reply = .failed
+        model.search("venue", "abcd")
+        await settle()
+        XCTAssertTrue(isFailedLookup(model.field("venue")?.lookup))
+        XCTAssertFalse(isEmptyLookup(model.field("venue")?.lookup))
+        XCTAssertEqual(note(), "Couldn't reach the partner.")
+        XCTAssertFalse(model.isReady)
+
+        // The text stays editable: a new query asks again, and candidates bring both notes down.
+        lookups.reply = .found(branches(1))
+        model.search("venue", "abcde")
+        await settle()
+        XCTAssertEqual(lookups.calls.map(\.text), ["ab", "abc", "abcd", "abcde"])
+        XCTAssertEqual(results(model.field("venue")?.lookup), branches(1))
+        XCTAssertNil(note())
+        XCTAssertFalse(model.isReady)
+    }
+
+    func testPLACE_M06_ALateAnswerAFinishedCardAndShortTextsChangeNothingAndTheSeedSearchesOnce() async throws {
+        let pick = branches(2)
+
+        // An answer for the older of two texts is dropped when it arrives after the newer text started: the newer list shows.
+        let late = LookupGate()
+        late.holds = true
+        let model = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], lookups: late)
+        model.search("venue", "alpha")
+        await settle(0.55)
+        model.search("venue", "beta")
+        await settle(0.55)
+        XCTAssertEqual(late.calls.map(\.text), ["alpha", "beta"], "positive: both texts were asked")
+        late.release("alpha", .found([pick[0]]))
+        await settle(0.2)
+        XCTAssertNil(results(model.field("venue")?.lookup), "the older answer is dropped")
+        XCTAssertTrue(isSearching(model.field("venue")?.lookup))
+        late.release("beta", .found([pick[1]]))
+        await settle(0.2)
+        XCTAssertEqual(results(model.field("venue")?.lookup), [pick[1]])
+
+        // Fewer than two scalars after the normalisation asks nothing, leaves the row idle with no note, and a lookup in flight is
+        // cancelled: its late answer never fills the list.
+        let shortTexts = ["a", "a\u{200B}", "a\n", "M" + String(repeating: " ", count: 79) + "s"]
+        for typed in shortTexts {
+            let shown = "\(typed.unicodeScalars.count) scalars " + typed.debugDescription
+            let searches = Searches()
+            let lookups = LookupGate()
+            lookups.holds = true
+            let short = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], searches: searches, lookups: lookups)
+            short.search("venue", typed)
+            await settle(0.55)
+            XCTAssertEqual(lookups.calls, [], shown)
+            XCTAssertEqual(searches.queries, [], shown)
+            XCTAssertTrue(isIdle(short.field("venue")?.lookup), shown)
+            XCTAssertNil(PlaceLine.partnerNote(partnerLookup: short.field("venue")?.partnerLookup ?? false, lookup: short.field("venue")?.lookup ?? .idle), shown)
+            short.search("venue", "Golden Gate")
+            await settle(0.55)
+            XCTAssertEqual(lookups.calls.map(\.text), ["Golden Gate"], "positive: a long text is asked, " + shown)
+            XCTAssertTrue(isSearching(short.field("venue")?.lookup), shown)
+            short.search("venue", typed)
+            await settle(0.45)
+            XCTAssertEqual(lookups.calls.map(\.text), ["Golden Gate"], shown)
+            XCTAssertTrue(isIdle(short.field("venue")?.lookup), shown)
+            lookups.release("Golden Gate", .found(pick))
+            await settle(0.2)
+            XCTAssertTrue(isIdle(short.field("venue")?.lookup), "the cancelled answer never fills the list, " + shown)
+            XCTAssertNil(results(short.field("venue")?.lookup), shown)
+            XCTAssertEqual(searches.queries, [], shown)
+        }
+        // Hidden characters are removed before the text is asked: a, a zero-width space and b ask `ab`.
+        let hidden = LookupGate()
+        let cleaned = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], lookups: hidden)
+        cleaned.search("venue", "a\u{200B}b")
+        await settle()
+        XCTAssertEqual(hidden.calls, [LookupCall(key: "venue", text: "ab")])
+
+        // `ab`, then `a`, then `ab` again asks the second `ab` again: the short text was recorded as done.
+        let again = LookupGate()
+        again.reply = .found(pick)
+        let repeated = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], lookups: again)
+        repeated.search("venue", "ab")
+        await settle()
+        repeated.search("venue", "a")
+        await settle()
+        XCTAssertTrue(isIdle(repeated.field("venue")?.lookup))
+        repeated.search("venue", "ab")
+        await settle()
+        XCTAssertEqual(again.calls.map(\.text), ["ab", "ab"])
+        XCTAssertEqual(results(repeated.field("venue")?.lookup), pick)
+
+        // An answer after the freeze changes nothing, and nothing is asked after it.
+        let frozen = LookupGate()
+        frozen.holds = true
+        let ended = makeLookupCard([.field(venueSpec, value: nil, source: .blank)], lookups: frozen)
+        ended.search("venue", "gamma")
+        await settle(0.55)
+        XCTAssertEqual(frozen.calls.map(\.text), ["gamma"], "positive: the lookup is waiting")
+        let valuesBefore = ended.values
+        let linesBefore = ended.lines
+        ended.freeze()
+        ended.search("venue", "delta")
+        frozen.release("gamma", .found(pick))
+        await settle(0.55)
+        XCTAssertTrue(isSearching(ended.field("venue")?.lookup), "a late answer after the freeze is dropped")
+        XCTAssertEqual(frozen.calls.map(\.text), ["gamma"], "no lookup is started after the freeze")
+        XCTAssertEqual(ended.values, valuesBefore)
+        XCTAssertEqual(ended.lines, linesBefore)
+        XCTAssertFalse(ended.choosePlace("venue", pick[0]))
+
+        // The seed is searched when the row is opened, if it is non-empty and the lookup is idle, and nothing else is.
+        XCTAssertEqual(PlaceLine.seedToSearchOnOpen(seed: "McDonald's", lookup: .idle), "McDonald's")
+        for (name, lookup) in [("searching", EditField.Lookup.searching), ("results", .results(pick)), ("empty", .empty), ("failed", .failed)] {
+            XCTAssertNil(PlaceLine.seedToSearchOnOpen(seed: "McDonald's", lookup: lookup), name)
+        }
+        XCTAssertNil(PlaceLine.seedToSearchOnOpen(seed: "", lookup: .idle))
+        XCTAssertNil(PlaceLine.seedToSearchOnOpen(seed: nil, lookup: .idle))
+
+        // The first search of the row spends the seed: a reopened or retyped row never searches it again.
+        let seeded = LookupGate()
+        seeded.reply = .found(pick)
+        let opened = makeLookupCard([.field(venueSpec, value: .text("McDonald's"), source: .stated)], lookups: seeded)
+        let openedRow = try XCTUnwrap(opened.field("venue"))
+        XCTAssertEqual(openedRow.searchSeed, "McDonald's")
+        let toSearch = PlaceLine.seedToSearchOnOpen(seed: openedRow.searchSeed, lookup: openedRow.lookup)
+        XCTAssertEqual(toSearch, "McDonald's", "the view searches the seed when it opens the row")
+        opened.actions.searchPlaces(openedRow.id, toSearch ?? String())
+        XCTAssertNil(try XCTUnwrap(opened.field("venue")).searchSeed, "the first search spends the seed")
+        await settle()
+        XCTAssertEqual(seeded.calls, [LookupCall(key: "venue", text: "McDonald's")])
+        XCTAssertEqual(results(opened.field("venue")?.lookup), pick)
+        opened.search("venue", "")
+        await settle(0.2)
+        let reopened = try XCTUnwrap(opened.field("venue"))
+        XCTAssertTrue(isIdle(reopened.lookup))
+        XCTAssertNil(reopened.searchSeed)
+        XCTAssertNil(PlaceLine.seedToSearchOnOpen(seed: reopened.searchSeed, lookup: reopened.lookup), "a reopened row does not search the seed again")
+
+        // A first search that asks nothing spends the seed as well.
+        let quiet = LookupGate()
+        let spent = makeLookupCard([.field(venueSpec, value: .text("McDonald's"), source: .stated)], lookups: quiet)
+        XCTAssertEqual(try XCTUnwrap(spent.field("venue")).searchSeed, "McDonald's")
+        spent.search("venue", "a")
+        XCTAssertNil(try XCTUnwrap(spent.field("venue")).searchSeed)
+        await settle(0.55)
+        XCTAssertEqual(quiet.calls, [])
+        XCTAssertNil(try XCTUnwrap(spent.field("venue")).searchSeed)
+    }
+
+    func testPLACE_M07_AnUnmarkedPlaceRowStillSearchesThroughTheGoogleClosureAndNeverAsksThePartner() async throws {
+        let searches = Searches()
+        searches.places = [place("Google Result", "1 Google Street")]
+        let lookups = LookupGate()
+        lookups.reply = .found([place("Partner Result", "2 Partner Street")])
+        let model = makeLookupCard([.field(originSpec, value: nil, source: .blank), .field(venueSpec, value: nil, source: .blank)],
+                                   favorites: [home], searches: searches, lookups: lookups)
+        XCTAssertEqual(try XCTUnwrap(model.field("origin")).kind, .place, "positive: the card was built")
+        XCTAssertFalse(try XCTUnwrap(model.field("origin")).partnerLookup)
+        XCTAssertEqual(try XCTUnwrap(model.field("origin")).options.map(\.label), ["Home"], "the favorites ride the unmarked row")
+
+        // The unmarked row asks the Google closure once and never the partner (a preservation control: green at the skeleton).
+        model.search("origin", "tart")
+        await settle()
+        XCTAssertEqual(searches.queries, ["tart"])
+        XCTAssertEqual(lookups.calls, [], "an unmarked row never asks the partner")
+        XCTAssertEqual(results(model.field("origin")?.lookup)?.map(\.name), ["Google Result"])
+        XCTAssertEqual(try XCTUnwrap(model.field("origin")).options.map(\.label), ["Home"])
+
+        // The marked row asks the partner's closure once with its key and never the Google closure.
+        model.search("venue", "mcd")
+        await settle()
+        XCTAssertEqual(lookups.calls, [LookupCall(key: "venue", text: "mcd")])
+        XCTAssertEqual(searches.queries, ["tart"], "a marked row never asks the Google closure")
+        XCTAssertEqual(results(model.field("venue")?.lookup)?.map(\.name), ["Partner Result"])
+        XCTAssertTrue(try XCTUnwrap(model.field("venue")).options.isEmpty)
+    }
+}
+
+/// One call of a test's partner lookup closure: the row's key and the lookup text it was given.
+private struct LookupCall: Equatable {
+    let key: String
+    let text: String
+}
+
+/// The partner's lookup closure of a test: records every call and answers `reply` at once, or, while `holds` is on, waits until
+/// the test releases the call of that text.
+@MainActor
+private final class LookupGate {
+    var calls: [LookupCall] = []
+    var reply: PlaceLookup = .found([])
+    var holds = false
+    private var waiting: [(text: String, continuation: CheckedContinuation<PlaceLookup, Never>)] = []
+
+    func run(_ key: String, _ text: String) async -> PlaceLookup {
+        calls.append(LookupCall(key: key, text: text))
+        guard holds else { return reply }
+        return await withCheckedContinuation { waiting.append((text: text, continuation: $0)) }
+    }
+
+    func release(_ text: String, _ answer: PlaceLookup) {
+        guard let at = waiting.firstIndex(where: { $0.text == text }) else { return }
+        waiting.remove(at: at).continuation.resume(returning: answer)
+    }
 }
 
 /// A search that answers when the test says so: the closure waits for `answer`.
