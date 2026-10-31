@@ -1,18 +1,28 @@
-// POST /booking: a simulated table-booking partner. It has no upstream, no storage and no log line:
-// the answer is computed from the request alone, so nothing personal can be kept.
-// Two requests: {"op":"fields"} names the form and the result items; {"op":"submit", request_id, values} acts on the form.
+// POST /booking: a simulated table-booking partner. It has no storage and no log line, and one upstream, for
+// {"op":"lookup"} only: that call is handed in by index.js, so this file holds no outgoing call and no key.
+// Apart from the lookup the answer is computed from the request alone, so nothing personal can be kept.
+// Three requests: {"op":"fields"} names the form and the result items; {"op":"submit", request_id, values} acts on the form;
+// {"op":"lookup", field, text, near?} lists the restaurants the partner finds for the typed text.
 const PARTNER = "Example Tables";
 const MAX_BODY_CHARS = 4096;
-const ALL_KEYS = ["op", "request_id", "values"];
+const ALL_KEYS = ["op", "request_id", "values", "field", "text", "near"];
 const KEYS_BY_OP = {
   fields: ["op"],
-  submit: ALL_KEYS,
+  submit: ["op", "request_id", "values"],
+  lookup: ["op", "field", "text", "near"],
 };
+const REQUIRED_KEYS_BY_OP = {
+  fields: ["op"],
+  submit: ["op", "request_id", "values"],
+  lookup: ["op", "field", "text"],
+};
+const NEAR_KEYS = ["latitude", "longitude"];
 const VALUE_KEYS = ["restaurant", "party_size", "start", "name", "note"];
 const REQUIRED_VALUE_KEYS = ["restaurant", "party_size", "start", "name"];
-// The form, in the order the app draws it. Only `note` is optional, and the marker is written last.
+// The form, in the order the app draws it. Only `note` is optional; a marker (`optional`, `lookup`) is written last,
+// and no field carries both. `lookup` marks the place fields the partner resolves itself.
 const BOOKING_FIELDS = [
-  { key: "restaurant", kind: "text", label: "Restaurant" },
+  { key: "restaurant", kind: "place", label: "Restaurant", lookup: true },
   { key: "party_size", kind: "number", label: "Party size" },
   { key: "start", kind: "time", label: "Time" },
   { key: "name", kind: "text", label: "Name" },
@@ -29,6 +39,13 @@ const LARGEST_PARTY_WE_SEAT = 8;
 const LARGEST_PARTY_ASKED = 12;
 const ESTIMATE_PER_PERSON_CENTS = 3000;
 const MAX_TEXT_CHARS = 120;
+const MIN_LOOKUP_CHARS = 2;
+const MAX_LOOKUP_CHARS = 80;
+const MAX_CANDIDATES = 5;
+const MAX_CANDIDATE_NAME_CHARS = 80;
+const MAX_CANDIDATE_ADDRESS_CHARS = 120;
+// The fields a lookup may name: the lookup-marked entries of the form, so the list and the check cannot diverge.
+const LOOKUP_FIELD_KEYS = BOOKING_FIELDS.filter((field) => field.lookup === true).map((field) => field.key);
 const NOTE_TEXT = "Table held for 15 minutes";
 const UUID_FORM = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const START_FORM = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
@@ -60,11 +77,58 @@ function isRealStart(text) {
 }
 
 // The value as sent may not hold a control, format or line-separator character; then it is trimmed and counted in code points.
-function cleanText(value, longest) {
+function cleanText(value, longest, shortest = 1) {
   if (typeof value !== "string" || HIDDEN_CHARACTER.test(value)) return null;
   const trimmed = value.trim();
   const length = [...trimmed].length;
-  return length >= 1 && length <= longest ? trimmed : null;
+  return length >= shortest && length <= longest ? trimmed : null;
+}
+
+// A text as a candidate field is read: it is kept as sent, so no trimming; it may not be blank or hold a hidden character.
+function soundText(value, longest) {
+  if (typeof value !== "string" || HIDDEN_CHARACTER.test(value) || value.trim() === "") return null;
+  return [...value].length <= longest ? value : null;
+}
+
+const isCoordinate = (value, limit) => typeof value === "number" && Number.isFinite(value) && value >= -limit && value <= limit;
+
+// The first fault of a lookup after the keys are checked, as an error name, or null: field, text and the shape of `near`
+// come first, then the keys of `near`, a missing key, a bad value.
+function lookupFault(request) {
+  if (!LOOKUP_FIELD_KEYS.includes(request.field)) return "invalid_field";
+  if (cleanText(request.text, MAX_LOOKUP_CHARS, MIN_LOOKUP_CHARS) === null) return "invalid_field";
+  if (!hasOwn(request, "near")) return null;
+  const near = request.near;
+  if (near === null || typeof near !== "object" || Array.isArray(near)) return "invalid_field";
+  if (Object.keys(near).some((key) => !NEAR_KEYS.includes(key))) return "unknown_field";
+  if (!NEAR_KEYS.every((key) => hasOwn(near, key))) return "missing_field";
+  return isCoordinate(near.latitude, 90) && isCoordinate(near.longitude, 180) ? null : "invalid_field";
+}
+
+// One result of the upstream, as the app reads a candidate: anything else about it makes it unusable, and only it.
+function candidateOf(result) {
+  if (result === null || typeof result !== "object" || Array.isArray(result)) return null;
+  const name = soundText(result.displayName?.text, MAX_CANDIDATE_NAME_CHARS);
+  const address = soundText(result.formattedAddress, MAX_CANDIDATE_ADDRESS_CHARS);
+  const latitude = result.location?.latitude;
+  const longitude = result.location?.longitude;
+  if (name === null || address === null || !isCoordinate(latitude, 90) || !isCoordinate(longitude, 180)) return null;
+  return { name, address, location: { latitude, longitude } };
+}
+
+// The answer to a valid lookup. `lookup` is handed in and says what happened: { outcome: "ok", body } with the upstream's
+// JSON, { outcome: "no_key" } or { outcome: "failed" }; nothing the upstream said is passed on except the usable results.
+async function lookupAnswer(request, lookup, json) {
+  const found = await lookup({ text: request.text.trim(), near: request.near });
+  if (found?.outcome === "no_key") return json(503, { error: "google_key_not_configured" });
+  const body = found?.body;
+  if (found?.outcome !== "ok" || body === null || typeof body !== "object" || Array.isArray(body)) {
+    return json(502, { error: "upstream_failed" });
+  }
+  const results = body.places ?? [];
+  if (!Array.isArray(results)) return json(502, { error: "upstream_failed" });
+  const candidates = results.map(candidateOf).filter((candidate) => candidate !== null).slice(0, MAX_CANDIDATES);
+  return json(200, { partner: PARTNER, simulated: true, field: request.field, candidates });
 }
 
 const hasOwn = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
@@ -105,7 +169,7 @@ async function reservationCode(requestId) {
   return "EX-" + Array.from(bytes, (byte) => CODE_ALPHABET[byte % CODE_ALPHABET.length]).join("");
 }
 
-export async function handleBooking(request, { json }) {
+export async function handleBooking(request, { json, lookup }) {
   const text = await request.text();
   if (text.length > MAX_BODY_CHARS) return json(413, { error: "body_too_large" });
   let value;
@@ -118,15 +182,21 @@ export async function handleBooking(request, { json }) {
     return json(400, { error: "body_must_be_object" });
   }
   const has = (key) => hasOwn(value, key);
-  // (1) a key outside the three, (2) an op that is neither fields nor submit, (3) no op or a key the op needs missing,
+  // (1) a key outside the six, (2) an op that is none of fields, submit, lookup, (3) no op or a key the op needs missing,
   // (4) a key the op does not allow.
   if (Object.keys(value).some((key) => !ALL_KEYS.includes(key))) return json(400, { error: "unknown_field" });
-  const knownOp = has("op") && (value.op === "fields" || value.op === "submit");
+  const knownOp = has("op") && (value.op === "fields" || value.op === "submit" || value.op === "lookup");
   if (has("op") && !knownOp) return json(400, { error: "invalid_field" });
-  if (!knownOp || !KEYS_BY_OP[value.op].every(has)) return json(400, { error: "missing_field" });
+  if (!knownOp || !REQUIRED_KEYS_BY_OP[value.op].every(has)) return json(400, { error: "missing_field" });
   if (Object.keys(value).some((key) => !KEYS_BY_OP[value.op].includes(key))) return json(400, { error: "invalid_field" });
 
   if (value.op === "fields") return json(200, fieldsAnswer());
+
+  // (4b) field, text, near: a field the partner resolves, a text of 2 to 80 code points, a well-formed `near`.
+  if (value.op === "lookup") {
+    const fault = lookupFault(value);
+    return fault === null ? lookupAnswer(value, lookup, json) : json(400, { error: fault });
+  }
 
   // (5) values is an object, (6) it holds only the five keys, (7) the four required keys, (8) types and ranges.
   const values = value.values;
