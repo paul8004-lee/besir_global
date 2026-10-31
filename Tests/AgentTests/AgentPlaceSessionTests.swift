@@ -10,6 +10,8 @@ private enum SessionLine {
     static let tooManySteps = "The assistant needed too many steps. Try again with a simpler request."
     static let stepLimit = #"{"status":"rejected","message":"Not executed. The step limit was reached."}"#
     static let oneAtATime = #"{"status":"rejected","message":"Not executed. Make one tool call at a time."}"#
+    static let searchFailed = "Places couldn't be searched right now."
+    static let noPlaces = "No places were found for that search."
 }
 
 @MainActor
@@ -475,5 +477,168 @@ final class AgentPlaceSessionTests: XCTestCase {
         ], "the existing lines are unchanged")
         #endif
         await rig.finish()
+    }
+
+    // MARK: - STEPFAIL: what failed, before the step-limit line (SPEC-STEPFAIL-001)
+
+    func testSTEPFAIL_S1_LimitAfterFailedRoutesShowsTheRouteSentenceThenTheStepLimit() async {
+        let steps: [FakeTransport.Step] = (1...6).map { .turn(PlaceTurns.travel("p1", mode: "walk", id: "c\($0)")) }
+        let rig = await chat(steps, routes: PlaceStubs.routes("routes-empty-object"), seed: true)
+        XCTAssertEqual(rig.fake.requests.count, 6)
+        XCTAssertEqual(rig.routesStub.callCount, 5, "the sixth response is not executed")
+        XCTAssertEqual(rig.resultStatuses, ["no_route", "no_route", "no_route", "no_route", "no_route", "rejected"])
+        XCTAssertEqual(rig.session.errorLines, [TravelFailure.noRoute.sentence, SessionLine.tooManySteps])
+        XCTAssertEqual(Array(rig.session.chatLines.suffix(2)),
+                       ["ERROR \(TravelFailure.noRoute.sentence)", "ERROR \(SessionLine.tooManySteps)"],
+                       "the failure line comes first, the step-limit line directly after it")
+
+        // The history and the request bodies stay as today (AC-005).
+        XCTAssertEqual(rig.session.history.count, 13, "one user entry, six assistant entries, six outputs")
+        XCTAssertEqual(rig.session.history.last, .callOutput(callID: "c6", result: SessionLine.stepLimit))
+        let outputs = callOutputs(rig.session.history)
+        for output in outputs.dropLast() {
+            XCTAssertEqual(TestClock.object(output.result) as NSDictionary?, PlaceText.noRoute as NSDictionary)
+        }
+        XCTAssertEqual(PairingValidator.problems(in: rig.session.history), [])
+        XCTAssertFalse(rig.historyText.contains(TravelFailure.noRoute.sentence), "the line stays out of the history")
+        let instructions = AgentWire.instructions(now: TestClock.now, timeZone: TestClock.zone)
+        for number in 1...6 {
+            let body = String(decoding: AgentWire.requestBody(history: rig.fake.request(number), instructions: instructions), as: UTF8.self)
+            for sentence in [TravelFailure.offline.sentence, TravelFailure.lookupFailed.sentence, TravelFailure.noRoute.sentence,
+                             TravelFailure.notConfigured.sentence, SessionLine.searchFailed, SessionLine.noPlaces] {
+                XCTAssertFalse(body.contains(sentence), "request \(number) holds no failure sentence")
+            }
+        }
+        let sixth = String(decoding: AgentWire.requestBody(history: rig.fake.request(6), instructions: instructions), as: UTF8.self)
+        XCTAssertTrue(sixth.contains("No route was found for that trip."), "the model-facing message is still there")
+        await rig.finish()
+    }
+
+    func testSTEPFAIL_S2_LimitAfterFailedSearchesShowsTheSearchSentence() async {
+        let steps: [FakeTransport.Step] = (1...6).map { .turn(PlaceTurns.search(id: "c\($0)")) }
+        let failing = await chat(steps, places: PlacesTransportStub.answering(status: 500, with: Data("{}".utf8)))
+        XCTAssertEqual(failing.resultStatuses, ["unavailable", "unavailable", "unavailable", "unavailable", "unavailable", "rejected"])
+        XCTAssertEqual(failing.session.errorLines, [SessionLine.searchFailed, SessionLine.tooManySteps])
+
+        let empty = await chat(steps, places: PlaceStubs.places("places-empty"))
+        XCTAssertEqual(empty.session.errorLines, [SessionLine.noPlaces, SessionLine.tooManySteps])
+        await failing.finish()
+        await empty.finish()
+    }
+
+    func testSTEPFAIL_S3_OnlyTheMostRecentLookupDecides() async {
+        // A later successful lookup clears the line.
+        let counter = LockedCounter()
+        let recovering = RoutesTransportStub { request in
+            let data = counter.next() == 0 ? PlaceFixture.data("routes-empty-object") : PlaceFixture.data("routes-drive")
+            return (data, PlaceBody.response(200, for: request))
+        }
+        var steps: [FakeTransport.Step] = [.turn(PlaceTurns.travel(id: "c1")), .turn(PlaceTurns.travel(id: "c2"))]
+        steps += (3...6).map { .turn(Turns.list(id: "c\($0)")) }
+        let cleared = await chat(steps, routes: recovering, seed: true)
+        XCTAssertEqual(cleared.resultStatuses, ["no_route", "ok", "ok", "ok", "ok", "rejected"])
+        XCTAssertEqual(cleared.session.errorLines, [SessionLine.tooManySteps],
+                       "the later successful lookup cleared the line")
+
+        // The control: results that are not lookups keep the line.
+        let always = await chat([.turn(PlaceTurns.travel(id: "c1"))] + (2...6).map { .turn(Turns.list(id: "c\($0)")) },
+                                routes: PlaceStubs.routes("routes-empty-object"), seed: true)
+        XCTAssertEqual(always.resultStatuses, ["no_route", "ok", "ok", "ok", "ok", "rejected"])
+        XCTAssertEqual(always.session.errorLines, [TravelFailure.noRoute.sentence, SessionLine.tooManySteps],
+                       "list results do not clear the line")
+        await cleared.finish()
+        await always.finish()
+    }
+
+    func testSTEPFAIL_S4_TheLineIsNotCarriedIntoTheNextMessageOrANewChat() async {
+        var steps: [FakeTransport.Step] = [.turn(PlaceTurns.travel(id: "c1"))]
+        steps += (2...6).map { .turn(Turns.list(id: "c\($0)")) }
+        steps += (7...12).map { .turn(Turns.list(id: "c\($0)")) }
+        steps += (13...18).map { .turn(Turns.list(id: "c\($0)")) }
+        let rig = PlaceSessionRig(steps, routes: PlaceStubs.routes("routes-empty-object"))
+        let seeded = await rig.seedPlaces()
+        XCTAssertTrue(seeded, "the seed lookup ran")
+        await rig.say("first")
+        XCTAssertEqual(rig.session.errorLines, [TravelFailure.noRoute.sentence, SessionLine.tooManySteps])
+        await rig.say("second")
+        XCTAssertEqual(rig.session.errorLines,
+                       [TravelFailure.noRoute.sentence, SessionLine.tooManySteps, SessionLine.tooManySteps],
+                       "the line is not carried into the next message")
+        await rig.session.newChat()
+        await rig.say("third")
+        XCTAssertEqual(rig.session.errorLines, [SessionLine.tooManySteps], "a new chat starts clean")
+
+        // A message with no lookup at all ends with the step-limit line alone.
+        let plain = PlaceSessionRig((1...6).map { .turn(Turns.list(id: "d\($0)")) })
+        await plain.say("what is on")
+        XCTAssertEqual(plain.session.errorLines, [SessionLine.tooManySteps])
+        await rig.finish()
+        await plain.finish()
+    }
+
+    func testSTEPFAIL_S5_APlanMessageAtTwelveBehavesTheSame() async {
+        var steps: [FakeTransport.Step] = (1...10).map { .turn(Turns.list(id: "c\($0)")) }
+        steps.append(.turn(PlaceTurns.search(id: "c11")))
+        steps += (12...14).map { .turn(Turns.list(id: "c\($0)")) }
+        let rig = PlaceSessionRig(steps, places: PlacesTransportStub.answering(status: 500, with: Data("{}".utf8)))
+        let sent = rig.session.sendPlan(message: "Plan my day",
+                                        context: DayPlanContext(mode: .car, events: [], checkWindowEnd: TestClock.date("2026-10-28T00:00")))
+        XCTAssertTrue(sent)
+        await rig.session.settle()
+        XCTAssertEqual(rig.fake.requests.count, 12, "the plan cap is 12")
+        XCTAssertEqual(rig.fake.remaining, 2, "no thirteenth request was made")
+        XCTAssertEqual(rig.session.history.last, .callOutput(callID: "c12", result: SessionLine.stepLimit))
+        XCTAssertEqual(rig.session.errorLines, [SessionLine.searchFailed, SessionLine.tooManySteps])
+        XCTAssertEqual(PairingValidator.problems(in: rig.session.history), [])
+
+        // The control: a successful search keeps the ending as today.
+        var controlSteps: [FakeTransport.Step] = (1...10).map { .turn(Turns.list(id: "d\($0)")) }
+        controlSteps.append(.turn(PlaceTurns.search(id: "d11")))
+        controlSteps += (12...14).map { .turn(Turns.list(id: "d\($0)")) }
+        let control = PlaceSessionRig(controlSteps)
+        _ = control.session.sendPlan(message: "Plan my day",
+                                     context: DayPlanContext(mode: .car, events: [], checkWindowEnd: TestClock.date("2026-10-28T00:00")))
+        await control.session.settle()
+        XCTAssertEqual(control.session.errorLines, [SessionLine.tooManySteps])
+        await rig.finish()
+        await control.finish()
+    }
+
+    func testSTEPFAIL_S6_TheLineEchoesNoCodeHostTokenOrModelText() async {
+        let hostileBody = Data(#"{"error":{"code":500,"message":"SENTINEL-BODY-0053 HTTP"}}"#.utf8)
+        let rows: [(routes: RoutesTransportStub, expected: String)] = [
+            (PlaceStubs.routes("routes-google-error-403", status: 403), TravelFailure.notConfigured.sentence),
+            (PlaceStubs.routes("routes-worker-unauthorized", status: 401), TravelFailure.notConfigured.sentence),
+            (RoutesTransportStub.answering(status: 500, with: hostileBody), TravelFailure.lookupFailed.sentence),
+        ]
+        for (index, row) in rows.enumerated() {
+            let steps: [FakeTransport.Step] = (1...6).map { .turn(PlaceTurns.travel(id: "c\($0)")) }
+            let rig = await chat(steps, routes: row.routes, seed: true)
+            XCTAssertEqual(rig.session.errorLines, [row.expected, SessionLine.tooManySteps], "row \(index)")
+            let line = rig.session.errorLines.first ?? ""
+            for word in ["403", "401", "500", "PERMISSION", "unauthorized", "HTTP", "sentinel-host",
+                         PlaceSentinel.token, "SENTINEL-BODY-0053", "37.77", "122.41", "Tell the user", "status", "no_route", "unavailable"] {
+                XCTAssertFalse(line.contains(word), "row \(index): the line holds no \(word)")
+            }
+            if index == 0 {
+                // Positive controls: the raw answers do carry what the line must not echo.
+                let body403 = PlaceFixture.text("routes-google-error-403")
+                XCTAssertTrue(body403.contains("403"))
+                XCTAssertTrue(body403.contains("PERMISSION"))
+                XCTAssertTrue(PlaceFixture.text("routes-worker-unauthorized").contains("unauthorized"))
+                let bodyText = String(decoding: hostileBody, as: UTF8.self)
+                XCTAssertTrue(bodyText.contains("SENTINEL-BODY-0053"))
+                XCTAssertTrue(bodyText.contains("HTTP"))
+                let first = rig.routesStub.requests.first
+                XCTAssertNotNil(first, "the row did make a Routes request")
+                XCTAssertEqual(first?.url?.host, PlaceSentinel.host)
+                XCTAssertEqual(first?.value(forHTTPHeaderField: "x-besir-token"), PlaceSentinel.token)
+                let waypoint = PlaceBody.waypoint(PlaceBody.json(first), "origin")
+                XCTAssertEqual(waypoint?.latitude ?? 0, 37.7749, accuracy: 0.0001)
+                XCTAssertTrue(PlaceText.travelUnavailable["message"]?.contains("Tell the user") ?? false,
+                              "the model-facing text is what carries Tell the user")
+            }
+            await rig.finish()
+        }
     }
 }

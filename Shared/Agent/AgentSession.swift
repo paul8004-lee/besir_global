@@ -169,6 +169,9 @@ final class AgentSession: ObservableObject {
     private var lookupCalls: (first: AgentCall, extras: [AgentCall])?
     /// Set by any `ok` place or route result of the current user message; cleared only by `send` and `newChat`.
     private var googleDataThisMessage = false
+    /// The failure line of the most recent lookup of the message being served; set only in `lookupFinished`, cleared
+    /// by `begin` and `newChat` (SPEC-STEPFAIL-001).
+    private var lookupFailure: String?
     private let connections: ConnectionLog
     /// The flow the packets of the message being served belong to.
     private var flow = UUID()
@@ -229,6 +232,7 @@ final class AgentSession: ObservableObject {
         requestCap = cap
         requestsThisMessage = 0
         googleDataThisMessage = false
+        lookupFailure = nil
         startRequest()
     }
 
@@ -273,6 +277,7 @@ final class AgentSession: ObservableObject {
         isResolving = false
         stopAfterResolve = false
         googleDataThisMessage = false
+        lookupFailure = nil
         entries = []
         history = []
         requestsThisMessage = 0
@@ -436,6 +441,7 @@ final class AgentSession: ObservableObject {
 
         if requestsThisMessage >= requestCap {
             record((first, extras), firstResult: Line.stepLimit, notice: nil)
+            if let lookupFailure { entries.append(AgentLogEntry(kind: .error(lookupFailure))) }
             endTurn(with: Line.tooManySteps)
             return
         }
@@ -474,6 +480,7 @@ final class AgentSession: ObservableObject {
         requestTask = nil
         isWaiting = false
         lookupCalls = nil
+        lookupFailure = output.failure
         if output.showsGoogleData { googleDataThisMessage = true }
         record(calls, firstResult: output.result, notice: output.notice)
         startRequest()
