@@ -325,6 +325,15 @@ final class SharedImport: ObservableObject {
         return true
     }
 
+    /// The hand-off RootView gives to `pass`: it opens the chat when it is called, never when it is built, then gives the session
+    /// the holder holds by then the message for the model and the shown line for the chat, and answers what `give` answers.
+    static func chatHandOff(holder: AgentChatHolder, openChat: @escaping () -> Void) -> (_ message: String, _ shown: String) -> Bool {
+        return { message, shown in
+            openChat()
+            return give(message: message, shown: shown, to: holder.session)
+        }
+    }
+
 #if DEBUG
     private func logVisionCall() {
         let line = Data("vision_call\n".utf8)
