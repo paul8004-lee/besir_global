@@ -912,7 +912,8 @@ private struct SwipeRow<Content: View>: View {
             Image(systemName: "trash")
                 .foregroundStyle(Theme.muted)
                 .accessibilityHidden(true)
-            content
+            // The row's members stack like the card's own fields; a bare ForEach inside a ZStack would draw them on top of each other.
+            VStack(alignment: .leading, spacing: 12) { content }
                 .offset(x: offset)
         }
         .simultaneousGesture(DragGesture(minimumDistance: 20)
