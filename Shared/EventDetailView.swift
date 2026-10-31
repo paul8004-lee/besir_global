@@ -260,7 +260,6 @@ struct EventDetailView: View {
                         }
                     }
                 }
-                LateSwitchSection(event: event, lateOutcome: lines?.kind == .late ? store.replanOutcomes[event.id] : nil)
             }
             .padding(18)
             .background(Theme.raised, in: RoundedRectangle(cornerRadius: Theme.radius))
