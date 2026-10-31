@@ -57,7 +57,26 @@ final class BudgetLedger: @unchecked Sendable {
         return entries.contains { $0.requestID == requestID }
     }
 
+    /// The entry a request id made, or nil when the ledger holds none.
+    func entry(requestID: String) -> BudgetEntry? {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.first { $0.requestID == requestID }
+    }
+
     // MARK: Write
+
+    /// Removes the entry a request id made. True when one was removed. The file is written as `add` writes it, and a failed
+    /// write leaves the in-memory list in its new state.
+    @discardableResult
+    func remove(requestID: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = entries.firstIndex(where: { $0.requestID == requestID }) else { return false }
+        entries.remove(at: index)
+        if let data = try? JSONEncoder().encode(entries) { try? write(data, fileURL) }
+        return true
+    }
 
     /// Appends one entry, dropping the oldest past the cap. Returns false, and changes nothing, when the request id is already
     /// in the list. The file is written before the lock is released, so the writes happen in call order.

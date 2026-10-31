@@ -58,6 +58,22 @@ final class PartnerClient {
                           words: { _ in ("\(name): Candidates requested", "\(name): Candidates received", .ok) })
     }
 
+    /// Asks the partner to cancel one of its earlier requests: posts `op` `cancel` and the request id to the partner's route
+    /// followed by `/cancel`. `partner` is the name and route the record of that request kept. Records
+    /// `<name>: Cancellation requested`, then `<name>: Request cancelled` or `<name>: Cancellation declined`. No summary holds the
+    /// request id or any other value.
+    func cancel(requestID: String, partner: (name: String, route: String), flow: UUID) async -> Result<PartnerCancelAnswer, PartnerFailure> {
+        let name = partner.name
+        return await call(path: partner.route + "/cancel", body: ["op": "cancel", "request_id": requestID], flow: flow,
+                          read: { PartnerCancelAnswer.answer(cancelFrom: $0, name: name) },
+                          words: { answer in
+                              switch answer {
+                              case .cancelled: return ("\(name): Cancellation requested", "\(name): Request cancelled", .ok)
+                              case .declined: return ("\(name): Cancellation requested", "\(name): Cancellation declined", .declined)
+                              }
+                          })
+    }
+
     // MARK: The exchange
 
     /// One request, one checked answer and the packets of the exchange under `flow`. Recording never changes the result.

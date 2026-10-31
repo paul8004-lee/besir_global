@@ -16,6 +16,7 @@ const REQUIRED_KEYS_BY_OP = {
   submit: ["op", "request_id", "values"],
   lookup: ["op", "field", "text"],
 };
+const CANCEL_KEYS = ["op", "request_id"];
 const NEAR_KEYS = ["latitude", "longitude"];
 const VALUE_KEYS = ["restaurant", "party_size", "start", "name", "note"];
 const REQUIRED_VALUE_KEYS = ["restaurant", "party_size", "start", "name"];
@@ -222,4 +223,27 @@ export async function handleBooking(request, { json, lookup }) {
       resultItem("Partner note", NOTE_TEXT),
     ],
   });
+}
+
+// POST /booking/cancel: a simulated cancellation. Nothing is kept or looked up, so any well-formed request is answered
+// `cancelled`, the same every time. The faults come in this order: the length, JSON, an object, a key outside the two,
+// a missing key, a bad value.
+export async function handleBookingCancel(request, { json }) {
+  const text = await request.text();
+  if (text.length > MAX_BODY_CHARS) return json(413, { error: "body_too_large" });
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return json(400, { error: "invalid_json" });
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return json(400, { error: "body_must_be_object" });
+  }
+  if (Object.keys(value).some((key) => !CANCEL_KEYS.includes(key))) return json(400, { error: "unknown_field" });
+  if (!CANCEL_KEYS.every((key) => hasOwn(value, key))) return json(400, { error: "missing_field" });
+  if (value.op !== "cancel" || typeof value.request_id !== "string" || !UUID_FORM.test(value.request_id)) {
+    return json(400, { error: "invalid_field" });
+  }
+  return json(200, { status: "cancelled", partner: PARTNER, simulated: true });
 }

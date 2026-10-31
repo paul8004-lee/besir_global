@@ -149,8 +149,36 @@ extension PartnerAnswer {
         }
     }
 
-    private static func isReason(_ text: String) -> Bool {
+    fileprivate static func isReason(_ text: String) -> Bool {
         (1...40).contains(text.unicodeScalars.count) && text.unicodeScalars.allSatisfy { ("a"..."z").contains($0) || $0 == "_" }
+    }
+}
+
+// MARK: The cancel answer
+
+/// How a partner answered a request to cancel one of its earlier requests (SPEC-LATESWITCH-001). Nothing of the partner's text is
+/// kept: the answer is one of two bare cases.
+enum PartnerCancelAnswer: Equatable {
+    case cancelled, declined
+}
+
+extension PartnerCancelAnswer {
+    /// Accepts only the exact answer of a `cancel`: the partner's own name and `simulated` true, then either `cancelled` with
+    /// nothing else (three keys) or `declined` with a `reason` of 1 to 40 characters of `a-z` and `_` (four keys). The reason is
+    /// checked and then dropped. Any other answer is nil.
+    static func answer(cancelFrom data: Data, name: String) -> PartnerCancelAnswer? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let status = object["status"] as? String,
+              object["partner"] as? String == name, isTrue(object["simulated"]) else { return nil }
+        switch status {
+        case "cancelled":
+            return object.count == 3 ? .cancelled : nil
+        case "declined":
+            guard object.count == 4, let reason = object["reason"] as? String, PartnerAnswer.isReason(reason) else { return nil }
+            return .declined
+        default:
+            return nil
+        }
     }
 }
 
