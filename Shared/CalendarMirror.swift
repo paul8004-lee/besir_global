@@ -101,7 +101,8 @@ final class AppleCalendarMirror: CalendarMirroring {
     }
 
     // @MX:WARN: `running` is set before the first await. Removing that re-opens the race in which two
-    // quick saves start two passes and write every event twice.
+    // quick saves start two passes and write every event twice. `pass` suspends after every operation,
+    // so `running` is what keeps a second pass out.
     func reconcile(_ activities: [ActivityBlock]) {
         pending = activities
         if running { return }
@@ -176,6 +177,7 @@ final class AppleCalendarMirror: CalendarMirroring {
                 try backend.remove(id: remove.eventId)
                 file.links[remove.activityId] = nil
                 try persist(file)
+                await Task.yield()
             }
             for update in plan.updates {
                 if try backend.update(id: update.eventId, update.draft) {
@@ -186,11 +188,13 @@ final class AppleCalendarMirror: CalendarMirroring {
                     file.links[update.activityId] = CalendarLink(eventId: eventId, signature: update.draft)
                 }
                 try persist(file)
+                await Task.yield()
             }
             for create in plan.creates {
                 let eventId = try backend.create(create.draft)
                 file.links[create.activityId] = CalendarLink(eventId: eventId, signature: create.draft)
                 try persist(file)
+                await Task.yield()
             }
         } catch CalendarBackendError.noCalendar {
             publish(.noCalendar)
@@ -203,7 +207,8 @@ final class AppleCalendarMirror: CalendarMirroring {
     }
 
     // @MX:NOTE: each success is saved before the next operation. A crash after a create must not lose
-    // its link, or the next pass would write the same event again.
+    // its link, or the next pass would write the same event again. The yield comes after the save, so the
+    // link is on disk whenever other work runs.
     private func persist(_ file: CalendarLinkFile) throws {
         guard file.save(to: linksURL) else { throw CalendarBackendError.failed("link file not saved") }
     }
