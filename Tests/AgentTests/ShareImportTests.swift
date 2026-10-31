@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import besir
 
@@ -111,6 +112,17 @@ final class ShareImportTests: XCTestCase {
         XCTAssertEqual(rig.reader.calls, 1)
         XCTAssertEqual(rig.handOff.messages.count, 1)
         XCTAssertEqual(rig.inbox.pending().count, 2)
+    }
+
+    /// Card t96: the automatic pass runs when the chat sheet closes. One that finds nothing changes nothing, so it announces nothing —
+    /// each announcement redraws the screen under the chat in the middle of the sheet's slide-down.
+    func testAnEmptyAutomaticPassAnnouncesNoChange() async throws {
+        let rig = try makeRig()
+        var announcements = 0
+        let sink = rig.importer.objectWillChange.sink { announcements += 1 }
+        await rig.importer.pass(vision: rig.reader, canHand: { true }, holdForPlan: true, hand: rig.handOff.hand)
+        XCTAssertEqual(announcements, 0)
+        sink.cancel()
     }
 
     func testAC_SHARE_009_aBusyAgentMeansNoCallAndNothingRemoved() async throws {
