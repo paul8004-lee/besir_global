@@ -276,17 +276,16 @@ function resultFieldsDefects(items) {
 }
 
 test("AC-DELIVERYCARD-002 D04: an independent validator accepts the fields answer and refuses planted defects", async () => {
-  // The validator itself: every scalar kind, a group with members and repeat, the trailing markers.
+  // The validator itself: every scalar kind, a group with members and repeat, the trailing markers (eight entries, the cap).
   const entry = (key, kind, extra = {}) => ({ key, kind, label: "L", ...extra });
   const good = [
     entry("note", "text"),
-    entry("where", "place"),
+    entry("where", "place", { lookup: true }),
     entry("when", "time"),
     entry("many", "number"),
     { key: "pay", kind: "pick_one", label: "Pay", options: [{ id: "a-1", label: "A" }, { id: "b_2", label: "B" }] },
     { key: "door", kind: "on_off", label: "Leave at door", options: [{ id: "true", label: "Leave" }, { id: "false", label: "Hand over" }] },
     entry("maybe", "text", { optional: true }),
-    entry("find", "place", { lookup: true }),
     {
       key: "rows",
       kind: "group",
@@ -366,7 +365,7 @@ test("AC-DELIVERYCARD-002 D04: an independent validator accepts the fields answe
   const body = await (await call({ op: "fields" })).json();
   assert.deepEqual(fieldListDefects(body.fields), []);
   assert.deepEqual(resultFieldsDefects(body.result_fields), []);
-  assert.deepEqual(resultFieldsDefect(RESULT_FIELDS), []);
+  assert.deepEqual(resultFieldsDefects(RESULT_FIELDS), []);
   const badResults = [
     [],
     [{ name: "Arrival", kind: "time", value: "x" }],
@@ -374,7 +373,7 @@ test("AC-DELIVERYCARD-002 D04: an independent validator accepts the fields answe
     [{ name: "Arrival", kind: "time", extra: 1 }],
     [{ name: "N".repeat(41), kind: "text" }],
     [{ name: "Café", kind: "text" }],
-    [{ name: "Total", kind: "money" }],
+    [{ name: "Note", kind: "flag" }],
     Array.from({ length: 9 }, (_, i) => ({ name: `Note ${i}`, kind: "text" })),
   ];
   for (const list of badResults) {
@@ -589,11 +588,19 @@ test("AC-DELIVERYCARD-003 D09: the value rules of the five fields and the reques
       await expectError(await call(submitValues({ [key]: bad })), 400, "invalid_field", `${key} ${JSON.stringify(bad)}`);
     }
   }
-  // arrive_at: a real local date-time of the years 2000 to 2199.
-  for (const arrive_at of ["2028-02-29T12:00", "2000-02-29T12:00", "2000-01-01T00:00", "2199-12-31T23:59", "2100-02-28T12:00"]) {
+  // arrive_at: a real local date-time of the years 2000 to 2199. The year edges fall outside the open hours, and a
+  // date the rule accepts answers the hours decline, so both prove the date itself passed.
+  for (const arrive_at of ["2028-02-29T12:00", "2000-02-29T12:00", "2100-02-28T12:00"]) {
     const body = await (await call(submitValues({ arrive_at }))).json();
     assert.equal(body.status, "confirmed", arrive_at);
     assert.equal(body.results[0].value, arrive_at);
+  }
+  for (const arrive_at of ["2000-01-01T00:00", "2199-12-31T23:59"]) {
+    const res = await call(submitValues({ arrive_at }));
+    assert.equal(res.status, 200, arrive_at);
+    const body = await res.json();
+    assert.equal(body.status, "declined", arrive_at);
+    assert.equal(body.reason, "outside_hours", arrive_at);
   }
   for (const arrive_at of ["2026-02-29T12:00", "2100-02-29T12:00", "2026-13-01T12:00", "2026-11-02T24:00", "2026-11-02T12:60", "1999-12-31T12:00", "2200-01-01T12:00", "2026-11-02 12:00", "2026-11-02T12:00:00", "2026-11-02", "", 20261102, null]) {
     await expectError(await call(submitValues({ arrive_at })), 400, "invalid_field", arrive_at);
@@ -804,8 +811,10 @@ test("AC-DELIVERYCARD-005 D14: a bad Google result is dropped alone, no candidat
   // A failing upstream is 502 and a missing key 503, both with no upstream text.
   globalThis.fetch = upstream([], 500);
   const failed = await call({ op: "lookup", field: "address", text: "Tartine" });
-  await expectError(failed, 502, "upstream_failed");
-  assert.equal((await failed.text()).includes("SECRET-UPSTREAM-TEXT"), false);
+  assert.equal(failed.status, 502);
+  const failedText = await failed.text();
+  assert.equal(failedText.includes("SECRET-UPSTREAM-TEXT"), false);
+  assert.deepEqual(JSON.parse(failedText), { error: "upstream_failed" });
   const noKey = await call({ op: "lookup", field: "address", text: "Tartine" }, { e: envWithoutKey });
   await expectError(noKey, 503, "google_key_not_configured");
   try {

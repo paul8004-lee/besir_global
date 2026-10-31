@@ -13,6 +13,13 @@ const PARTNERS = [
     summary: "Reserves a table at a restaurant.",
     route: "/booking",
   },
+  {
+    id: "delivery",
+    name: "Example Delivery",
+    title: "Order delivery",
+    summary: "Delivers food to a place at a set time.",
+    route: "/delivery",
+  },
 ];
 
 const directoryAnswer = () => ({
