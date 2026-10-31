@@ -221,9 +221,10 @@ final class AgentCard {
     /// What the model reads after Cancel or a closed sheet; nil means the generic declined answer.
     fileprivate(set) var cancelResult: String?
     /// True when the card carries Google place or route data, so the chat draws the Google Maps mark inside it
-    /// (SPEC-AGENTPLACE-001).
-    let showsGoogleMark: Bool
+    /// (SPEC-AGENTPLACE-001). A field card also carries it while its `Leave from` row is on it, because that row searches places.
+    var showsGoogleMark: Bool { builtMark || fieldCard?.field(AgentPartner.cardFromKey) != nil }
 
+    private let builtMark: Bool
     private var taken = false
     private let fixedLines: [String]
     private let onConfirm: @MainActor () async -> (AgentResolution, AgentCardMark)
@@ -232,7 +233,7 @@ final class AgentCard {
          onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         fixedLines = lines
         fieldCard = nil
-        self.showsGoogleMark = showsGoogleMark
+        builtMark = showsGoogleMark
         self.onConfirm = onConfirm
     }
 
@@ -241,7 +242,7 @@ final class AgentCard {
          onConfirm: @escaping @MainActor () async -> (AgentResolution, AgentCardMark)) {
         fixedLines = []
         self.fieldCard = fieldCard
-        self.showsGoogleMark = showsGoogleMark
+        builtMark = showsGoogleMark
         self.onConfirm = onConfirm
     }
 
@@ -479,6 +480,8 @@ final class AgentToolbox {
     /// SPEC-DELIVERY-001: the delivery client and the order record, built on use; tests inject stubbed ones.
     let deliveryProvider: (() -> DeliveryClient)?
     let deliveryOrdersProvider: (() -> DeliveryOrderLog)?
+    /// SPEC-LATESWITCH-001: the records of the entries partner requests made, built on use; tests inject a stubbed one.
+    let partnerRecordsProvider: (() -> PartnerRecords)?
     /// The partner's last good options answer. In memory only: the next good answer replaces it and a new chat forgets it.
     private var deliveryOptions: DeliveryOptions?
     /// The partners the last good `get_partners` answer held, with their forms. In memory only: a good answer replaces it and a
@@ -493,7 +496,8 @@ final class AgentToolbox {
          partners: (() -> PartnerClient)? = nil,
          budget: (() -> BudgetClient)? = nil,
          delivery: (() -> DeliveryClient)? = nil,
-         deliveryOrders: (() -> DeliveryOrderLog)? = nil) {
+         deliveryOrders: (() -> DeliveryOrderLog)? = nil,
+         partnerRecords: (() -> PartnerRecords)? = nil) {
         self.store = store
         self.now = now
         zone = timeZone
@@ -504,6 +508,7 @@ final class AgentToolbox {
         budgetProvider = budget
         deliveryProvider = delivery
         deliveryOrdersProvider = deliveryOrders
+        partnerRecordsProvider = partnerRecords
     }
 
     convenience init(store: Store, now: @escaping () -> Date, timeZone: TimeZone,
@@ -513,10 +518,11 @@ final class AgentToolbox {
                      partners: (() -> PartnerClient)? = nil,
                      budget: (() -> BudgetClient)? = nil,
                      delivery: (() -> DeliveryClient)? = nil,
-                     deliveryOrders: (() -> DeliveryOrderLog)? = nil) {
+                     deliveryOrders: (() -> DeliveryOrderLog)? = nil,
+                     partnerRecords: (() -> PartnerRecords)? = nil) {
         self.init(store: store, now: now, timeZone: { timeZone }, deviceOrigin: deviceOrigin,
                   places: places, directions: directions, partners: partners, budget: budget,
-                  delivery: delivery, deliveryOrders: deliveryOrders)
+                  delivery: delivery, deliveryOrders: deliveryOrders, partnerRecords: partnerRecords)
     }
 
     /// New chat: forgets the handles; the counters keep counting up, so an old handle never names a new entry. The held
@@ -1044,11 +1050,12 @@ final class AgentToolbox {
         }
         // The schedule choice is the app's own row and exists only when the partner announced a time result.
         let schedulable = spec.results.contains { $0.kind == .time }
-        if schedulable { rows.append(AgentPartner.scheduleRow()) }
+        if schedulable { rows.append(AgentPartner.scheduleRow(origin: deviceOrigin())) }
         rows.append(.line(AgentPartner.partnerLine(spec.entry.name)))
 
-        // The card's place search goes through the provider `search_places` uses. The device position is read here, when a
-        // search fires, and reaches the Google Places request only.
+        // The card's place search goes through the provider `search_places` uses. The device position is read when the card is
+        // built, for a card with a schedule choice (it is the first value of `Leave from`), and again when a search fires, where it
+        // reaches the Google Places request only.
         let fieldCard = AgentFieldCard(header: spec.entry.title, rows: rows, favorites: store.favorites, search: { [self] query in
             let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
             return await (placeSearchProvider?() ?? store.placeSearch).search(query, near: center)
@@ -1095,6 +1102,12 @@ final class AgentToolbox {
                 return partnerEditRejected()
             }
         }
+        // The one `number` field of the form, if there is exactly one, gives the record its quantity hint.
+        let numberFields = spec.fields.filter { $0.kind == .number }
+        var quantityHint: Int?
+        if numberFields.count == 1, let item = items.first(where: { $0.key == numberFields[0].key }), case .number(let count) = item.value {
+            quantityHint = count
+        }
         // The length is the app's own row: it counts only while the switch is on.
         let scheduleOn = schedulable && taken.flag(AgentPartner.cardSwitchKey) == true
         var minutes = 0
@@ -1107,7 +1120,27 @@ final class AgentToolbox {
         // field, even an earlier one, and a later marked one never supply it.
         let place = spec.fields.first { $0.canLookUp }.flatMap { taken.place($0.key) }
 
+        // The travel rows are the app's own: they count only while the schedule switch and `Travel` are on. Leave from and the mode
+        // must hold values, and the entry must have a location (the form needs a lookup field) for the leg to have a destination.
+        var travel: (from: Place, mode: TransportMode, destination: Place)?
+        if scheduleOn, taken.flag(AgentPartner.cardTravelKey) == true {
+            guard let from = taken.place(AgentPartner.cardFromKey), let modeID = taken.option(AgentPartner.cardModeKey),
+                  let mode = TransportMode(rawValue: modeID), let destination = place else { return partnerEditRejected() }
+            travel = (from, mode, destination)
+        }
+
         let flow = ConnectionLog.beginFlow()
+        // The one Routes lookup of the leg, before anything is sent: no travel time (offline, a Routes error, no route, a cancelled
+        // lookup) ends Confirm here. The service notes its own packet under this flow.
+        var leg: (from: Place, mode: TransportMode, seconds: TimeInterval)?
+        if let travel {
+            let service = directionsProvider?() ?? store.directions
+            let estimate = await service.estimate(
+                travel.mode, from: CLLocationCoordinate2D(latitude: travel.from.latitude, longitude: travel.from.longitude),
+                to: CLLocationCoordinate2D(latitude: travel.destination.latitude, longitude: travel.destination.longitude), flow: flow)
+            guard let seconds = estimate.duration, !Task.isCancelled else { return partnerUnavailable(spec) }
+            leg = (travel.from, travel.mode, seconds)
+        }
         let answer = await partnerClient().submit(PartnerRequest(requestID: requestID, values: items), to: spec, flow: flow)
         // Cancellation is checked after the answer is known and before anything is written.
         guard !Task.isCancelled else { return partnerUnavailable(spec) }
@@ -1119,14 +1152,15 @@ final class AgentToolbox {
             return (AgentResolution(result: result, notice: nil), .notApplied)
         case .success(.confirmed(let results)):
             return await actOnPartner(spec, results: results, scheduleOn: scheduleOn, skipped: schedulable && !scheduleOn, minutes: minutes,
-                                      place: place, flow: flow)
+                                      place: place, leg: leg, requestID: requestID, quantityHint: quantityHint, flow: flow)
         }
     }
 
     /// Acting by kind, from the answer only: a `time` item becomes the entry when the switch was on, a `money` item goes to the
     /// budget as an estimate in the week of the `time` item (this week when there is none), a `text` item stays in the reply.
     private func actOnPartner(_ spec: PartnerSpec, results: [PartnerResultItem], scheduleOn: Bool, skipped: Bool, minutes: Int,
-                              place: Place?, flow: UUID) async -> (AgentResolution, AgentCardMark) {
+                              place: Place?, leg: (from: Place, mode: TransportMode, seconds: TimeInterval)?, requestID: String,
+                              quantityHint: Int?, flow: UUID) async -> (AgentResolution, AgentCardMark) {
         var start: Date?
         var itemName: String?
         for item in results {
@@ -1139,31 +1173,45 @@ final class AgentToolbox {
         if scheduleOn, let start, let itemName {
             let made = await store.addActivityWithTravel(
                 title: AgentPartner.entryTitle(partner: spec.entry.name, item: itemName), location: place, startDate: start,
-                endDate: start.addingTimeInterval(TimeInterval(minutes * 60)), travelFrom: nil, returnTo: nil, outboundMode: .walk,
-                returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0, syncToCalendar: store.calendarSyncDefault, travelSecondsHint: nil)
+                endDate: start.addingTimeInterval(TimeInterval(minutes * 60)), travelFrom: leg?.from, returnTo: nil,
+                outboundMode: leg?.mode ?? .walk, returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0,
+                syncToCalendar: store.calendarSyncDefault, travelSecondsHint: leg?.seconds)
             entryID = made.activityId
         }
         var budget: AgentBudget.BookingSpend?
+        var spendID: String?
         if let cents = results.moneyCents {
-            budget = await sendEstimatedSpend(amountCents: cents, start: start ?? now(), flow: flow)
+            let sent = await sendEstimatedSpend(amountCents: cents, start: start ?? now(), requestID: UUID().uuidString, flow: flow)
+            budget = sent?.spend
+            // The id is kept only when the budget partner recorded the spend: only then is there an entry under it.
+            if case .recorded? = sent?.spend { spendID = sent?.requestID }
+        }
+        // The record comes after the spend, so it holds the spend's id; a request that wrote no entry leaves none.
+        if let entryID, store.activity(id: entryID) != nil {
+            (partnerRecordsProvider?() ?? PartnerRecords.shared).add(
+                PartnerRecord(activityID: entryID, partnerID: spec.entry.id, partnerName: spec.entry.name, route: spec.entry.route,
+                              requestID: requestID, estimateCents: results.moneyCents, quantityHint: quantityHint,
+                              spendRequestID: spendID, switchStarted: false))
         }
         return partnerApplied(entryID, partner: spec.entry.name, results: results, skipped: skipped, budget: budget)
     }
 
-    /// One `spend` of the answered amount, counted in the week of `start`, under the request's own flow. Nil when the proxy is not
-    /// configured. A failure, or a task cancelled meanwhile, never changes the request.
-    private func sendEstimatedSpend(amountCents: Int, start: Date, flow: UUID) async -> AgentBudget.BookingSpend? {
+    /// One `spend` of the answered amount, counted in the week of `start`, under the request's own flow, with the request id the
+    /// caller made (returned with the result so the record can keep it). Nil when the proxy is not configured. A failure, or a task
+    /// cancelled meanwhile, never changes the request.
+    private func sendEstimatedSpend(amountCents: Int, start: Date, requestID: String,
+                                    flow: UUID) async -> (spend: AgentBudget.BookingSpend, requestID: String)? {
         let client = budgetClient()
         guard client.isConfigured else { return nil }
         let week = BudgetWeek.start(of: start, in: zone())
         let result = await client.spend(amountCents: amountCents, isEstimate: true, weekStart: week,
-                                        requestID: UUID().uuidString, flow: flow)
+                                        requestID: requestID, flow: flow)
         switch result {
         case .success(let standing):
             let phrase = AgentBudget.weekPhrase(weekStart: week, currentWeekStart: BudgetWeek.start(of: now(), in: zone()))
-            return .recorded(amountCents: amountCents, standing: standing, week: phrase)
+            return (.recorded(amountCents: amountCents, standing: standing, week: phrase), requestID)
         case .failure:
-            return .unavailable(notify: !Task.isCancelled)
+            return (.unavailable(notify: !Task.isCancelled), requestID)
         }
     }
 

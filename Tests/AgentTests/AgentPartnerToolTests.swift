@@ -525,7 +525,7 @@ final class AgentPartnerToolTests: XCTestCase {
     func testPARTNER_G16_TheCardHasTheRowsInThePartnersOrderAndNoGoogleMarkWithoutAPlaceField() async throws {
         let rig = makeRig()
         let card = try await built(rig)
-        XCTAssertEqual(card.lines.count, 9)
+        XCTAssertEqual(card.lines.count, 10)
         XCTAssertEqual(card.lines.first, "Reserve a table")
         XCTAssertEqual(card.lines[1], "Restaurant: Pasta Palace")
         XCTAssertEqual(card.lines[2], "Party size: 2")
@@ -958,7 +958,7 @@ final class AgentPartnerToolTests: XCTestCase {
         let card = try await built(rig)
         let fields = try model(card)
         XCTAssertEqual(fields.header, "Reserve a table")
-        XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "party_size", "start", "name", "note", "add-to-schedule", "schedule-length", "0"])
+        XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "party_size", "start", "name", "note", "add-to-schedule", "schedule-length", "schedule-travel", "0"])
         XCTAssertEqual(fields.values.text("restaurant"), "Pasta Palace")
         XCTAssertEqual(fields.values.int("party_size"), 2)
         XCTAssertEqual(fields.values.date("start"), TestClock.date(BookingFixture.start))
@@ -1620,7 +1620,7 @@ final class AgentPartnerToolTests: XCTestCase {
             XCTAssertTrue(fields.chooseOption("seat", "out"))
             // Before the end the card holds the app's switch with its length row and the partner's own fields.
             XCTAssertEqual(fields.card.fields.map(\.key),
-                           ["restaurant", "party_size", "start", "name", "note", "rush", "seat", "add-to-schedule", "schedule-length", "0"])
+                           ["restaurant", "party_size", "start", "name", "note", "rush", "seat", "add-to-schedule", "schedule-length", "schedule-travel", "0"])
             XCTAssertTrue(shownLines(card).contains("Add to schedule: Add"))
             _ = await card.resolve(how)
             XCTAssertEqual(card.mark, .cancelled)

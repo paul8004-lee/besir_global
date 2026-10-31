@@ -17,6 +17,14 @@ enum AgentPartner {
     static let lengthInitial = 60
     static let lengthRange = 5...720
     static let lengthDigits = 3
+    /// The travel group nested in the schedule choice: a switch that starts off, and while it is on the place the user leaves from
+    /// and the mode. The entry's own place is the leg's destination, so there is no row for it. Hyphenated keys, like the others.
+    static let cardTravelKey = "schedule-travel"
+    static let cardTravelLabel = "Travel"
+    static let cardFromKey = "schedule-from"
+    static let cardFromLabel = "Leave from"
+    static let cardModeKey = "schedule-mode"
+    static let cardModeLabel = "Travel mode"
 
     static let maxTitle = 80
     static let simulatedSuffix = " (Simulated)"
@@ -49,12 +57,21 @@ enum AgentPartner {
     /// `<name> - Simulated`, the last line of the card.
     static func partnerLine(_ name: String) -> String { "\(name) - Simulated" }
 
-    /// The two rows of the app's own schedule choice: the switch (on, inferred) and, while it is on, the length of the entry.
-    static func scheduleRow() -> AgentFieldRow {
+    /// The rows of the app's own schedule choice: the switch (on, inferred) and, while it is on, the length of the entry and the
+    /// travel switch (off, inferred). While travel is on its rows are `Leave from` (the device position `origin` as the first
+    /// value, blank without one) and `Travel mode` (blank: the app does not guess a mode).
+    static func scheduleRow(origin: Place?) -> AgentFieldRow {
         let length = AgentFieldSpec(key: cardLengthKey, kind: .number, label: cardLengthLabel, limit: lengthDigits, range: lengthRange)
         let choice = AgentFieldSpec.onOff(key: cardSwitchKey, label: cardSwitchLabel, on: cardOnWord, off: cardOffWord)
+        let from = AgentFieldSpec(key: cardFromKey, kind: .place, label: cardFromLabel)
+        let mode = AgentFieldSpec(key: cardModeKey, kind: .pickOne, label: cardModeLabel,
+                                  options: TransportMode.allCases.map { AgentFieldOption(id: $0.rawValue, label: $0.title) })
+        let travel = AgentFieldSpec.onOff(key: cardTravelKey, label: cardTravelLabel, on: cardOnWord, off: cardOffWord)
+        let travelRow: AgentFieldRow = .switchField(travel, value: .flag(false), source: .inferred, dependents: [
+            .field(from, value: origin.map { .place($0) }, source: .inferred),
+            .field(mode, value: nil, source: .blank)])
         return .switchField(choice, value: .flag(true), source: .inferred,
-                            dependents: [.field(length, value: .number(lengthInitial), source: .inferred)])
+                            dependents: [.field(length, value: .number(lengthInitial), source: .inferred), travelRow])
     }
 
     /// The `get_partners` answer for the partners that are held.
