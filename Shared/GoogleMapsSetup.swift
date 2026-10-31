@@ -114,6 +114,22 @@ struct RouteLineSpec: Equatable {
     }
 }
 
+// Not Equatable: the rule compares the two parts, and nothing compares the whole value.
+/// What one camera fit was made from: the frame, and the width of the destination's name label
+/// that the fit's insets were made for.
+struct MapFitBasis {
+    let frame: MapFraming
+    let labelWidth: CGFloat
+}
+
+enum MapFitRule {
+    /// Whether the camera must be fitted. Stub of card t49 M1: it still looks at the frame only.
+    static func needsFit(last: MapFitBasis?, next: MapFitBasis) -> Bool {
+        guard let last else { return true }
+        return last.frame != next.frame
+    }
+}
+
 /// How far the camera fit keeps the markers from each edge so the destination's name label
 /// (the SDK's info window above the pin) stays inside the map.
 struct MapFitInsets: Equatable {
