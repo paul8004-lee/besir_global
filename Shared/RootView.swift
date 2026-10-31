@@ -87,16 +87,18 @@ struct RootView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    SnapEntryButton(isShown: SnapEntry.isShown(hasAI: store.config.hasAI, choosingMode: choosingMode,
-                                                               isReading: shareImport.isReading)) { openSnap() }
-                    Button {
-                        openChat()
-                    } label: {
-                        BesirMark(size: 28)
-                            .floatingCircle()
+                    HStack(spacing: 12) {
+                        SnapEntryButton(isShown: SnapEntry.isShown(hasAI: store.config.hasAI, choosingMode: choosingMode,
+                                                                   isReading: shareImport.isReading)) { openSnap() }
+                        Button {
+                            openChat()
+                        } label: {
+                            BesirMark(size: 28)
+                                .floatingCircle()
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("besir AI")
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("besir AI")
                 }
                 .padding(.trailing, FloatingCircle.inset)
                 .padding(.bottom, FloatingCircle.inset)
