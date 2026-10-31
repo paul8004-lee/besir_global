@@ -179,6 +179,56 @@ final class AgentFieldCardCardTests: XCTestCase {
         #endif
     }
 
+    // MARK: SPEC-DELIVERYCARD-001 (card t91) the session path
+
+    func testDELIVERY_K06_AChatSentenceOpensTheFoodOrderCardThroughTheCommonToolsAndConfirmResolvesItAndTheModelIsAskedAgain() async throws {
+        let stub = StubPartner()
+        stub.shapes = [.delivery()]
+        let budget = BudgetToolPartner()
+        let rig = PartnerRig(partner: stub, budget: budget)
+        let folder = rig.folder
+        addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
+        let entries = [["key": "restaurant", "value": "Test Cafe", "quote": "from Test Cafe"],
+                       ["key": "items.1.item", "value": "ramen", "quote": "Ramen 2"],
+                       ["key": "items.1.quantity", "value": "2", "quote": "Ramen 2"],
+                       ["key": "items.2.item", "value": "gyoza", "quote": "gyoza 1"],
+                       ["key": "items.2.quantity", "value": "1", "quote": "gyoza 1"],
+                       ["key": "arrive_at", "value": BookingFixture.start, "quote": "2026-10-28 at 19:00"]]
+        let order = try JSONSerialization.data(withJSONObject: ["partner": "delivery", "fields": PartnerRig.fieldsText(entries)],
+                                               options: [.sortedKeys])
+        let fake = FakeTransport([.turn(Turns.turn(Turns.call("get_partners", "{}", id: "c1"))),
+                                  .turn(Turns.turn(Turns.call("request_partner", String(decoding: order, as: UTF8.self), id: "c2"))),
+                                  .turn(Turns.text("Ordered."))])
+        let session = AgentSession(toolbox: rig.tools, transport: fake, connections: rig.log)
+        XCTAssertTrue(session.canSend)
+        session.send("Ramen 2, gyoza 1, from Test Cafe, on 2026-10-28 at 19:00")
+        await session.settle()
+        XCTAssertEqual(fake.requests.count, 2, "the card waits: the model is not asked a third time")
+        let pending = try XCTUnwrap(session.pendingCard, "request_partner returned a card")
+        let fields = try XCTUnwrap(pending.fieldCard)
+        XCTAssertEqual(pending.lines.first, "Order delivery")
+        XCTAssertFalse(session.canSend)
+        #if DEBUG
+        XCTAssertTrue(session.transcript().components(separatedBy: "\n").contains("CARD Order delivery Pending"))
+        #endif
+        // The user checks the card: tap the address candidate and choose a card on the pending card's model.
+        fields.search("address", "Pasta")
+        try await Task.sleep(nanoseconds: 800_000_000)
+        XCTAssertTrue(fields.choosePlace("address", PartnerPlaceFixture.branches[1]))
+        XCTAssertTrue(fields.chooseOption("card_id", "debit-4242"))
+        await session.confirmCard()
+        await session.settle()
+        XCTAssertNil(session.pendingCard)
+        XCTAssertEqual(rig.partner.bodies(op: "submit").count, 1, "Confirm sent the one submit")
+        XCTAssertEqual(fake.requests.count, 3, "the next model request was made")
+        XCTAssertEqual(session.assistantTexts, ["Ordered."], "the reply was told")
+        XCTAssertTrue(session.canSend)
+        #if DEBUG
+        XCTAssertTrue(session.transcript().components(separatedBy: "\n").contains("CARD Order delivery Confirmed"))
+        #endif
+        XCTAssertEqual(budget.requests.count, 1, "the budget stub saw one spend")
+    }
+
     // MARK: K03
 
     /// The queries a test's search closure was called with.
