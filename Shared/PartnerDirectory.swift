@@ -25,6 +25,8 @@ enum PartnerValue: Equatable {
     case text(String)
     case number(Int)
     case flag(Bool)
+    /// A `group` field: one inner array per row, in card order, each holding one item per member that has a value.
+    case rows([[PartnerRequest.Item]])
 }
 
 /// One request: the id made when the card was built and the values of the fields that have one, in the partner's order.
@@ -122,6 +124,7 @@ extension PartnerRequest {
             case .text(let text): typed[item.key] = text
             case .number(let number): typed[item.key] = number
             case .flag(let flag): typed[item.key] = flag
+            case .rows: break
             }
         }
         return ["op": "submit", "request_id": requestID, "values": typed]
