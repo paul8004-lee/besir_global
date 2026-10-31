@@ -90,6 +90,22 @@ final class FreezeMeasureState {
     var setupIds: [String] = []
 }
 
+/// What the ticker task and the recording backend of the yield tests (2-4) write and read.
+@MainActor
+final class FreezeYieldState {
+    var stop = false
+    var ticks = 0
+    /// The ticker's turn counter at each write of the pass (test 2).
+    var snapshots: [Int] = []
+    var fired = false
+    var runningAtFire = false
+    /// `passCount` as the recorder saw it at each write (test 3).
+    var passCountsAtWrite: [Int] = []
+    /// (creates counted by the recorder, links in the file on disk) at ticker turns inside the pass (test 4).
+    var midPass: [(creates: Int, links: Int)] = []
+    var statuses: [CalendarStatus] = []
+}
+
 @MainActor
 final class CalendarFreezeMeasureTests: XCTestCase {
     private enum MeasureFailure: Error {
@@ -426,5 +442,125 @@ final class CalendarFreezeMeasureTests: XCTestCase {
         print("CALFREEZE-LEFTOVER|end|\(leftoverAtEnd.count)")
         for id in leftoverAtEnd { try? inner.remove(id: id) }
         XCTAssertEqual(leftoverAtEnd.count, 0, "events titled \(namePrefix) were left in the calendar")
+    }
+
+    // MARK: yield tests (2-4), over a fake calendar
+
+    private func fakeActivity(_ title: String, _ start: String = "2026-10-29T10:00", _ end: String = "2026-10-29T11:00",
+                              id: UUID = UUID()) -> ActivityBlock {
+        ActivityBlock(id: id, title: title, location: nil, startDate: TestClock.date(start),
+                      endDate: TestClock.date(end), recurrenceId: nil, syncToCalendar: nil)
+    }
+
+    /// A mirror over a recorder that wraps a fake; its link file exists (empty baseline).
+    private func fakeMirror() -> (mirror: AppleCalendarMirror, rec: RecordingCalendarBackend, fake: FakeCalendarBackend, url: URL) {
+        let fake = FakeCalendarBackend()
+        let rec = RecordingCalendarBackend(inner: fake)
+        let url = CalendarTestSupport.freshLinksURL()
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let mirror = AppleCalendarMirror(backend: rec, linksURL: url, now: { TestClock.now })
+        mirror.captureBaseline([])
+        return (mirror, rec, fake, url)
+    }
+
+    /// Links an activity to an event the fake already holds.
+    private func linkFile(_ links: [(ActivityBlock, String)], at url: URL) {
+        var file = CalendarTestSupport.loadFile(url) ?? CalendarLinkFile()
+        for (activity, eventId) in links {
+            file.links[activity.id.uuidString] = CalendarLink(eventId: eventId, signature: CalendarDraft(activity))
+        }
+        XCTAssertTrue(file.save(to: url))
+    }
+
+    /// A task that turns a counter over and yields, until `state.stop`; `check` runs on every turn.
+    private func startTicker(_ state: FreezeYieldState, _ check: @escaping @MainActor () -> Void = {}) -> Task<Void, Never> {
+        Task { @MainActor in
+            while !state.stop {
+                state.ticks += 1
+                check()
+                await Task.yield()
+            }
+        }
+    }
+
+    private func settle(_ mirror: AppleCalendarMirror, _ state: FreezeYieldState, _ ticker: Task<Void, Never>) async {
+        let settled = await CalendarTestSupport.settle(mirror)
+        state.stop = true
+        await ticker.value
+        XCTAssertTrue(settled, "the mirror did not finish its pass in 5 seconds")
+    }
+
+    func testCALFREEZE_PassLetsOtherMainActorWorkRunBetweenWrites() async throws {
+        let (mirror, rec, fake, url) = fakeMirror()
+        let state = FreezeYieldState()
+        let activityX = fakeActivity("X-gone", "2026-10-29T08:00", "2026-10-29T09:00")
+        let activityY = fakeActivity("Y-old", "2026-10-29T09:00", "2026-10-29T10:00")
+        let eventX = try fake.create(CalendarDraft(activityX))
+        let eventY = try fake.create(CalendarDraft(activityY))
+        linkFile([(activityX, eventX), (activityY, eventY)], at: url)
+
+        var renamedY = activityY
+        renamedY.title = "Y-new"
+        let list = [renamedY, fakeActivity("N1", "2026-10-29T12:00", "2026-10-29T13:00"),
+                    fakeActivity("N2", "2026-10-29T14:00", "2026-10-29T15:00")]
+        rec.onWrite = { state.snapshots.append(state.ticks) }
+        let ticker = startTicker(state)
+        mirror.reconcile(list)
+        await settle(mirror, state, ticker)
+
+        XCTAssertEqual(rec.creates, 2)
+        XCTAssertEqual(rec.updates, 1)
+        XCTAssertEqual(rec.removes, 1)
+        XCTAssertEqual(Set(state.snapshots).count, 4, "other main-actor work did not run between the four writes")
+    }
+
+    func testCALFREEZE_ReconcileDuringAPassJoinsOneFollowingPass() async throws {
+        let (mirror, rec, _, url) = fakeMirror()
+        let state = FreezeYieldState()
+        let a = [fakeActivity("A1", "2026-10-29T08:00", "2026-10-29T09:00"),
+                 fakeActivity("A2", "2026-10-29T10:00", "2026-10-29T11:00"),
+                 fakeActivity("A3", "2026-10-29T12:00", "2026-10-29T13:00")]
+        let b = [fakeActivity("B-only", "2026-10-29T14:00", "2026-10-29T15:00")]
+        let c = a + [fakeActivity("C-extra", "2026-10-29T16:00", "2026-10-29T17:00")]
+        rec.onWrite = { state.passCountsAtWrite.append(mirror.passCount) }
+        let ticker = startTicker(state) {
+            if !state.fired, rec.creates + rec.updates + rec.removes >= 1 {
+                state.fired = true
+                state.runningAtFire = mirror.running
+                mirror.reconcile(b)
+                mirror.reconcile(c)
+            }
+        }
+        mirror.reconcile(a)
+        await settle(mirror, state, ticker)
+
+        XCTAssertTrue(state.runningAtFire, "the first write was not seen while the pass was still running")
+        XCTAssertEqual(mirror.passCount, 2)
+        XCTAssertFalse(rec.titles.contains("B-only"))
+        let keys = Set(CalendarTestSupport.loadFile(url)?.links.keys.map { $0 } ?? [])
+        XCTAssertEqual(keys, Set(c.map { $0.id.uuidString }))
+        XCTAssertEqual(state.passCountsAtWrite, state.passCountsAtWrite.sorted())
+    }
+
+    func testCALFREEZE_LinkIsOnDiskWheneverOtherWorkRuns() async throws {
+        let (mirror, rec, _, url) = fakeMirror()
+        let state = FreezeYieldState()
+        mirror.onStatus = { state.statuses.append($0) }
+        let list = [fakeActivity("L1", "2026-10-29T08:00", "2026-10-29T09:00"),
+                    fakeActivity("L2", "2026-10-29T10:00", "2026-10-29T11:00"),
+                    fakeActivity("L3", "2026-10-29T12:00", "2026-10-29T13:00")]
+        let ticker = startTicker(state) {
+            if rec.creates > 0, rec.creates < 3 {
+                state.midPass.append((rec.creates, CalendarTestSupport.loadFile(url)?.links.count ?? -1))
+            }
+        }
+        mirror.reconcile(list)
+        await settle(mirror, state, ticker)
+
+        XCTAssertFalse(state.midPass.isEmpty, "no observation inside the pass")
+        for pair in state.midPass {
+            XCTAssertEqual(pair.creates, pair.links, "a create was counted but its link was not on disk yet")
+        }
+        XCTAssertEqual(state.statuses, [.ok])
     }
 }
