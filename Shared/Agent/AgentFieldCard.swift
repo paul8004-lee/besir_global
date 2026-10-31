@@ -14,7 +14,7 @@ enum AgentFieldKind: Equatable {
         self.init(kind)
     }
 
-    init(_ kind: PartnerFieldKind) {
+    init?(_ kind: PartnerFieldKind) {
         switch kind {
         case .text: self = .text
         case .place: self = .place
@@ -22,6 +22,7 @@ enum AgentFieldKind: Equatable {
         case .pickOne: self = .pickOne
         case .onOff: self = .onOff
         case .number: self = .number
+        case .group: return nil
         }
     }
 }
@@ -82,7 +83,7 @@ struct AgentFieldSpec: Equatable {
 
     /// The seed of a field the partner named; nil when its chips do not fit its kind.
     init?(_ field: PartnerField) {
-        let kind = AgentFieldKind(field.kind)
+        guard let kind = AgentFieldKind(field.kind) else { return nil }
         switch kind {
         case .pickOne: guard !field.options.isEmpty else { return nil }
         case .onOff: guard field.options.count == 2 else { return nil }

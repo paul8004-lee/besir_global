@@ -5,6 +5,7 @@ enum PartnerFieldKind: String, CaseIterable, Equatable {
     case text, place, time, number
     case pickOne = "pick_one"
     case onOff = "on_off"
+    case group
 
     /// A `pick_one` or `on_off` field carries the words of its chips; no other kind does.
     var hasOptions: Bool { self == .pickOne || self == .onOff }
@@ -28,6 +29,10 @@ struct PartnerField: Equatable {
     /// True when the partner marked a `place` field as one it resolves itself (`"lookup": true`): the card asks that partner for the
     /// candidates. Defaulted, so a field written without it is an ordinary place field.
     var canLookUp = false
+    /// The members of a `group` field, in the partner's order. Defaulted, so a scalar field is written without it.
+    var members: [PartnerField] = []
+    /// The partner's maximum number of rows of a `group` field. Defaulted, so a scalar field is written without it.
+    var maxRows = 0
 }
 
 /// One entry of the result-field list a partner announces before the card is drawn: the name and the kind of a result item.

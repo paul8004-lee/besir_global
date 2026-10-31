@@ -1095,6 +1095,7 @@ final class AgentToolbox {
             case .number: value = taken.int(field.key).map { PartnerValue.number($0) }
             case .pickOne: value = taken.option(field.key).map { PartnerValue.text($0) }
             case .onOff: value = taken.flag(field.key).map { PartnerValue.flag($0) }
+            case .group: value = nil
             }
             if let value {
                 items.append(PartnerRequest.Item(key: field.key, value: value))

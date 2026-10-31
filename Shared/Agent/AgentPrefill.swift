@@ -52,6 +52,8 @@ enum AgentPrefill {
             return time(value, quote: quote, now: now, calendar: calendar)
         case .pickOne, .onOff:
             return nil
+        case .group:
+            return nil
         }
     }
 

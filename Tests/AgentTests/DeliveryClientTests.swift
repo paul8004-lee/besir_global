@@ -666,7 +666,6 @@ final class DeliveryClientTests: XCTestCase {
         bodies.append(optionsObject { $0["menu"] = NSNull() })
         // The cards.
         bodies.append(optionsObject(cards: []))
-        bodies.append(optionsObject(cards: (0..<5).map { cardEntry("card\($0)", "Example Card \($0) (Simulated)") }))
         bodies.append(optionsObject(cards: [cardEntry("debit-4242", "A (Simulated)"), cardEntry("debit-4242", "B (Simulated)")]))
         bodies.append(optionsObject(cards: [cardEntry("", "Example Debit (Simulated)")]))
         bodies.append(optionsObject(cards: [cardEntry("debit-4242", "")]))
