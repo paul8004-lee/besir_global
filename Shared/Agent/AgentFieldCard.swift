@@ -104,6 +104,37 @@ struct AgentFieldSpec: Equatable {
     }
 }
 
+/// The value one member of one row of a repeatable group starts with: the value and where it came from.
+struct AgentFieldSeed: Equatable {
+    var value: AgentFieldValue?
+    var source: AgentFieldSource
+}
+
+/// A repeatable group of rows: the partner's members and maximum number of rows, and the words of the one chip that adds a row
+/// (the symbol it shows and the name VoiceOver reads). The words live in the seed the caller passes; the card model writes none.
+struct AgentFieldGroup: Equatable {
+    let key: String
+    let label: String
+    let members: [AgentFieldSpec]
+    let maxRows: Int
+    let addSymbol: String
+    let addName: String
+}
+
+extension AgentFieldGroup {
+    /// The group a partner named: nil unless the field is of kind `group` and every member yields a scalar seed.
+    init?(_ field: PartnerField, addSymbol: String, addName: String) {
+        guard field.kind == .group else { return nil }
+        var members: [AgentFieldSpec] = []
+        for member in field.members {
+            guard let spec = AgentFieldSpec(member) else { return nil }
+            members.append(spec)
+        }
+        self.init(key: field.key, label: field.label, members: members, maxRows: field.maxRows,
+                  addSymbol: addSymbol, addName: addName)
+    }
+}
+
 indirect enum AgentFieldRow {
     /// A read-only row.
     case line(String)
@@ -111,6 +142,8 @@ indirect enum AgentFieldRow {
     case field(AgentFieldSpec, value: AgentFieldValue?, source: AgentFieldSource)
     /// An `on_off` field that owns rows shown only while it is on.
     case switchField(AgentFieldSpec, value: AgentFieldValue?, source: AgentFieldSource, dependents: [AgentFieldRow])
+    /// A repeatable group of rows: one seed per member, in member order, for each row the card starts with.
+    case repeating(AgentFieldGroup, rows: [[AgentFieldSeed]])
 }
 
 /// The card: built once from the rows, then changed in place so a row keeps its identity (the view keeps its open list, wheel
@@ -165,6 +198,10 @@ indirect enum AgentFieldRow {
             if case .place(let place)? = entry(key)?.value { return place }
             return nil
         }
+
+        /// The entries of one group's rows in row-number order, each dictionary keyed by member key. Skeleton of the red step;
+        /// the green step groups the entries whose key starts with the group's key and the dot.
+        func rows(of group: String) -> [[String: Entry]] { [] }
     }
 
     private struct Slot {
@@ -243,6 +280,12 @@ indirect enum AgentFieldRow {
 
     func source(of key: String) -> AgentFieldSource { slots[key]?.source ?? .blank }
 
+    /// The key of one member of one row of a group: `group.row.member`, the row counted from 1.
+    static func rowKey(_ group: String, _ row: Int, _ member: String) -> String { "\(group).\(row).\(member)" }
+
+    /// The key of a group's control row, the one chip that adds a row.
+    static func controlKey(_ group: String) -> String { "\(group).controls" }
+
     /// The bundle of closures the edit card view calls. A row is found by its id and the change is the model's own.
     var actions: EditCardActions {
         EditCardActions(
@@ -270,6 +313,7 @@ indirect enum AgentFieldRow {
             closeDial: { id, _, now in
                 if let key = self.key(of: id) { self.closeDial(key, now: now) }
             },
+            deleteRow: { rowID in _ = self.deleteRow(rowID) },
             confirm: {})
     }
 
@@ -431,6 +475,11 @@ indirect enum AgentFieldRow {
         debouncer.cancelAll()
     }
 
+    /// Deletes the row whose fields carry `rowID`. Refused at one row, on a frozen card and for an id no field carries; every
+    /// other row keeps its values, ids and keys. Skeleton of the red step: returns false; the green step removes the row.
+    @discardableResult
+    func deleteRow(_ rowID: UUID) -> Bool { false }
+
     /// The rows besir added itself (each switch with its dependents) leave the card: a card that ended without an applied answer
     /// must not read as if they had taken effect. The partner's own rows stay.
     func removeOwnRows() {
@@ -456,6 +505,10 @@ indirect enum AgentFieldRow {
             case .switchField(let spec, let value, let source, let dependents):
                 slots[spec.key] = slot(spec, value, source)
                 built.append(.group(key: spec.key, dependents: nodes(for: dependents, lines: &lines)))
+            case .repeating:
+                // Skeleton of the red step: nothing is registered and nothing is appended, so the new tests fail on their
+                // assertions. The green step builds the row members under their row keys and the control row.
+                break
             }
         }
         return built
