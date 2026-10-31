@@ -154,6 +154,8 @@ struct ContentView: View {
     @EnvironmentObject var notifications: NotificationManager
 
     @State private var selection: ScheduledEvent.ID?
+    /// The leg the leg sheet was opened for, kept while the sheet is up so a leg removed by the switch keeps its page.
+    @State private var retainedLeg: ScheduledEvent?
     @State private var selectedActivityId: ActivityBlock.ID?
     @State private var showingAdd = false
     @State private var showingAddActivity = false
@@ -320,11 +322,13 @@ struct ContentView: View {
                 selection = id
             }
         }
+        // The retained leg follows the selection: it is set when the sheet opens and dropped when the sheet closes.
+        .onChange(of: selection, initial: true) { retainedLeg = selectedEvent }
         .sheet(isPresented: Binding(
             get: { selection != nil },
             set: { if !$0 { selection = nil } }
         )) {
-            if let event = selectedEvent {
+            if let event = LateSwitch.openedLeg(stored: selectedEvent, retained: retainedLeg, selection: selection) {
                 NavigationStack {
                     EventDetailView(event: event)
                         .toolbar {

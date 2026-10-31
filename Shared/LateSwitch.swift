@@ -60,6 +60,18 @@ enum LateSwitch {
     /// the other modes.
     static func ownMark(mode: TransportMode) -> Bool { mode == .transit }
 
+    /// True while the leg is still stored: only then does its screen draw the leg's own content. A gone leg draws the switch
+    /// section alone.
+    static func showsLegContent(legIsStored: Bool) -> Bool { legIsStored }
+
+    /// The leg a host sheet keeps showing: the stored one when there is one, else the retained one while the selection still
+    /// points at it, else none.
+    static func openedLeg(stored: ScheduledEvent?, retained: ScheduledEvent?, selection: UUID?) -> ScheduledEvent? {
+        if let stored { return stored }
+        guard let retained, let selection, retained.id == selection else { return nil }
+        return retained
+    }
+
     // MARK: Times
 
     /// `yyyy-MM-ddTHH:mm` in `zone`, ASCII digits and the Gregorian calendar whatever the device's language: the text the order
@@ -539,6 +551,7 @@ final class LateSwitchCenter: ObservableObject {
                                                   flow: flow)
         var cancelled = false
         if case .success(.cancelled) = cancel { cancelled = true }
+        if cancelled { removeBookingLegs(store: deps.store, id: id) }
 
         // A cancelled booking gives its estimate back; the delivery's estimate is sent whatever the cancel said.
         var released: BudgetEntry?
@@ -590,5 +603,15 @@ final class LateSwitchCenter: ObservableObject {
         }
         lines.append(budgetLine)
         states[id] = .finished(Result(lines: lines))
+    }
+
+    /// REQ-SWITCHLEG-001: a cancelled booking has nothing left to travel to, so its two stored legs are taken out through the
+    /// Store leg removal, the outbound one first, right after the cancel answer and before the spend is sent. Each outcome is
+    /// left unread: the result lines are fixed words and nothing is reported.
+    private func removeBookingLegs(store: Store, id: UUID) {
+        let pair = store.legs(of: id)
+        for leg in [pair.outbound, pair.return].compactMap({ $0 }) {
+            store.removeLeg(legId: leg.id)
+        }
     }
 }

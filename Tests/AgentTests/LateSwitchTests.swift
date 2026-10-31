@@ -578,6 +578,46 @@ final class LateSwitchTests: XCTestCase {
         let edited = try evaluation(s) { $0.chooseTime(arriveKey, at(11, 2, 19, 30)) }
         XCTAssertEqual(edited.arrival, at(11, 2, 19, 30))
     }
+
+    // MARK: T32-T35 the leg screen and its host (SPEC-SWITCHLEG-001)
+
+    func testT32_ShowsLegContentIsTrueWhileTheLegIsStoredAndFalseOnceItIsGone() {
+        XCTAssertTrue(LateSwitch.showsLegContent(legIsStored: true))
+        XCTAssertFalse(LateSwitch.showsLegContent(legIsStored: false))
+    }
+
+    func testT33_TheLegScreenDrawsTheBaseBodyOnlyWhileTheLegIsStoredAndTheSectionAloneOtherwise() throws {
+        let source = try sourceText("Shared/EventDetailView.swift")
+        let branch = "if LateSwitch.showsLegContent(legIsStored: store.events.contains(where: { $0.id == passedEvent.id })) {"
+        XCTAssertEqual(source.components(separatedBy: branch).count - 1, 1, "the branch line occurs once")
+        let branchRange = try XCTUnwrap(source.range(of: branch))
+        let afterBranch = source[branchRange.upperBound...]
+        let legBodyUse = try XCTUnwrap(afterBranch.range(of: "legBody"))
+        let elseUse = try XCTUnwrap(afterBranch.range(of: "else"))
+        XCTAssertLessThan(legBodyUse.lowerBound, elseUse.lowerBound, "the stored branch draws the base body before the else")
+        let sectionLine = "LateSwitchSection(event: event, lateOutcome: nil)"
+        XCTAssertEqual(source.components(separatedBy: sectionLine).count - 1, 1, "the section alone occurs once")
+        let sectionUse = try XCTUnwrap(source.range(of: sectionLine))
+        XCTAssertGreaterThan(sectionUse.lowerBound, elseUse.upperBound, "and only in the gone branch, after the else")
+        XCTAssertEqual(source.components(separatedBy: "private var legBody: some View {").count - 1, 1, "the base body is the renamed one")
+        XCTAssertEqual(source.components(separatedBy: "lateOutcome: lines?.kind == .late").count - 1, 1,
+                       "the departure card keeps its own section call")
+    }
+
+    func testT35_TheHostSheetKeepsTheRetainedLegAndPicksTheLegItShowsThroughTheHelper() throws {
+        let source = try sourceText("Shared/ContentView.swift")
+        XCTAssertEqual(source.components(separatedBy: "@State private var retainedLeg: ScheduledEvent?").count - 1, 1)
+        XCTAssertEqual(source.components(separatedBy: ".onChange(of: selection, initial: true)").count - 1, 1)
+        XCTAssertEqual(source.components(separatedBy: "retainedLeg = selectedEvent").count - 1, 1)
+        let change = try XCTUnwrap(source.range(of: ".onChange(of: selection, initial: true)"))
+        let keep = try XCTUnwrap(source.range(of: "retainedLeg = selectedEvent"))
+        XCTAssertLessThan(change.lowerBound, keep.lowerBound, "the retained leg is set inside the change handler")
+        let sheetLine = "if let event = LateSwitch.openedLeg(stored: selectedEvent, retained: retainedLeg, selection: selection) {"
+        XCTAssertEqual(source.components(separatedBy: sheetLine).count - 1, 1)
+        XCTAssertLessThan(keep.lowerBound, try XCTUnwrap(source.range(of: sheetLine)).lowerBound, "before the leg sheet reads it")
+        XCTAssertEqual(source.components(separatedBy: "if let event = selectedEvent {").count - 1, 0,
+                       "the sheet no longer reads the stored leg alone")
+    }
 }
 
 // MARK: - The steps (milestone M4, T01-T26)
@@ -897,6 +937,14 @@ final class SwitchRig {
         return first["switchStarted"] as? Bool
     }
 
+    /// How many stored events link to `activityId`, read from the saved schedule file. A hook runs off the main actor, so it
+    /// reads the file the Store writes after every change instead of the Store itself. Nil when the file cannot be read or
+    /// decoded: a hook that saw no file leaves its test failing instead of counting no legs.
+    nonisolated static func linkedLegCount(activityId: UUID, at url: URL) -> Int? {
+        guard let data = try? Data(contentsOf: url), let list = try? JSONDecoder().decode([ScheduledEvent].self, from: data) else { return nil }
+        return list.filter { $0.linkedActivityId == activityId }.count
+    }
+
     func resultLines() -> [String]? { state?.resultValue?.lines }
 }
 
@@ -991,7 +1039,7 @@ final class LateSwitchStepsTests: XCTestCase {
         XCTAssertTrue(rig.ledger.hasEstimate(weekStart: "2026-11-02"))
     }
 
-    func testT03_TheEntryIsRetitledMovedToTheArrivalKeepsItsLengthPlaceAndLegAndTheLateLinesAndTheRecordAreGone() async throws {
+    func testT03_TheEntryIsRetitledMovedToTheArrivalKeepsItsLengthAndPlaceAndNoLegIsLeftAndTheRecordIsGone() async throws {
         let rig = try await SwitchRig(self)
         let before = try XCTUnwrap(rig.entry)
         XCTAssertNotNil(Replan.displayLines(for: rig.outcome, event: rig.event, now: rig.clock.now, timeZone: rig.zone0), "the control")
@@ -1003,11 +1051,8 @@ final class LateSwitchStepsTests: XCTestCase {
         XCTAssertEqual(after.startDate, rig.at(19, 12))
         XCTAssertEqual(after.endDate.timeIntervalSince(after.startDate), before.endDate.timeIntervalSince(before.startDate))
         XCTAssertEqual(after.location, before.location)
-        let legs = rig.store.events.filter { $0.linkedActivityId == rig.activityID }
-        XCTAssertEqual(legs.count, 1, "the leg stays")
-        let moved = try XCTUnwrap(legs.first)
-        XCTAssertEqual(moved.arrivalDate, after.startDate, "the leg follows the entry")
-        XCTAssertNil(Replan.displayLines(for: rig.outcome, event: moved, now: rig.clock.now, timeZone: rig.zone0), "the late lines are gone")
+        XCTAssertFalse(rig.store.events.contains { $0.linkedActivityId == rig.activityID }, "no event links to the entry")
+        XCTAssertFalse(rig.store.events.contains { $0.id == rig.event.id }, "the old leg is not stored any more")
         XCTAssertNil(rig.records.record(forActivity: rig.activityID), "the record is removed after a move")
         XCTAssertNil(SwitchRig.mark(at: rig.recordsFile), "and so is its file entry")
     }
@@ -1746,5 +1791,190 @@ final class LateSwitchStepsTests: XCTestCase {
         XCTAssertTrue(entries.allSatisfy { $0.source == .inferred }, "every value is inferred")
         XCTAssertFalse(entries.contains { $0.source == .stated })
         XCTAssertTrue(card.isReady)
+    }
+
+    // MARK: T27-T31 the booking's legs after the switch (SPEC-SWITCHLEG-001)
+
+    /// Adds the return leg the removal tests need (the rig itself makes only the outbound one) and asserts the call took.
+    private func addReturnLeg(to rig: SwitchRig) async {
+        let added = await rig.store.addLeg(activityId: rig.activityID, role: .departure, outerPlace: SwitchRig.home, mode: .car,
+                                           bufferMinutes: 0, notifyLeadMinutes: 0, notifyEnabled: false, travelSecondsHint: 1470)
+        guard case .created = added else { return XCTFail("the control: the return leg was not added") }
+    }
+
+    /// A second entry of the next day with one leg of its own: that leg must survive the booked entry's removal.
+    private func secondEntryLegId(in rig: SwitchRig) async throws -> UUID {
+        let made = await rig.store.addActivityWithTravel(title: "Lunch at Test Bistro (Simulated)", location: SwitchRig.bistro,
+                                                         startDate: rig.at(12, 0, day: 3), endDate: rig.at(13, 0, day: 3),
+                                                         travelFrom: SwitchRig.home, returnTo: nil, outboundMode: .car, returnMode: .car,
+                                                         bufferMinutes: 0, notifyLeadMinutes: 0, notifyEnabled: false,
+                                                         syncToCalendar: false, travelSecondsHint: 1470)
+        return try XCTUnwrap(rig.store.events.first { $0.linkedActivityId == made.activityId }?.id)
+    }
+
+    /// The rig's two legs, unwrapped.
+    private func bothLegs(_ rig: SwitchRig) throws -> (outbound: ScheduledEvent, returned: ScheduledEvent) {
+        let pair = rig.store.legs(of: rig.activityID)
+        return (try XCTUnwrap(pair.outbound), try XCTUnwrap(pair.return))
+    }
+
+    /// Both legs are still stored with the same id, title, arrival and departure they had before the tap.
+    private func assertLegsStored(_ rig: SwitchRig, outbound: ScheduledEvent, returned: ScheduledEvent,
+                                  file: StaticString = #filePath, line: UInt = #line) {
+        let after = rig.store.legs(of: rig.activityID)
+        for (name, was, now) in [("outbound", outbound, after.outbound), ("return", returned, after.return)] {
+            XCTAssertEqual(now?.id, was.id, name, file: file, line: line)
+            XCTAssertEqual(now?.title, was.title, name, file: file, line: line)
+            XCTAssertEqual(now?.arrivalDate, was.arrivalDate, name, file: file, line: line)
+            XCTAssertEqual(now?.departureDate, was.departureDate, name, file: file, line: line)
+        }
+    }
+
+    func testT27_ACancelledBookingLosesBothLegsWhileTheSecondEntrysLegStaysAndTheEntryIsMoved() async throws {
+        let rig = try await SwitchRig(self)
+        await addReturnLeg(to: rig)
+        let secondLegId = try await secondEntryLegId(in: rig)
+        let before = try XCTUnwrap(rig.entry)
+        XCTAssertEqual(rig.store.events.count, 3, "the control: three events")
+        XCTAssertEqual(rig.store.events.filter { $0.linkedActivityId == rig.activityID }.count, 2,
+                       "the control: two of them linked to the booked entry")
+        await rig.check()
+        let offer = try rig.offer()
+        await rig.tap()
+
+        let pair = rig.store.legs(of: rig.activityID)
+        XCTAssertNil(pair.outbound, "no outbound leg")
+        XCTAssertNil(pair.return, "no return leg")
+        XCTAssertFalse(rig.store.events.contains { $0.linkedActivityId == rig.activityID }, "no event links to the entry")
+        XCTAssertTrue(rig.store.events.contains { $0.id == secondLegId }, "the second entry's leg is still stored")
+        let after = try XCTUnwrap(rig.entry)
+        XCTAssertEqual(after.title, "Dinner (Simulated)")
+        XCTAssertEqual(after.startDate, rig.at(19, 12))
+        XCTAssertEqual(after.endDate.timeIntervalSince(after.startDate), before.endDate.timeIntervalSince(before.startDate))
+        XCTAssertEqual(after.location, before.location)
+        XCTAssertNil(rig.records.record(forActivity: rig.activityID), "the record is removed after a move")
+        XCTAssertEqual(rig.calls.list, ["budget-left", "delivery-options", "delivery-order", "cancel", "budget-spend"])
+        let flow = await rig.packets(in: offer.flow)
+        XCTAssertEqual(summaries(flow), SwitchRig.fullFlow)
+        XCTAssertEqual(rig.resultLines(), [
+            "Booking cancelled",
+            "Delivery DL-AB12CD arrives 7:12 PM",
+            "Schedule entry moved to 7:12 PM",
+            "Estimated total $33.00 sent to Example Budget (Simulated): $167.00 left this week."])
+    }
+
+    func testT28_BothLegsAreStoredWhenTheOrderIsSentAndNoneWhenTheSpendIs() async throws {
+        let rig = try await SwitchRig(self)
+        await addReturnLeg(to: rig)
+        _ = try await secondEntryLegId(in: rig)
+        let eventsFile = AppConfig.supportDirectory.appendingPathComponent("events.json")
+        let booked = rig.activityID
+        let atOrder = SwitchBox<Int?>(nil)
+        let atSpend = SwitchBox<Int?>(nil)
+        rig.calls.on("delivery-order") { atOrder.value = SwitchRig.linkedLegCount(activityId: booked, at: eventsFile) }
+        rig.calls.on("budget-spend") { atSpend.value = SwitchRig.linkedLegCount(activityId: booked, at: eventsFile) }
+        await rig.check()
+        await rig.tap()
+        XCTAssertEqual(atOrder.value, 2, "both legs are stored while the delivery order is in flight")
+        XCTAssertEqual(atSpend.value, 0, "no leg is stored any more when the spend is sent")
+    }
+
+    func testT29_BothLegsStayStoredWhenTheCancelAnswerIsDeclinedOrAFailedFortyFourFour() async throws {
+        let declined = try await SwitchRig(self)
+        await addReturnLeg(to: declined)
+        let beforeDeclined = try bothLegs(declined)
+        declined.tables.result = .success((Data(SwitchRig.declinedBody.utf8), 200))
+        await declined.check()
+        await declined.tap()
+        assertLegsStored(declined, outbound: beforeDeclined.outbound, returned: beforeDeclined.returned)
+        XCTAssertEqual(declined.resultLines(), [
+            "Delivery DL-AB12CD arrives 7:12 PM",
+            "The booking could not be cancelled.",
+            "Estimated total $33.00 sent to Example Budget (Simulated): $107.00 left this week."])
+
+        let notFound = try await SwitchRig(self)
+        await addReturnLeg(to: notFound)
+        let beforeNotFound = try bothLegs(notFound)
+        notFound.tables.result = .success((Data("Not found".utf8), 404))
+        await notFound.check()
+        await notFound.tap()
+        assertLegsStored(notFound, outbound: beforeNotFound.outbound, returned: beforeNotFound.returned)
+        XCTAssertEqual(notFound.resultLines()?.count, 3)
+        XCTAssertEqual(notFound.resultLines()?[1], "The booking could not be cancelled.")
+    }
+
+    func testT30_BothLegsStayStoredWhenTheDeliveryIsDeclinedOrOfflineOrTheArrivalIsNoLongerUsable() async throws {
+        // The delivery is declined: the device zone changes once the tap started, so the partner reads an arrival outside
+        // its hours and refuses the order.
+        let declined = try await SwitchRig(self)
+        await addReturnLeg(to: declined)
+        let beforeDeclined = try bothLegs(declined)
+        let eventsFile = AppConfig.supportDirectory.appendingPathComponent("events.json")
+        let booked = declined.activityID
+        let atOrder = SwitchBox<Int?>(nil)
+        declined.calls.on("delivery-order") { atOrder.value = SwitchRig.linkedLegCount(activityId: booked, at: eventsFile) }
+        await declined.check()
+        declined.center.confirm(activityID: declined.activityID)
+        declined.clock.zone = declined.zone0 == seoul ? losAngeles : seoul
+        await declined.settle()
+        XCTAssertEqual(atOrder.value, 2, "both legs were stored while the order was in flight")
+        XCTAssertEqual(declined.state?.noteText, "The delivery could not be ordered. Nothing was changed.")
+        assertLegsStored(declined, outbound: beforeDeclined.outbound, returned: beforeDeclined.returned)
+
+        // The delivery fails offline: the order may have reached the partner, so nothing else is touched.
+        let offline = try await SwitchRig(self)
+        await addReturnLeg(to: offline)
+        let beforeOffline = try bothLegs(offline)
+        await offline.check()
+        offline.delivery.mode = .error(URLError(.notConnectedToInternet))
+        await offline.tap()
+        XCTAssertEqual(offline.state?.noteText, "The delivery could not be confirmed. Nothing else was changed.")
+        assertLegsStored(offline, outbound: beforeOffline.outbound, returned: beforeOffline.returned)
+
+        // The arrival is edited past the rule before the tap.
+        let edited = try await SwitchRig(self)
+        await addReturnLeg(to: edited)
+        let beforeEdited = try bothLegs(edited)
+        await edited.check()
+        let offer = try edited.offer()
+        XCTAssertTrue(offer.card.chooseTime(offer.seed.arriveKey, edited.at(21, 30)))
+        await edited.tap()
+        XCTAssertEqual(edited.state?.noteText, "That arrival time cannot be used. Nothing was changed.")
+        assertLegsStored(edited, outbound: beforeEdited.outbound, returned: beforeEdited.returned)
+    }
+
+    func testT31_TheLegsAreRemovedEvenWhenTheMoveFailsAndTheRecordStaysWithoutAMealID() async throws {
+        let rig = try await SwitchRig(self, sync: true)
+        await addReturnLeg(to: rig)
+        await rig.check()
+        // The entry already holds the title and times the card would give it, so the tap's own move reports no change.
+        XCTAssertTrue(rig.store.modifyActivity(id: rig.activityID, newTitle: "Dinner (Simulated)", newStart: rig.at(19, 12),
+                                               newEnd: rig.at(20, 12)))
+        await rig.tap()
+        let pair = rig.store.legs(of: rig.activityID)
+        XCTAssertNil(pair.outbound)
+        XCTAssertNil(pair.return)
+        XCTAssertFalse(rig.store.events.contains { $0.linkedActivityId == rig.activityID }, "no leg is left")
+        XCTAssertNotNil(rig.records.record(forActivity: rig.activityID), "the record is kept")
+        XCTAssertNil(rig.orders.orders.first?.mealActivityID, "no meal id without a move")
+        XCTAssertEqual(rig.resultLines(), [
+            "Booking cancelled",
+            "Delivery DL-AB12CD arrives 7:12 PM",
+            "The schedule entry could not be moved.",
+            "Estimated total $33.00 sent to Example Budget (Simulated): $167.00 left this week."])
+    }
+
+    func testT34_TheSheetShowsTheStoredLegFirstElseARetainedLegOnlyWhileTheSelectionPointsAtIt() async throws {
+        let rig = try await SwitchRig(self)
+        await addReturnLeg(to: rig)
+        let pair = rig.store.legs(of: rig.activityID)
+        let outbound = try XCTUnwrap(pair.outbound)
+        let returned = try XCTUnwrap(pair.return)
+        XCTAssertEqual(LateSwitch.openedLeg(stored: outbound, retained: returned, selection: returned.id)?.id, outbound.id,
+                       "a stored leg wins over a different retained one")
+        XCTAssertEqual(LateSwitch.openedLeg(stored: nil, retained: returned, selection: returned.id)?.id, returned.id,
+                       "the retained leg while the selection is its own id")
+        XCTAssertNil(LateSwitch.openedLeg(stored: nil, retained: returned, selection: outbound.id), "a retained leg of another id")
+        XCTAssertNil(LateSwitch.openedLeg(stored: nil, retained: returned, selection: nil), "no leg without a selection")
     }
 }

@@ -60,7 +60,7 @@ struct EventDetailView: View {
         return location.originCoordinate
     }
 
-    var body: some View {
+    private var legBody: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
@@ -127,6 +127,20 @@ struct EventDetailView: View {
             } else {
                 AddEventView(editing: event)
             }
+        }
+    }
+
+    /// A leg that is no longer stored has no content of its own: the screen draws the switch section alone with no late
+    /// outcome, so no read starts for a leg that is gone. While the leg is stored the whole base screen above is drawn.
+    var body: some View {
+        if LateSwitch.showsLegContent(legIsStored: store.events.contains(where: { $0.id == passedEvent.id })) {
+            legBody
+        } else {
+            ScrollView {
+                LateSwitchSection(event: event, lateOutcome: nil)
+                    .padding(24)
+            }
+            .background(Theme.bg)
         }
     }
 
