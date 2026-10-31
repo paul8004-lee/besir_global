@@ -23,7 +23,7 @@ final class RecurrenceTextFormTests: XCTestCase {
     /// Title `Gym`, place `No place`, the given start and an end one hour later the same day; the Repeat row empty.
     private func makeForm(start: Date) -> LegCardForm {
         let rows = LegCardForm.manualNewActivityRows(favorites: [], defaultDay: start, now: start,
-                                                     presetStart: nil, calendarDefaultOn: nil)
+                                                     presetStart: nil)
         var f = LegCardForm(card: EditCard(fields: rows), favoriteOptions: [])
         f.setTitleText(field: rowId(f, "title"), text: "Gym")
         f.choose(field: rowId(f, "location_query"), value: PlaceTokens.noPlace)

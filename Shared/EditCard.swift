@@ -1209,15 +1209,14 @@ extension EndWheelSpec {
         }
     }
 
-    /// 다리가 하나라도 켜지면 알림 줄이 필요해진다 — 캘린더 줄이 있다면 그 앞에, 없으면 '반복' 줄 앞에, 그것도 없으면
-    /// 맨 끝에. '반복' 줄은 알림·캘린더 줄을 붙인 뒤에도 늘 마지막이어야 한다(SPEC-UIKIT-019 REQ-001, L-5) — 맨 끝에
-    /// 끼우면 토글을 켜는 순간 알림이 반복 줄 뒤로 간다.
+    /// 다리가 하나라도 켜지면 알림 줄이 필요해진다 — '반복' 줄 앞에, 그것도 없으면 맨 끝에. '반복' 줄은 알림 줄을
+    /// 붙인 뒤에도 늘 마지막이어야 한다(SPEC-UIKIT-019 REQ-001, L-5) — 맨 끝에 끼우면 토글을 켜는 순간 알림이 반복
+    /// 줄 뒤로 간다.
     private mutating func ensureNotifyRows() {
         let legOn = card.fields.first(where: { $0.key == LegRowKeys.outboundEnabled })?.chosen == "true"
             || card.fields.first(where: { $0.key == LegRowKeys.returnEnabled })?.chosen == "true"
         guard legOn, !card.fields.contains(where: { $0.key == LegRowKeys.notifyEnabled }) else { return }
-        let at = card.fields.firstIndex(where: { $0.key == "calendar_sync" })
-            ?? card.fields.firstIndex(where: { $0.key == RecurrenceLine.key }) ?? card.fields.count
+        let at = card.fields.firstIndex(where: { $0.key == RecurrenceLine.key }) ?? card.fields.count
         card.fields.insert(notifyToggleRow(chosen: lastNotifyOn ? "true" : "false"), at: at)
         // 꺼져 있던 채로 돌아오는 것이 아니라면 리드 줄이 곧바로 따라온다 — 토글만 홀로 나오는
         // 순간이 없게 한다(켬이 문서화된 기본값이다).
@@ -1372,17 +1371,15 @@ extension EndWheelSpec {
         }
     }
 
-    /// 수동 새 활동 카드의 줄 정의 — 제목 → 장소 → 시작 → 종료 → (연결 때) 구글 캘린더 → '반복'(늘 마지막, REQ-001).
+    /// 수동 새 활동 카드의 줄 정의 — 제목 → 장소 → 시작 → 종료 → '반복'(늘 마지막, REQ-001).
     /// 뷰(AddActivityView)에 두면 드라이버가 줄 목록을 못 재므로 모델 쪽에 둔다(manualActivityTimeRows와 같은 이유).
-    /// `calendarDefaultOn`이 nil이면 구글 미연결이라 캘린더 줄이 없다.
     static func manualNewActivityRows(favorites: [EditField.Option], defaultDay: Date, now: Date,
-                                      presetStart: Date?, calendarDefaultOn: Bool?) -> [EditField] {
+                                      presetStart: Date?) -> [EditField] {
         var fields: [EditField] = [
             .init(key: "title", kind: .title, label: "Activity Title", options: [], allowsCustom: true),
             manualPlaceRow(label: "Place", favorites: favorites),
         ]
         fields += EditCard.manualActivityTimeRows(defaultDay: defaultDay, now: now, presetStart: presetStart)
-        if let calendarDefaultOn { fields.append(calendarSyncRow(defaultOn: calendarDefaultOn)) }
         fields.append(RecurrenceLine.row())
         return fields
     }
@@ -1454,14 +1451,6 @@ extension EndWheelSpec {
         return .init(key: "location_query", kind: .place, label: label,
               options: favorites + specials.map { PlaceTokens.chip($0) },
               allowsCustom: true, placeSpecials: specials)
-    }
-
-    /// 구글 캘린더 줄(018 REQ-004·O-E4) — AI 활동 카드와 수동 새 활동 카드가 같은 이 공장을 쓴다(수동 카드는
-    /// 019부터 manualNewActivityRows를 거친다). 두 카드의 (kind, label) 순서는 AC-005가 잰다.
-    static func calendarSyncRow(defaultOn: Bool) -> EditField {
-        .init(key: "calendar_sync", kind: .toggle, label: "Show in Google Calendar",
-              options: [.init(label: "Show", value: "true"), .init(label: "Don't Show", value: "false")],
-              allowsCustom: false, chosen: String(defaultOn))
     }
 
     private func chosenIn(_ key: String) -> String? {
