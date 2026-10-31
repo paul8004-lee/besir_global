@@ -37,11 +37,10 @@ final class ReturnDestinationTests: XCTestCase {
 
     /// The New Activity form the app builds: title, a chosen place, start and end; the Return Travel toggle (and the
     /// Outbound Travel toggle when asked) turned on through the real transition, so the leg rows are born by it.
-    private func makeForm(outboundOn: Bool = false, returnOn: Bool = true,
-                          calendarDefaultOn: Bool? = nil) -> LegCardForm {
+    private func makeForm(outboundOn: Bool = false, returnOn: Bool = true) -> LegCardForm {
         let start = at(2026, 11, 4, 18)
         let rows = LegCardForm.manualNewActivityRows(favorites: favs, defaultDay: start, now: at(2026, 11, 4, 9),
-                                                     presetStart: nil, calendarDefaultOn: calendarDefaultOn)
+                                                     presetStart: nil)
         var f = LegCardForm(card: EditCard(fields: rows), favoriteOptions: favs)
         f.setTitleText(field: rowId(f, "title"), text: "zzt81a")
         f.choosePlainTime(field: rowId(f, "start_iso"), date: start)
@@ -116,13 +115,13 @@ final class ReturnDestinationTests: XCTestCase {
 
     // T3
     func testRETDEST_OnlyOfferingRowsOfferCurrentLocation() {
-        let f = makeForm(outboundOn: true, calendarDefaultOn: true)
-        XCTAssertGreaterThanOrEqual(f.card.fields.count, 15, "the loop below must not be vacuous")
+        let f = makeForm(outboundOn: true)
+        XCTAssertGreaterThanOrEqual(f.card.fields.count, 14, "the loop below must not be vacuous")
         let offering = Set(f.card.fields.filter(\.offersCurrentLocation).map(\.key))
         XCTAssertEqual(offering, [LegRowKeys.originQuery, "location_query", LegRowKeys.returnQuery])
         for key in ["title", "start_iso", "end_iso", LegRowKeys.outboundEnabled, LegRowKeys.returnEnabled,
                     LegRowKeys.outboundMode, LegRowKeys.returnMode, LegRowKeys.bufferMinutes,
-                    LegRowKeys.notifyEnabled, LegRowKeys.notifyLeadMinutes, "calendar_sync", RecurrenceLine.key] {
+                    LegRowKeys.notifyEnabled, LegRowKeys.notifyLeadMinutes, RecurrenceLine.key] {
             XCTAssertFalse(field(f, key).offersCurrentLocation, key)
         }
 

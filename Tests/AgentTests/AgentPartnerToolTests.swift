@@ -1443,7 +1443,7 @@ final class AgentPartnerToolTests: XCTestCase {
 
         // The schedule title rows of the app's own cards keep the view's wording.
         let rows = LegCardForm.manualNewActivityRows(favorites: [], defaultDay: TestClock.now, now: TestClock.now,
-                                                     presetStart: nil, calendarDefaultOn: nil)
+                                                     presetStart: nil)
         XCTAssertEqual(rows.first { $0.key == "title" }?.kind, .title, "premise: the row is a title row")
         XCTAssertNil(rows.first { $0.key == "title" }?.placeholder)
         XCTAssertNil(rows.first { $0.kind == .place }?.placeholder)
