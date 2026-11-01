@@ -100,18 +100,16 @@ struct RootView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    HStack(spacing: 12) {
-                        SnapEntryButton(isShown: SnapEntry.isShown(hasAI: store.config.hasAI, choosingMode: choosingMode,
-                                                                   isReading: shareImport.isReading)) { openSnap() }
-                        Button {
-                            openChat()
-                        } label: {
-                            BesirMark(size: 28)
-                                .floatingCircle()
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("besir AI")
+                    Button {
+                        openChat()
+                    } label: {
+                        Image(systemName: "ellipsis.bubble")
+                            .font(.system(size: 22))
+                            .foregroundStyle(Theme.ink)
+                            .floatingCircle()
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("besir AI")
                 }
                 .padding(.trailing, FloatingCircle.inset)
                 .padding(.bottom, FloatingCircle.inset)
@@ -226,6 +224,8 @@ struct RootView: View {
                     .font(.system(size: 32, weight: .regular))
                     .foregroundStyle(Theme.ink)
                 Spacer()
+                SnapEntryButton(isShown: SnapEntry.isShown(hasAI: store.config.hasAI, choosingMode: choosingMode,
+                                                           isReading: shareImport.isReading)) { openSnap() }
                 // 설정은 시간표가 아니라 로비에서 연다(REQ-002) — 시간표 우상단은 비워 둔다(REQ-001).
                 Button {
                     showingSettings = true
