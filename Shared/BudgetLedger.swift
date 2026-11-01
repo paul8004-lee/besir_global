@@ -64,11 +64,15 @@ final class BudgetLedger: @unchecked Sendable {
         return entries.first { $0.requestID == requestID }
     }
 
-    /// Posted after an effective add or remove (skeleton: nothing posts it yet; card t103 M2).
+    /// Posted (object: this ledger) once after an add that appended and once after a remove that removed.
     static let didChange = Notification.Name("besir.budgetLedgerDidChange")
 
-    /// The entries of one week in insertion order (skeleton: card t103 M2 fills it).
-    func weekEntries(weekStart: String) -> [BudgetEntry] { [] }
+    /// The entries of one week in insertion order.
+    func weekEntries(weekStart: String) -> [BudgetEntry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.filter { $0.weekStart == weekStart }
+    }
 
     // MARK: Write
 
@@ -81,6 +85,7 @@ final class BudgetLedger: @unchecked Sendable {
         guard let index = entries.firstIndex(where: { $0.requestID == requestID }) else { return false }
         entries.remove(at: index)
         if let data = try? JSONEncoder().encode(entries) { try? write(data, fileURL) }
+        NotificationCenter.default.post(name: Self.didChange, object: self)
         return true
     }
 
@@ -94,6 +99,7 @@ final class BudgetLedger: @unchecked Sendable {
         entries.append(entry)
         if entries.count > limit { entries.removeFirst(entries.count - limit) }
         if let data = try? JSONEncoder().encode(entries) { try? write(data, fileURL) }
+        NotificationCenter.default.post(name: Self.didChange, object: self)
         return true
     }
 

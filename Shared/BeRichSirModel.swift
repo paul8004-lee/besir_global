@@ -7,8 +7,23 @@ final class BeRichSirModel: ObservableObject {
     enum Problem: Equatable {
         case amount, notSetUp, offline, unreachable
 
-        /// The fixed line of the problem (skeleton: empty until M2).
-        var line: String { "" }
+        init(_ failure: BudgetFailure) {
+            switch failure {
+            case .notSetUp: self = .notSetUp
+            case .offline: self = .offline
+            case .tokenRejected, .other: self = .unreachable
+            }
+        }
+
+        /// The fixed line of the problem.
+        var line: String {
+            switch self {
+            case .amount: return "Enter an amount from 0.01 to 10000.00."
+            case .notSetUp: return "Budget is not set up."
+            case .offline: return "You are offline."
+            case .unreachable: return "Budget could not be reached."
+            }
+        }
     }
 
     @Published private(set) var standing: BudgetStanding?
