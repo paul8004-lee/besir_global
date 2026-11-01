@@ -392,6 +392,13 @@ enum PlaceLine {
         return seed
     }
 
+    /// The seed a partner row searches the moment its card appears: a row that starts open and is the partner's, by the same rule as
+    /// `seedToSearchOnOpen`; else nil.
+    static func searchOnAppear(_ field: EditField) -> String? {
+        guard field.startsOpen, field.partnerLookup else { return nil }
+        return seedToSearchOnOpen(seed: field.searchSeed, lookup: field.lookup)
+    }
+
     /// The note a partner row shows for its lookup: the no-match words for an empty answer, the failed words for a failed one,
     /// nil for any other state and for a row that is not the partner's.
     static func partnerNote(partnerLookup: Bool, lookup: EditField.Lookup) -> String? {

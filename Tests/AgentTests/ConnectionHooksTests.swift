@@ -1142,6 +1142,12 @@ final class ConnectionHooksTests: XCTestCase {
         }
     }
 
+    func testFULLHAND_R2_ACancelledBookingIsLoggedOkAndADeclinedOneIsNot() {
+        XCTAssertEqual(AgentSession.toolCallStatus("cancelled"), .ok)
+        XCTAssertEqual(AgentSession.toolCallStatus("declined"), .declined, "positive: the neighbouring word is unchanged")
+        XCTAssertEqual(AgentSession.toolCallStatus("unavailable"), .failed)
+    }
+
     func testCONNECT2_T05_ANoRouteAnswerIsNotAFailure() async throws {
         let log = makeLog()
         let rig = try await travelRig(routes: .answering(with: try Routes.fixture("routes-empty-object")), log: log)

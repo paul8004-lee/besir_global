@@ -717,6 +717,8 @@ indirect enum AgentFieldRow {
             if case .place(let place)? = slot.value { row.chosen = Self.chosenText(of: place) }
             row.partnerLookup = true
             row.searchSeed = slot.seed
+            // A seeded row starts open, so the card shows which place it is for and the view searches the seed as the card appears.
+            row.startsOpen = slot.seed != nil
             return row
         case .time:
             return EditField(key: key, kind: .datetime, label: spec.label, options: [], allowsCustom: false, chosen: chosen, anchored: false)

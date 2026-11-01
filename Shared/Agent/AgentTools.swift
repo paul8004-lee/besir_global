@@ -6,7 +6,7 @@ import CoreLocation
 // validated values and Store records only. SPEC-PLANDAY-001 adds the two day plan tools and the plan turn.
 
 enum AgentTools {
-    /// JSON array of the twelve function declarations sent with every request.
+    /// JSON array of the thirteen function declarations sent with every request.
     static func declarationsJSON() -> Data { Data(declarations.utf8) }
 
     private static let declarations = #"""
@@ -172,6 +172,19 @@ enum AgentTools {
           "required": ["partner"],
           "additionalProperties": false
         }
+      },
+      {
+        "type": "function",
+        "name": "cancel_booking",
+        "description": "Cancel the simulated partner request, such as a table booking, that made an existing schedule item, and remove that item from the schedule when the partner cancels it. Call it only after the user chose in the chat to cancel it. The user confirms on a card before anything is sent. The partner is simulated: always call it simulated.",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "id": {"type": "string", "description": "Event id returned by list_activities."}
+          },
+          "required": ["id"],
+          "additionalProperties": false
+        }
       }
     ]
     """#
@@ -260,6 +273,7 @@ private enum Tool: String {
     case spend = "record_spend"
     case partners = "get_partners"
     case partner = "request_partner"
+    case cancelBooking = "cancel_booking"
 
     /// The declared parameters, in declaration order. Nothing else is ever read.
     var params: [String] {
@@ -276,6 +290,7 @@ private enum Tool: String {
         case .spend: return ["amount"]
         case .partners: return []
         case .partner: return ["partner", "fields"]
+        case .cancelBooking: return ["id"]
         }
     }
 }
@@ -340,6 +355,13 @@ private enum Say {
     static let partnerWindowAtConfirm = "Nothing was done. Tell the user nothing was done because the time given in the chosen_time key of this result is out of range, and ask for a new time, then call request_partner again. A time must not have passed and must be within the next 366 days."
     static let partnersUnavailable = "Tell the user partners are not available right now. Do not call get_partners or request_partner again."
     static let partnerUnavailable = "Tell the user the partner is not available right now. Do not call request_partner again."
+
+    // SPEC-FULLHAND-001: each string names only cancel_booking or list_activities.
+    static let nothingToCancel = "That event was not made by a simulated partner request, so there is nothing to cancel. Tell the user."
+    static let cancelUnavailable = "Tell the user cancelling is not available right now. Do not call cancel_booking again."
+    static let cancelled = "The simulated partner cancelled the request and the item was removed from the schedule. Tell the user. If the user already chose what to do instead, do that next."
+    static let cancelDeclined = "The simulated partner did not cancel the request. Nothing was changed. Tell the user and ask what they want to do next."
+    static let cancelFailed = "The cancel request could not be made. Nothing was changed. Tell the user."
 
     // SPEC-BUDGET-001: each string names only get_budget_left or record_spend and the one declared parameter.
     static let spendAmount = "Ask the user how much they spent, as digits with an optional decimal point such as 18.50, then call record_spend again. Do not guess it."
@@ -529,6 +551,9 @@ final class AgentToolbox {
         case .partners:
             // SPEC-BOOKCARD-001: the partners tool needs the proxy, and this check comes before any argument is read.
             if !partnerClient().isConfigured { return reject(Say.partnersUnavailable) }
+        case .cancelBooking:
+            // SPEC-FULLHAND-001: the cancel needs the proxy, and this check comes before any argument is read.
+            if !partnerClient().isConfigured { return reject(Say.cancelUnavailable) }
         default:
             break
         }
@@ -553,6 +578,7 @@ final class AgentToolbox {
             case .spend: return try recordSpend(values, flow: flow)
             case .partners: return partnersLookup(flow: flow)
             case .partner: return try requestPartner(values)
+            case .cancelBooking: return try cancelBooking(values)
             }
         } catch {
             return reject((error as? Rejection)?.message ?? Say.notObject(tool))
@@ -946,18 +972,25 @@ final class AgentToolbox {
         return date >= Date(timeIntervalSince1970: minute) && date <= Date(timeIntervalSince1970: minute + Self.futureWindow)
     }
 
+    /// The directory and one form for each entry; the partners whose form is good, in the directory's order. `symbols` asks the
+    /// directory for the partners' symbols: only the hand path passes true, the model path passes false.
+    func loadPartners(flow: UUID, symbols: Bool) async -> [PartnerSpec] {
+        let client = partnerClient()
+        var good: [PartnerSpec] = []
+        if case .success(let entries) = await client.directory(flow: flow, symbols: symbols) {
+            for entry in entries {
+                if case .success(let spec) = await client.form(of: entry, flow: flow) { good.append(spec) }
+            }
+        }
+        return good
+    }
+
     /// `get_partners`: the directory and one form for each entry, run as the request in flight. It writes nothing; the partners
     /// whose form is good are held in memory, and a failure, a task cancelled meanwhile or no good partner holds nothing new.
     private func partnersLookup(flow: UUID?) -> AgentToolOutcome {
         let flow = flow ?? ConnectionLog.beginFlow()
         return .lookup(AgentLookup { [self] in
-            let client = partnerClient()
-            var good: [PartnerSpec] = []
-            if case .success(let entries) = await client.directory(flow: flow) {
-                for entry in entries {
-                    if case .success(let spec) = await client.form(of: entry, flow: flow) { good.append(spec) }
-                }
-            }
+            let good = await loadPartners(flow: flow, symbols: false)
             guard !good.isEmpty, !Task.isCancelled else {
                 let result = Self.encode(["status": "unavailable", "simulated": true, "message": AgentPartner.listUnavailableMessage])
                 return AgentLookupOutput(result: result, showsGoogleData: false)
@@ -976,25 +1009,34 @@ final class AgentToolbox {
         let f = formats
         let filled = AgentPrefill.values(fieldsText: values["fields"], fields: spec.fields, userLines: userLines(), now: now(),
                                          calendar: f.calendar)
+        guard let card = partnerCard(spec, seeds: filled, source: .stated) else { throw Rejection(Say.partnerUnavailable) }
+        return .card(card)
+    }
+
+    /// The partner's card, exactly its field list in its order, from the values it starts with: `seeds` by field key (a group row by
+    /// `group.row.member`), each marked as coming from `source`. Nil where a field cannot be built. The one place a partner card is
+    /// made, for the model's `request_partner` (source `stated`) and for the hand path. Building the card writes nothing and sends
+    /// nothing.
+    func partnerCard(_ spec: PartnerSpec, seeds filled: [String: AgentFieldValue], source: AgentFieldSource) -> AgentCard? {
         var rows: [AgentFieldRow] = []
         for field in spec.fields {
             if field.kind == .group {
                 guard let group = AgentFieldGroup(field, addSymbol: AgentPartner.groupAddSymbol, addName: AgentPartner.groupAddName)
-                else { throw Rejection(Say.partnerUnavailable) }
+                else { return nil }
                 // The kept row numbers are compacted: numbers 1 and 3 give two rows. No kept number gives one blank row.
                 let numbers = AgentPrefill.rowNumbers(kept: filled, group: field.key)
                 let seeded = (numbers.isEmpty ? [0] : numbers).map { number in
                     group.members.map { member -> AgentFieldSeed in
                         let value = filled[AgentFieldCard.rowKey(field.key, number, member.key)]
-                        return AgentFieldSeed(value: value, source: value == nil ? .blank : .stated)
+                        return AgentFieldSeed(value: value, source: value == nil ? .blank : source)
                     }
                 }
                 rows.append(.repeating(group, rows: seeded))
                 continue
             }
-            guard let seed = AgentFieldSpec(field) else { throw Rejection(Say.partnerUnavailable) }
+            guard let seed = AgentFieldSpec(field) else { return nil }
             let kept = filled[field.key]
-            rows.append(.field(seed, value: kept, source: kept == nil ? .blank : .stated))
+            rows.append(.field(seed, value: kept, source: kept == nil ? .blank : source))
         }
         // The schedule choice is the app's own row and exists only when the partner announced a time result.
         let schedulable = spec.results.contains { $0.kind == .time }
@@ -1017,10 +1059,10 @@ final class AgentToolbox {
             }
         })
         let requestID = UUID().uuidString
-        return .card(AgentCard(fieldCard: fieldCard, showsGoogleMark: spec.fields.contains { $0.kind == .place }) { [self] in
+        return AgentCard(fieldCard: fieldCard, showsGoogleMark: spec.fields.contains { $0.kind == .place }) { [self] in
             // The one snapshot of the model (Confirm froze it): every use below reads it, never a value from the build.
             await confirmPartner(spec, taken: fieldCard.values, requestID: requestID, schedulable: schedulable)
-        })
+        }
     }
 
     /// Confirm, in order: the window check of every time field, the one trim and the required values, the length of the
@@ -1329,6 +1371,38 @@ final class AgentToolbox {
             guard let target = store.activity(id: id) else { return (notFound(), .notApplied) }
             store.deleteActivity(target)
             return (AgentResolution(result: Self.encode(["status": "applied", "id": id.uuidString]), notice: nil), .confirmed)
+        })
+    }
+
+    /// SPEC-FULLHAND-001: the card that cancels the partner request which made an entry. Building it sends nothing; Confirm runs the
+    /// same `PartnerCancel.run` the history button runs. An entry with no partner request record has nothing to cancel.
+    private func cancelBooking(_ values: [String: String]) throws -> AgentToolOutcome {
+        let current = try record(values, .cancelBooking)
+        let id = current.id
+        let records = partnerRecordsProvider?() ?? PartnerRecords.shared
+        guard let held = records.record(forActivity: id) else { throw Rejection(Say.nothingToCancel) }
+        let lines = ["Cancel booking", Self.sanitized(current.title), range(current.startDate, current.endDate),
+                     AgentPartner.partnerLine(held.partnerName)]
+        return .card(AgentCard(lines: lines) { [self] in
+            let outcome = await PartnerCancel.run(activityID: id, store: store, records: records, ledger: BudgetLedger.shared,
+                                                  client: partnerClient())
+            func answer(_ status: String, _ partner: String, _ message: String) -> [String: Any] {
+                ["status": status, "partner": partner, "simulated": true, "message": message]
+            }
+            switch outcome {
+            case .cancelled(let partner):
+                var object = answer("cancelled", partner, Say.cancelled)
+                object["id"] = id.uuidString
+                return (AgentResolution(result: Self.encode(object), notice: nil), .confirmed)
+            case .declined(let partner):
+                let object = answer("declined", partner, Say.cancelDeclined)
+                return (AgentResolution(result: Self.encode(object), notice: PartnerCancel.notCancelledNotice), .notApplied)
+            case .unavailable(let partner):
+                let object = answer("unavailable", partner, Say.cancelFailed)
+                return (AgentResolution(result: Self.encode(object), notice: PartnerCancel.notCancelledNotice), .notApplied)
+            case .noRecord:
+                return (notFound(), .notApplied)
+            }
         })
     }
 

@@ -10,6 +10,8 @@ struct PartnerEntry: Equatable {
     let title: String
     let summary: String
     let route: String
+    /// The name of the SF Symbol the partner announces for its button; nil unless the directory was asked for symbols.
+    var symbol: String? = nil
 }
 
 /// An entry together with the form it announced: its fields and the kinds of result it will give.
@@ -58,26 +60,39 @@ extension PartnerEntry {
     static let directoryPath = "/partners"
 
     /// Accepts only the exact one-key answer: 1 to 8 entries, each exactly `id`, `name`, `title`, `summary`, `route`, with
-    /// unique ids and unique routes. One defect in one entry makes the whole directory unusable.
-    static func list(from data: Data) -> [PartnerEntry]? {
+    /// unique ids and unique routes. One defect in one entry makes the whole directory unusable. With `symbols` on (the answer to
+    /// the symbols request) an entry may carry a sixth key `symbol`: it is kept when it is well formed and otherwise dropped with
+    /// the entry kept; with it off, which is the reader of every older build, a sixth key fails the directory.
+    static func list(from data: Data, symbols: Bool = false) -> [PartnerEntry]? {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], object.count == 1,
               let listed = object["partners"] as? [Any], (1...maxEntries).contains(listed.count) else { return nil }
         var entries: [PartnerEntry] = []
         for element in listed {
-            guard let value = element as? [String: Any], let entry = PartnerEntry(object: value),
+            guard let value = element as? [String: Any], let entry = PartnerEntry(object: value, symbols: symbols),
                   !entries.contains(where: { $0.id == entry.id || $0.route == entry.route }) else { return nil }
             entries.append(entry)
         }
         return entries
     }
 
-    private init?(object: [String: Any]) {
-        guard object.count == 5, let id = object["id"] as? String, Self.isID(id),
+    private init?(object: [String: Any], symbols: Bool) {
+        let withSymbol = symbols && object.count == 6 && object["symbol"] != nil
+        guard object.count == 5 || withSymbol, let id = object["id"] as? String, Self.isID(id),
               let name = object["name"] as? String, PartnerForm.isItemName(name),
               let title = object["title"] as? String, PartnerForm.isLabel(title, upTo: 40),
               let summary = object["summary"] as? String, PartnerForm.isLabel(summary, upTo: 120),
               let route = object["route"] as? String, Self.isRoute(route) else { return nil }
-        self.init(id: id, name: name, title: title, summary: summary, route: route)
+        // A missing, non-string or ill-formed symbol keeps the entry without one.
+        let symbol = (object["symbol"] as? String).flatMap { Self.isSymbol($0) ? $0 : nil }
+        self.init(id: id, name: name, title: title, summary: summary, route: route, symbol: symbol)
+    }
+
+    /// 1 to 40 characters of `a-z`, `0-9` and `.`, the first a letter or digit. Checked scalar by scalar, never by a pattern, so a
+    /// trailing line break is ill-formed.
+    private static func isSymbol(_ text: String) -> Bool {
+        let scalars = Array(text.unicodeScalars)
+        guard (1...40).contains(scalars.count), isLower(scalars[0]) || isDigit(scalars[0]) else { return false }
+        return scalars.dropFirst().allSatisfy { isLower($0) || isDigit($0) || $0 == "." }
     }
 
     /// 1 to 24 characters of `a-z`, `0-9` and `_`, the first a letter.

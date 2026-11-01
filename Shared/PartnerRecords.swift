@@ -74,7 +74,7 @@ final class PartnerRecords: @unchecked Sendable {
         return entries.first { $0.activityID == id }
     }
 
-    /// The stored records, oldest first. For tests only: the app reads one record at a time.
+    /// The stored records, oldest first. The history list reads all of them; every other reader asks for one record at a time.
     var records: [PartnerRecord] {
         lock.lock()
         defer { lock.unlock() }

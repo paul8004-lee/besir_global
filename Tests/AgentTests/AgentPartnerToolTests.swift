@@ -27,11 +27,17 @@ final class StubPartner {
         var answer: ([String: Any]) -> [String: Any]
         /// What the partner lists for a `lookup`, given the field key and the lookup text: its places, in its order.
         var candidates: (_ field: String, _ text: String) -> [Place] = { _, _ in [] }
+        /// The symbol the partner announces in the directory, only to a request whose body holds `symbols` equal to `true`. Any
+        /// value, so a test can announce an ill-formed one. Nil: the entry keeps its five keys.
+        var symbol: Any? = nil
 
         var entry: [String: Any] { ["id": id, "name": name, "title": title, "summary": summary, "route": route] }
     }
 
     var mode: Mode = .worker
+    /// The answer to a request at a shape's route followed by `/cancel`: `cancelled` or `declined`. Nil keeps the 404 of a partner
+    /// that has no cancel route.
+    var cancelAnswer: String?
     var shapes: [Shape] = [Shape.tables()]
     /// Routes that answer a server error to every request.
     var brokenRoutes: Set<String> = []
@@ -84,9 +90,17 @@ final class StubPartner {
             }
             var answer: [String: Any]
             if path == PartnerEntry.directoryPath {
-                answer = ["partners": shapes.map(\.entry)]
+                let asksSymbols = sent["symbols"] as? Bool == true
+                answer = ["partners": shapes.map { shape -> [String: Any] in
+                    var entry = shape.entry
+                    if asksSymbols, let symbol = shape.symbol { entry["symbol"] = symbol }
+                    return entry
+                }]
             } else if brokenRoutes.contains(path) {
                 return reply(500, Data("oops".utf8))
+            } else if let cancelAnswer, let shape = shapes.first(where: { $0.route + "/cancel" == path }) {
+                answer = cancelAnswer == "cancelled" ? ["status": "cancelled", "partner": shape.name, "simulated": true]
+                                                     : ["status": "declined", "partner": shape.name, "simulated": true, "reason": "not_cancellable"]
             } else if let shape = shapes.first(where: { $0.route == path }) {
                 switch op {
                 case "fields":
@@ -520,10 +534,10 @@ final class AgentPartnerToolTests: XCTestCase {
 
     func testPARTNER_G01_TwelveDeclarationsTheOldOnesUnchangedAndTheNewTwoStrict() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 12)
+        XCTAssertEqual(decls.count, 13)
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 12)
+        XCTAssertEqual(recorded.count, 13)
         for index in 0..<6 {
             XCTAssertTrue((decls[index] as AnyObject).isEqual(recorded[index]), "declaration \(index) changed")
         }
@@ -533,7 +547,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual((listParameters["properties"] as? [String: Any])?.count, 0)
         XCTAssertNil(listParameters["required"])
         XCTAssertEqual(listParameters["additionalProperties"] as? Bool, false)
-        let request = try XCTUnwrap(decls.last)
+        let request = try XCTUnwrap(decls.count > 11 ? decls[11] : nil)
         XCTAssertEqual(request["name"] as? String, "request_partner")
         XCTAssertEqual(request["type"] as? String, "function")
         let parameters = try XCTUnwrap(request["parameters"] as? [String: Any])
@@ -547,7 +561,7 @@ final class AgentPartnerToolTests: XCTestCase {
     }
 
     func testPARTNER_G02_TheDescriptionSaysSimulated() throws {
-        let request = try XCTUnwrap(declarations().last)
+        let request = try XCTUnwrap(declarations().count > 11 ? declarations()[11] : nil)
         let description = try XCTUnwrap(request["description"] as? String).lowercased()
         XCTAssertTrue(description.contains("simulated"))
     }
@@ -1381,10 +1395,10 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places", "get_travel_time",
                         "check_day_plan", "show_day_plan", "get_budget_left", "record_spend",
-                        "get_partners", "request_partner"])
+                        "get_partners", "request_partner", "cancel_booking"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 12)
+        XCTAssertEqual(recorded.count, 13)
         XCTAssertTrue((decls as AnyObject).isEqual(recorded), "the whole array equals the fixture")
         let list = try XCTUnwrap(decls.count > 10 ? decls[10] : nil)
         XCTAssertEqual(list["description"] as? String, Text.listDescription)
@@ -2231,8 +2245,8 @@ final class AgentPartnerToolTests: XCTestCase {
 
     func testGROUP_GT5_TheDeclarationsAreTwelveAndTheFieldsDescriptionTeachesRows() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 12)
-        XCTAssertEqual(Array(decls.compactMap { $0["name"] as? String }.suffix(2)), ["get_partners", "request_partner"])
+        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(Array(decls.compactMap { $0["name"] as? String }.suffix(3)), ["get_partners", "request_partner", "cancel_booking"])
         let request = try XCTUnwrap(decls.count > 11 ? decls[11] : nil)
         let parameters = try XCTUnwrap(request["parameters"] as? [String: Any])
         let properties = try XCTUnwrap(parameters["properties"] as? [String: Any])
@@ -2541,11 +2555,11 @@ final class AgentPartnerToolTests: XCTestCase {
 
     func testDELIVERY_T05_TheRemovedDeliveryToolsAreUnknownAndTheDeclarationsAreTwelve() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 12)
+        XCTAssertEqual(decls.count, 13)
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places",
                         "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend",
-                        "get_partners", "request_partner"])
+                        "get_partners", "request_partner", "cancel_booking"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let fixture = try XCTUnwrap(try? JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
         XCTAssertTrue((decls as AnyObject).isEqual(fixture), "the declarations equal Fixtures/tools.json")
@@ -2557,5 +2571,328 @@ final class AgentPartnerToolTests: XCTestCase {
             XCTAssertEqual(outcome.status, "rejected", name)
             XCTAssertEqual(outcome.message, unknown.message, "\(name) is rejected as a name that never existed")
         }
+    }
+
+    // MARK: FULLHAND T04-T05 the hand path shares the seam (SPEC-FULLHAND-001, card t101)
+
+    /// What the card shows of its rows, as one text each: key, kind and label.
+    private func shape(of fields: AgentFieldCard) -> [String] {
+        fields.card.fields.map { "\($0.key)|\($0.kind)|\($0.label)" }
+    }
+
+    /// The hand path's load: the directory is asked for symbols.
+    private func loadHand(_ rig: PartnerRig) async -> [PartnerSpec] {
+        await rig.tools.loadPartners(flow: ConnectionLog.beginFlow(), symbols: true)
+    }
+
+    /// Every request the stub saw went to the directory or to one of `routes`: none went to the model.
+    private func assertOnlyPartnerRoutes(_ rig: PartnerRig, routes: Set<String>, file: StaticString = #filePath, line: UInt = #line) {
+        let paths = rig.partner.requests.map { $0.url?.path ?? "" }
+        XCTAssertEqual(Set(paths).subtracting(Set(["/partners"]).union(routes)), [], "only partner paths: \(paths)", file: file, line: line)
+    }
+
+    func testFULLHAND_T04_TheHandPathLoadsThePartnersAndBuildsTheModelPathsCardWithOnlyTheFirstFieldSeeded() async throws {
+        // Each case runs on its own: a case that fails to get its objects (an unwrap) ends only itself.
+        let cases: [(String, () async throws -> Void)] = [
+            ("a", { [self] in try await handCaseTextFirstField() }),
+            ("b", { [self] in try await handCasePartnerResolvedPlace() }),
+            ("c", { [self] in try await handCaseFailedForm() }),
+            ("d", { [self] in try await handCaseNoProxy() }),
+            ("e", { [self] in try await handCaseRequestShapeAndOldWorker() }),
+            ("f", { [self] in try await handCaseSixKeyAnswer() }),
+        ]
+        for (name, run) in cases {
+            do { try await run() } catch { print("T04 case (\(name)) stopped: \(error)") }
+        }
+    }
+
+    /// (a) a text first field: the hand card is the model path's card, with the name as the one seed, inferred.
+    private func handCaseTextFirstField() async throws {
+        let rig = makeRig()
+        let specs = await loadHand(rig)
+        XCTAssertEqual(specs.count, 1, "(a)")
+        let spec = try XCTUnwrap(specs.first)
+        XCTAssertEqual(spec.entry.name, "Example Tables", "(a)")
+        XCTAssertEqual(rig.partner.requests.count, 2, "(a) the directory and one form")
+        assertOnlyPartnerRoutes(rig, routes: ["/booking"])
+        let seeds = PartnerHand.seeds(for: spec, placeName: "Pasta Palace")
+        let hand = try XCTUnwrap(rig.tools.partnerCard(spec, seeds: seeds, source: .inferred))
+        let handFields = try model(hand)
+        let modelRig = makeRig()
+        let modelCard = await modelRig.card(.init(restaurant: nil, party: nil, start: nil, name: nil))
+        XCTAssertEqual(shape(of: handFields), shape(of: try model(try XCTUnwrap(modelCard))), "(a) one card builder: the same keys, kinds and labels")
+        XCTAssertEqual(handFields.values.text("restaurant"), "Pasta Palace", "(a)")
+        XCTAssertEqual(handFields.source(of: "restaurant"), .inferred, "(a)")
+        for key in ["party_size", "start", "name", "note"] {
+            XCTAssertEqual(handFields.source(of: key), .blank, "(a) \(key)")
+            XCTAssertNil(handFields.values.entry(key)?.value, "(a) \(key)")
+        }
+        XCTAssertFalse(hand.canConfirm, "(a)")
+    }
+
+    /// (b) a first field the partner resolves itself: the name is the search seed and never a value.
+    private func handCasePartnerResolvedPlace() async throws {
+        let stub = StubPartner()
+        stub.shapes = [.placeTables()]
+        let rig = makeRig(partner: stub)
+        let specs = await loadHand(rig)
+        let spec = try XCTUnwrap(specs.first)
+        let card = try XCTUnwrap(rig.tools.partnerCard(spec, seeds: PartnerHand.seeds(for: spec, placeName: "Pasta Palace"), source: .inferred))
+        let fields = try model(card)
+        XCTAssertEqual(fields.field("restaurant")?.searchSeed, "Pasta Palace", "(b)")
+        XCTAssertNil(fields.values.entry("restaurant")?.value, "(b)")
+        XCTAssertEqual(fields.source(of: "restaurant"), .blank, "(b)")
+        XCTAssertFalse(card.canConfirm, "(b)")
+    }
+
+    /// (c) a form that fails: that partner is not loaded.
+    private func handCaseFailedForm() async throws {
+        let stub = StubPartner()
+        stub.shapes = [.tables(), .parcels()]
+        stub.brokenRoutes = ["/parcels"]
+        let rig = makeRig(partner: stub)
+        let loaded = await loadHand(rig)
+        XCTAssertEqual(loaded.map(\.entry.name), ["Example Tables"], "(c)")
+        XCTAssertEqual(stub.requests.count, 3, "(c) the directory and one form for each of the two entries")
+        assertOnlyPartnerRoutes(rig, routes: ["/booking", "/parcels"])
+    }
+
+    /// (d) no proxy: nothing is loaded and nothing is sent.
+    private func handCaseNoProxy() async throws {
+        let rig = makeRig(config: PlaceSentinel.unconfigured)
+        let loaded = await loadHand(rig)
+        XCTAssertEqual(loaded, [], "(d)")
+        XCTAssertEqual(rig.partner.requests.count, 0, "(d)")
+    }
+
+    /// (e) the hand path asks `{"op":"list","symbols":true}`, the model path still asks `{"op":"list"}` and sees no symbol, and a
+    /// Worker that does not know `symbols` gives no partner.
+    private func handCaseRequestShapeAndOldWorker() async throws {
+        let stub = StubPartner()
+        var announcing = StubPartner.Shape.tables()
+        announcing.symbol = "fork.knife"
+        stub.shapes = [announcing]
+        let rig = makeRig(partner: stub)
+        _ = await loadHand(rig)
+        let first = try XCTUnwrap(rig.partner.body(0))
+        XCTAssertEqual(Set(first.keys), ["op", "symbols"], "(e)")
+        XCTAssertEqual(first["op"] as? String, "list", "(e)")
+        let text = String(decoding: try XCTUnwrap(rig.partner.requests.first?.httpBody), as: UTF8.self)
+        XCTAssertEqual(text, #"{"op":"list","symbols":true}"#, "(e) the JSON true, not a number")
+        let listing = try await listedJSON(rig)
+        let listBodies = rig.partner.bodies(op: "list")
+        XCTAssertEqual(listBodies.count, 2, "(e)")
+        XCTAssertTrue(NSDictionary(dictionary: try XCTUnwrap(listBodies.last)).isEqual(to: ["op": "list"]), "(e) the model path asks the plain directory")
+        let listed = try XCTUnwrap(listing["partners"] as? [[String: Any]])
+        XCTAssertEqual(listed.count, 1, "(e)")
+        XCTAssertFalse(listed.contains { $0.keys.contains("symbol") }, "(e) the model never sees a symbol")
+
+        let old = StubPartner()
+        old.mode = .status(400, #"{"error":"unknown_field"}"#)
+        let oldRig = makeRig(partner: old)
+        let refused = await loadHand(oldRig)
+        XCTAssertEqual(refused, [], "(e) a Worker not yet redeployed gives no partner")
+    }
+
+    /// (f) a six-key answer survives the hand loader, an ill-formed symbol is dropped with its entry kept, and nothing of it is logged.
+    private func handCaseSixKeyAnswer() async throws {
+        let stub = StubPartner()
+        var well = StubPartner.Shape.tables()
+        well.symbol = "fork.knife"
+        var ill = StubPartner.Shape.parcels()
+        ill.symbol = "Fork Knife"
+        stub.shapes = [well, ill]
+        let rig = makeRig(partner: stub)
+        let loaded = await loadHand(rig)
+        XCTAssertEqual(loaded.count, 2, "(f)")
+        XCTAssertEqual(loaded.map(\.entry.symbol), ["fork.knife", nil], "(f)")
+        XCTAssertEqual(loaded.map { PartnerHand.buttonSymbol(for: $0.entry) }, ["fork.knife", "circle"], "(f)")
+        let lines = await rig.summaries()
+        XCTAssertEqual(lines, ["Partners requested", "Partners received", "Example Tables: Fields requested", "Example Tables: Fields received",
+                               "Example Parcels: Fields requested", "Example Parcels: Fields received"], "(f)")
+        XCTAssertFalse(lines.contains { $0.contains("symbol") }, "(f)")
+    }
+
+    func testFULLHAND_T05_AHandCardConfirmSendsOneSubmitAndWritesTheEntryTheRecordAndTheEstimate() async throws {
+        let branches = PartnerPlaceFixture.branches
+        let stub = StubPartner()
+        stub.shapes = [.placeTables(candidates: { _, _ in branches })]
+        let budget = BudgetToolPartner()
+        let rig = makeRig(partner: stub, budget: budget)
+        let specs = await loadHand(rig)
+        let spec = try XCTUnwrap(specs.first)
+        let card = try XCTUnwrap(rig.tools.partnerCard(spec, seeds: PartnerHand.seeds(for: spec, placeName: "Pasta Palace"), source: .inferred))
+        let fields = try model(card)
+        XCTAssertFalse(card.canConfirm)
+        try await typeAndPause(fields, "restaurant", "Pasta")
+        XCTAssertEqual(listedPlaces(fields, "restaurant"), branches)
+        XCTAssertTrue(fields.choosePlace("restaurant", branches[1]))
+        XCTAssertTrue(fields.setText("party_size", "2"))
+        XCTAssertTrue(fields.chooseTime("start", TestClock.date(BookingFixture.start)))
+        XCTAssertTrue(fields.setText("name", "Sam"))
+        XCTAssertTrue(card.canConfirm)
+        let resolution = try await confirm(card)
+
+        XCTAssertEqual(card.mark, .confirmed)
+        XCTAssertEqual(resolution.status, "applied")
+        let submits = stub.bodies(op: "submit")
+        XCTAssertEqual(submits.count, 1, "exactly one submit")
+        let values = try XCTUnwrap(submits.first?["values"] as? [String: Any])
+        XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
+        XCTAssertEqual(values["restaurant"] as? String, branches[1].address)
+        XCTAssertEqual(rig.store.activities.count, 1)
+        let entry = try XCTUnwrap(rig.store.activities.first)
+        XCTAssertEqual(entry.title, "Example Tables: Booking time (Simulated)")
+        XCTAssertEqual(entry.location, branches[1])
+        XCTAssertNotNil(PartnerRecords.shared.record(forActivity: entry.id), "one record for the entry")
+        XCTAssertEqual(budget.requests.count, 1, "one estimated spend")
+        assertOnlyPartnerRoutes(rig, routes: ["/booking"])
+    }
+
+    // MARK: FULLHAND T09 the cancel tool (SPEC-FULLHAND-001, card t101)
+
+    private enum CancelText {
+        static let description = "Cancel the simulated partner request, such as a table booking, that made an existing schedule item, and remove that item from the schedule when the partner cancels it. Call it only after the user chose in the chat to cancel it. The user confirms on a card before anything is sent. The partner is simulated: always call it simulated."
+        static let idDescription = "Event id returned by list_activities."
+        static let nothingToCancel = "That event was not made by a simulated partner request, so there is nothing to cancel. Tell the user."
+        static let unavailable = "Tell the user cancelling is not available right now. Do not call cancel_booking again."
+        static let cancelled = "The simulated partner cancelled the request and the item was removed from the schedule. Tell the user. If the user already chose what to do instead, do that next."
+        static let declined = "The simulated partner did not cancel the request. Nothing was changed. Tell the user and ask what they want to do next."
+        static let failed = "The cancel request could not be made. Nothing was changed. Tell the user."
+        static let findEvent = "Call list_activities to find the event id, or ask the user which event they mean, then call cancel_booking again."
+        static let notFound = "That event no longer exists. Tell the user and ask what to do next."
+        static let notFoundNotice = "That event changed or no longer exists. Nothing was changed."
+        static let nothingCancelled = "Nothing was cancelled."
+    }
+
+    /// An entry a partner request made and its record, written to the shared records as the Confirm of a partner card writes them.
+    private func bookedEntry(_ rig: PartnerRig, record: Bool = true) -> ActivityBlock {
+        let start = TestClock.date(BookingFixture.start)
+        let entry = ActivityBlock(title: "Example Tables: Booking time (Simulated)", location: BookingFixture.place,
+                                  startDate: start, endDate: start.addingTimeInterval(3600))
+        rig.store.activities.append(entry)
+        if record {
+            PartnerRecords.shared.add(PartnerRecord(activityID: entry.id, partnerID: "booking", partnerName: "Example Tables", route: "/booking",
+                                                    requestID: UUID().uuidString, estimateCents: 6000, quantityHint: 2, spendRequestID: nil,
+                                                    switchStarted: false))
+            addTeardownBlock { _ = PartnerRecords.shared.remove(activityID: entry.id) }
+        }
+        return entry
+    }
+
+    private func cancelCard(_ rig: PartnerRig, _ entry: ActivityBlock) throws -> AgentCard {
+        try XCTUnwrap(rig.call("cancel_booking", ["id": entry.id.uuidString]).card)
+    }
+
+    private func cancelPaths(_ rig: PartnerRig) -> [String] {
+        rig.partner.requests.compactMap { $0.url?.path }.filter { $0.hasSuffix("/cancel") }
+    }
+
+    func testFULLHAND_T09_CancelBookingIsTheThirteenthToolAndItsConfirmRunsTheSameCancel() async throws {
+        let decls = declarations()
+        XCTAssertEqual(decls.count, 13)
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
+        XCTAssertEqual(fixture.count, 13)
+        XCTAssertTrue((decls as AnyObject).isEqual(fixture), "the declarations equal Fixtures/tools.json")
+        let last = try XCTUnwrap(decls.last)
+        XCTAssertEqual(last["name"] as? String, "cancel_booking", "appended last")
+        XCTAssertEqual(last["type"] as? String, "function")
+        XCTAssertEqual(last["description"] as? String, CancelText.description)
+        let parameters = try XCTUnwrap(last["parameters"] as? [String: Any])
+        XCTAssertEqual(parameters["required"] as? [String], ["id"])
+        XCTAssertEqual(parameters["additionalProperties"] as? Bool, false)
+        let properties = try XCTUnwrap(parameters["properties"] as? [String: Any])
+        XCTAssertEqual(Set(properties.keys), ["id"])
+        XCTAssertEqual((properties["id"] as? [String: Any])?["type"] as? String, "string")
+        XCTAssertEqual((properties["id"] as? [String: Any])?["description"] as? String, CancelText.idDescription)
+        XCTAssertEqual(decls.compactMap { $0["name"] as? String }.suffix(2), ["request_partner", "cancel_booking"])
+
+        // The card, and Confirm answering cancelled.
+        let stub = StubPartner()
+        stub.cancelAnswer = "cancelled"
+        let rig = makeRig(partner: stub)
+        let entry = bookedEntry(rig)
+        let record = try XCTUnwrap(PartnerRecords.shared.record(forActivity: entry.id))
+        let card = try cancelCard(rig, entry)
+        XCTAssertEqual(card.lines, ["Cancel booking", "Example Tables: Booking time (Simulated)", "Wed, Oct 28, 7:00 PM - 8:00 PM",
+                                    "Example Tables - Simulated"])
+        XCTAssertEqual(stub.requests.count, 0, "a card sends nothing")
+        let done = try await confirm(card)
+        XCTAssertEqual(Set(try XCTUnwrap(done.json).keys), ["status", "id", "partner", "simulated", "message"])
+        XCTAssertEqual(done.status, "cancelled")
+        XCTAssertEqual(done.json?["id"] as? String, entry.id.uuidString)
+        XCTAssertEqual(done.json?["partner"] as? String, "Example Tables")
+        XCTAssertEqual(done.json?["simulated"] as? Bool, true)
+        XCTAssertEqual(done.message, CancelText.cancelled)
+        XCTAssertNil(done.notice)
+        XCTAssertEqual(card.mark, .confirmed)
+        XCTAssertNil(rig.store.activity(id: entry.id), "the entry is gone")
+        XCTAssertNil(PartnerRecords.shared.record(forActivity: entry.id), "the record is gone")
+        XCTAssertEqual(cancelPaths(rig), ["/booking/cancel"], "exactly one cancel")
+        XCTAssertEqual(stub.requests.count, 1)
+        let sent = try XCTUnwrap(stub.body(0))
+        XCTAssertTrue(NSDictionary(dictionary: sent).isEqual(to: ["op": "cancel", "request_id": record.requestID]))
+
+        // Declined.
+        let declinedStub = StubPartner()
+        declinedStub.cancelAnswer = "declined"
+        let declinedRig = makeRig(partner: declinedStub)
+        let kept = bookedEntry(declinedRig)
+        let declinedCard = try cancelCard(declinedRig, kept)
+        let declined = try await confirm(declinedCard)
+        XCTAssertEqual(Set(try XCTUnwrap(declined.json).keys), ["status", "partner", "simulated", "message"])
+        XCTAssertEqual(declined.status, "declined")
+        XCTAssertEqual(declined.message, CancelText.declined)
+        XCTAssertEqual(declined.notice, CancelText.nothingCancelled)
+        XCTAssertEqual(declinedCard.mark, .notApplied)
+        XCTAssertNotNil(declinedRig.store.activity(id: kept.id))
+        XCTAssertNotNil(PartnerRecords.shared.record(forActivity: kept.id))
+
+        // Unavailable: the partner fails after the card was built.
+        let failingStub = StubPartner()
+        failingStub.cancelAnswer = "cancelled"
+        let failingRig = makeRig(partner: failingStub)
+        let stays = bookedEntry(failingRig)
+        let failingCard = try cancelCard(failingRig, stays)
+        failingStub.mode = .status(500, "oops")
+        let failed = try await confirm(failingCard)
+        XCTAssertEqual(Set(try XCTUnwrap(failed.json).keys), ["status", "partner", "simulated", "message"])
+        XCTAssertEqual(failed.status, "unavailable")
+        XCTAssertEqual(failed.json?["partner"] as? String, "Example Tables")
+        XCTAssertEqual(failed.json?["simulated"] as? Bool, true)
+        XCTAssertEqual(failed.message, CancelText.failed)
+        XCTAssertEqual(failed.notice, CancelText.nothingCancelled)
+        XCTAssertEqual(failingCard.mark, .notApplied)
+        XCTAssertNotNil(failingRig.store.activity(id: stays.id))
+        XCTAssertNotNil(PartnerRecords.shared.record(forActivity: stays.id))
+
+        // The record vanished between the card and Confirm: nothing is sent.
+        let vanishStub = StubPartner()
+        vanishStub.cancelAnswer = "cancelled"
+        let vanishRig = makeRig(partner: vanishStub)
+        let vanishing = bookedEntry(vanishRig)
+        let vanishCard = try cancelCard(vanishRig, vanishing)
+        PartnerRecords.shared.remove(activityID: vanishing.id)
+        let vanished = try await confirm(vanishCard)
+        XCTAssertEqual(vanished.status, "not_found")
+        XCTAssertEqual(vanished.message, CancelText.notFound)
+        XCTAssertEqual(vanished.notice, CancelText.notFoundNotice)
+        XCTAssertEqual(vanishCard.mark, .notApplied)
+        XCTAssertEqual(cancelPaths(vanishRig), [], "no cancel request was sent")
+        XCTAssertEqual(vanishStub.requests.count, 0)
+
+        // The refusals.
+        let refuseRig = makeRig()
+        let plain = bookedEntry(refuseRig, record: false)
+        assertRefused(refuseRig.call("cancel_booking", ["id": plain.id.uuidString]), CancelText.nothingToCancel, "an entry with no partner record")
+        assertRefused(refuseRig.call("cancel_booking", ["id": UUID().uuidString]), CancelText.findEvent, "an id that names no entry")
+        assertRefused(refuseRig.call("cancel_booking", [:]), CancelText.findEvent, "no id")
+        XCTAssertEqual(refuseRig.partner.requests.count, 0)
+
+        let bareRig = makeRig(config: PlaceSentinel.unconfigured)
+        assertRefused(bareRig.call("cancel_booking", ["id": UUID().uuidString]), CancelText.unavailable, "no proxy")
+        assertRefused(bareRig.tools.handle(name: "cancel_booking", arguments: "not json"), CancelText.unavailable, "before any argument is read")
+        XCTAssertEqual(bareRig.partner.requests.count, 0)
     }
 }

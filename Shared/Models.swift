@@ -1098,6 +1098,8 @@ struct NearbyPlace: Identifiable {
     let phone: String?
     /// The Google Maps page address of the place; nil when Google gives none.
     let url: String?
+    /// At most 3 photo references in Google's order; empty unless the search asked for photos.
+    var photos: [NearbyPhoto] = []
 
     /// "230m" / "1.4km"
     var distanceText: String? {
