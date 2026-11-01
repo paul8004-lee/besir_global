@@ -354,9 +354,6 @@ indirect enum AgentFieldRow {
     /// The key of one member of one row of a group: `group.row.member`, the row counted from 1.
     static func rowKey(_ group: String, _ row: Int, _ member: String) -> String { "\(group).\(row).\(member)" }
 
-    /// The key of a group's control row, the one chip that adds a row.
-    static func controlKey(_ group: String) -> String { "\(group).controls" }
-
     /// The bundle of closures the edit card view calls. A row is found by its id and the change is the model's own.
     var actions: EditCardActions {
         EditCardActions(
