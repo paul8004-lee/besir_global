@@ -1248,7 +1248,7 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertFalse(inferred.isReady)
         XCTAssertEqual(try XCTUnwrap(inferred.field("venue")).searchSeed, "Tartine")
 
-        // A place seed on a marked row is dropped: only a tapped candidate is a value.
+        // A place seed on a marked row is never its value; its text becomes the row's search seed (SPEC-CARDPLACE-001).
         let dropped = makeLookupCard([.field(venueSpec, value: .place(home.place), source: .stated)], lookups: lookups)
         XCTAssertNotNil(dropped.field("venue"), "positive: the card was built")
         XCTAssertNil(dropped.values.entry("venue")?.value)
@@ -1257,6 +1257,45 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertNil(try XCTUnwrap(dropped.field("venue")).chosen)
         XCTAssertFalse(dropped.isReady)
         XCTAssertEqual(lookups.calls, [])
+    }
+
+    func testCARDPLACE_K01_APlaceSeedOnAPartnerResolvedRowIsItsSearchSeedNeverItsValue() async throws {
+        let lookups = LookupGate()
+        func seeded(_ place: Place) -> AgentFieldCard {
+            makeLookupCard([.field(venueSpec, value: .place(place), source: .stated)], lookups: lookups)
+        }
+        // The seed is the name, a comma and the address, each cleaned of hidden characters and trimmed; a blank half is left out.
+        let cases: [(Place, String)] = [
+            (place("Tartine Bakery", "600 Guerrero Street", 37.7614, -122.4241), "Tartine Bakery, 600 Guerrero Street"),
+            (place("Tartine", "", 37.7614, -122.4241), "Tartine"),
+            (place("Tar\u{200B}tine", "600 Guerrero Street", 37.7614, -122.4241), "Tartine, 600 Guerrero Street"),
+            (place(" Tartine ", "600 Guerrero Street\u{2028}", 37.7614, -122.4241), "Tartine, 600 Guerrero Street"),
+            (place("\u{200B}", "600 Guerrero Street", 37.7614, -122.4241), "600 Guerrero Street"),
+        ]
+        for (found, seed) in cases {
+            let model = seeded(found)
+            let row = try XCTUnwrap(model.field("venue"), seed)
+            XCTAssertEqual(row.searchSeed, seed, "seed of \(found)")
+            XCTAssertTrue(row.startsOpen, seed)
+            XCTAssertNil(model.values.entry("venue")?.value, "\(seed): never the value")
+            XCTAssertNil(row.chosen, seed)
+            XCTAssertFalse(model.isReady, seed)
+            XCTAssertEqual(model.lines, ["Book a table", "Venue:"], seed)
+        }
+        // Nothing is left of the seed: the row stays closed, as with no seed.
+        let empty = seeded(place("\u{200B} ", "\u{2029}", 37.7614, -122.4241))
+        let emptyRow = try XCTUnwrap(empty.field("venue"))
+        XCTAssertNil(emptyRow.searchSeed)
+        XCTAssertFalse(emptyRow.startsOpen)
+        XCTAssertNil(empty.values.entry("venue")?.value)
+        // Building a card asks nobody.
+        await settle(0.55)
+        XCTAssertEqual(lookups.calls, [])
+        // Controls: a stated text still seeds as it did, and the same place on a row the partner does not resolve is its value.
+        let control = place("Tartine Bakery", "600 Guerrero Street", 37.7614, -122.4241)
+        XCTAssertEqual(try XCTUnwrap(makeLookupCard([.field(venueSpec, value: .text("Domo"), source: .stated)], lookups: lookups).field("venue")).searchSeed, "Domo")
+        let plain = makeLookupCard([.field(originSpec, value: .place(control), source: .stated)], lookups: lookups)
+        XCTAssertEqual(plain.values.place("origin"), control)
     }
 
     func testPLACE_M04_OnlyACurrentCandidateCanBeTappedAndAChosenValueStaysWhenTheListChanges() async throws {

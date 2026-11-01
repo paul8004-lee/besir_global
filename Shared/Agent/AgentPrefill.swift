@@ -16,7 +16,7 @@ enum AgentPrefill {
     /// key, a member of a row of a repeatable group under its row key `group.row.member`. `userLines` are the lines the user
     /// wrote in this chat; `now` and `calendar` (with its zone) decide what a time means.
     static func values(fieldsText: String?, fields: [PartnerField], userLines: [String], now: Date,
-                       calendar: Calendar) -> [String: AgentFieldValue] {
+                       calendar: Calendar, place: (String) -> Place? = { _ in nil }) -> [String: AgentFieldValue] {
         guard let fieldsText, let data = fieldsText.data(using: .utf8),
               let list = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return [:] }
         var kinds: [String: PartnerFieldKind] = [:]
@@ -41,6 +41,17 @@ enum AgentPrefill {
         var claimed: Set<String> = []
         var kept: [String: AgentFieldValue] = [:]
         for element in plain.prefix(maxEntries) {
+            // A place entry (SPEC-CARDPLACE-001): a string `key` and a string `place_id`, whatever other members it holds; its
+            // value and quote are not read. It is checked before the three-string rule below. It claims its key only on a
+            // top-level field of kind place, where the first entry for the key is the only one read; an unknown, stale or
+            // malformed handle leaves the field blank. On any other key it is skipped alone and claims nothing. A `place_id`
+            // that is not a string makes no place entry, and the element is read by the quote rule as if the member were absent.
+            if let entry = element as? [String: Any], let key = entry["key"] as? String, let handle = entry["place_id"] as? String {
+                guard kinds[key] == .place, !claimed.contains(key) else { continue }
+                claimed.insert(key)
+                if let found = place(handle) { kept[key] = .place(found) }
+                continue
+            }
             // An entry that is not an object of three strings is skipped alone and claims no key.
             guard let entry = element as? [String: Any], let key = entry["key"] as? String, let value = entry["value"] as? String,
                   let quote = entry["quote"] as? String else { continue }
@@ -51,6 +62,9 @@ enum AgentPrefill {
             if let read = read(value, kind: kind, quote: cleanQuote, now: now, calendar: calendar) { kept[key] = read }
         }
         for element in rowAddressed.prefix(rowCap(held: rowAddressed.count, groups: Array(groups.values))) {
+            // A place entry never fills a member of a group row: an element whose `place_id` is a string is skipped alone,
+            // before anything is read or claimed, whatever other members it holds (SPEC-CARDPLACE-001 REQ-003).
+            if let object = element as? [String: Any], object["place_id"] is String { continue }
             // An entry that is not an object of three strings is skipped alone and claims no key.
             guard let entry = element as? [String: Any], let key = entry["key"] as? String, let value = entry["value"] as? String,
                   let quote = entry["quote"] as? String else { continue }

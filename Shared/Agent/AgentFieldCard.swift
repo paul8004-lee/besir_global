@@ -774,9 +774,15 @@ indirect enum AgentFieldRow {
         var kept: AgentFieldValue?
         var seed: String?
         switch (spec.kind, value) {
-        case (.place, .place?) where spec.partnerLookup:
-            // A partner-resolved row holds only a candidate the user tapped: no seeded place is a value.
+        case (.place, .place(let place)?) where spec.partnerLookup:
+            // A partner-resolved row holds only a candidate the user tapped: no seeded place is a value. The place's text only
+            // seeds the row's search: its name, then its address when there is one, each cleaned of hidden characters
+            // (SPEC-CARDPLACE-001 REQ-006).
             kept = nil
+            let name = AgentToolbox.sanitized(place.name)
+            let address = AgentToolbox.sanitized(place.address)
+            let text = name.isEmpty ? address : (address.isEmpty ? name : "\(name), \(address)")
+            seed = text.isEmpty ? nil : text
         case (.place, .text(let text)?) where spec.partnerLookup:
             // The stated text only seeds the row's search; it is never the value, so Confirm cannot pass on unresolved text.
             seed = text.trimmingCharacters(in: .whitespaces).isEmpty ? nil : text
