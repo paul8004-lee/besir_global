@@ -361,7 +361,7 @@ final class PartnerRig {
     let position = DevicePosition()
 
     init(config: AppConfig = PlaceSentinel.config, partner: StubPartner = StubPartner(), failingLog: Bool = false,
-         budget: BudgetToolPartner? = nil, places: PlacesTransportStub? = nil) {
+         budget: BudgetToolPartner? = nil, places: PlacesTransportStub? = nil, searchOrigin: (() -> Place?)? = nil) {
         let store = EmptyStore.make()
         store.config = AppConfig()
         let clock = MutableClock()
@@ -383,6 +383,7 @@ final class PartnerRig {
         }
         let toolbox = AgentToolbox(store: store, now: { clock.now }, timeZone: { clock.zone },
                                    deviceOrigin: { reads.count += 1; return position.place },
+                                   searchOrigin: searchOrigin,
                                    places: search,
                                    partners: { PartnerClient(config: box.config, send: partner.send, connections: log) },
                                    budget: budgetClient)
@@ -475,8 +476,9 @@ final class PartnerRig {
 @MainActor
 final class AgentPartnerToolTests: XCTestCase {
     private func makeRig(config: AppConfig = PlaceSentinel.config, partner: StubPartner = StubPartner(),
-                         budget: BudgetToolPartner? = nil, places: PlacesTransportStub? = nil) -> PartnerRig {
-        let rig = PartnerRig(config: config, partner: partner, budget: budget, places: places)
+                         budget: BudgetToolPartner? = nil, places: PlacesTransportStub? = nil,
+                         searchOrigin: (() -> Place?)? = nil) -> PartnerRig {
+        let rig = PartnerRig(config: config, partner: partner, budget: budget, places: places, searchOrigin: searchOrigin)
         let folder = rig.folder
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         return rig
@@ -1808,6 +1810,63 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(bareLookups.count, 1)
         XCTAssertEqual(Set(try XCTUnwrap(bareLookups.first).keys), ["op", "field", "text"], "no position, no near key")
         XCTAssertTrue(places.requests.isEmpty)
+    }
+
+    func testTRAVELLEGS_T09_ThePartnerCardsPlaceSearchBiasFollowsTheSearchOriginNotTheDeviceOrigin() async throws {
+        // The search origin (37.7749, -122.4194) and the device position (the sentinel, 37.70, -122.30) differ on purpose.
+        let searchPlace = PlaceFixture.device
+        XCTAssertNotEqual(searchPlace, ToolFixture.device)
+
+        // The parcels card has no schedule row, so the device origin is not read at all; the bias is at the search origin.
+        let places = PlacesTransportStub.answering(with: PlaceFixture.data("places-search-three"))
+        let parcels = StubPartner()
+        parcels.shapes = [.parcels()]
+        let rig = makeRig(partner: parcels, places: places, searchOrigin: { searchPlace })
+        let fields = try model(try await built(rig, partner: "parcels"))
+        try await typeAndPause(fields, "where", "Tartine")
+        XCTAssertEqual(places.callCount, 1)
+        let center = PlaceBody.biasCenter(PlaceBody.json(places.requests.first))
+        XCTAssertNotNil(center, "positive control: the search carried a bias")
+        XCTAssertEqual(center?.latitude ?? 0, 37.7749, accuracy: 1e-9)
+        XCTAssertEqual(center?.longitude ?? 0, -122.4194, accuracy: 1e-9)
+        XCTAssertEqual(rig.reads.count, 0, "the device origin was not read")
+        for request in parcels.requests {
+            XCTAssertFalse(requestText(request).contains("37.7749"), "the search origin never reaches the partner")
+        }
+
+        // Compatibility: a toolbox built without a search origin biases around the device origin, as before.
+        let oldPlaces = PlacesTransportStub.answering(with: PlaceFixture.data("places-search-three"))
+        let oldParcels = StubPartner()
+        oldParcels.shapes = [.parcels()]
+        let old = makeRig(partner: oldParcels, places: oldPlaces)
+        let oldFields = try model(try await built(old, partner: "parcels"))
+        try await typeAndPause(oldFields, "where", "Tartine")
+        let oldCenter = PlaceBody.biasCenter(PlaceBody.json(oldPlaces.requests.first))
+        XCTAssertEqual(oldCenter?.latitude ?? 0, 37.70, accuracy: 1e-9)
+        XCTAssertEqual(oldCenter?.longitude ?? 0, -122.30, accuracy: 1e-9)
+        XCTAssertEqual(old.reads.count, 1, "the device origin was read when the search fired")
+
+        // The trip consumers keep the device origin: the schedule row's `Leave from` seed and the partner's `near`.
+        let branches = PartnerPlaceFixture.branches
+        let tables = StubPartner()
+        tables.shapes = [.placeTables(candidates: { _, _ in branches })]
+        let trip = makeRig(partner: tables, places: PlacesTransportStub.answering(with: PlaceFixture.data("places-search-three")),
+                           searchOrigin: { searchPlace })
+        let tripFields = try model(try await built(trip, .init(restaurant: nil)))
+        XCTAssertEqual(trip.reads.count, 1, "the card build read the device origin once, for the schedule row")
+        XCTAssertTrue(tripFields.chooseOption(AgentPartner.cardTravelKey, AgentFieldSpec.onValue))
+        XCTAssertEqual(tripFields.values.entry(AgentPartner.cardFromKey)?.value, .place(ToolFixture.device),
+                       "Leave from starts at the device origin, not at the search origin")
+        try await typeAndPause(tripFields, "restaurant", "Pasta")
+        let lookup = try XCTUnwrap(tables.bodies(op: "lookup").first)
+        let near = try XCTUnwrap(lookup["near"] as? [String: Any])
+        XCTAssertEqual(near["latitude"] as? Double ?? 0, 37.70, accuracy: 1e-9)
+        XCTAssertEqual(near["longitude"] as? Double ?? 0, -122.30, accuracy: 1e-9)
+        for request in tables.requests {
+            let text = requestText(request)
+            XCTAssertFalse(text.contains("37.77"), text)
+            XCTAssertFalse(text.contains("-122.42"), text)
+        }
     }
 
     func testPLACE_T02_ConfirmingTakesTheLocationFromTheFirstMarkedFieldOnly() async throws {

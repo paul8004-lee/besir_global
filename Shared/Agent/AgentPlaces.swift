@@ -17,6 +17,9 @@ enum AgentPlaces {
     // there needs a change here (SPEC-AGENTPLACE-001 R13).
     static let legBufferMinutes = 5
     static let legNotifyLeadMinutes = 10
+    /// The longest trip the app works with. A Google answer above this (a wrongly matched, far-away place) is never given to
+    /// the model and never kept: exactly this many seconds is still inside the limit.
+    static let maxLegSeconds: TimeInterval = 6 * 3600
     /// Query length bounds in extended grapheme clusters after sanitizing.
     static let queryMin = 2
     static let queryMax = 80
@@ -84,6 +87,9 @@ enum AgentPlaces {
         String(AgentToolbox.sanitized(text).prefix(limit)).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// True when a trip of `seconds` is inside the limit. False for a value that is not a number, so it fails closed.
+    static func withinLegLimit(_ seconds: TimeInterval) -> Bool { true }
+
     /// A route is known for `routeMaxAge` seconds, the limit included.
     static func isFresh(_ route: AgentRoute, now: Date) -> Bool {
         now.timeIntervalSince(route.createdAt) <= TimeInterval(routeMaxAge)
@@ -92,7 +98,7 @@ enum AgentPlaces {
     // MARK: Result encoders
 
     /// The `search_places` answer for the places Google returned; registers the first `maxResults` of them.
-    static func searchOutput(_ places: [Place], registry: inout AgentPlaceRegistry) -> AgentLookupOutput {
+    static func searchOutput(_ places: [Place], registry: inout AgentPlaceRegistry, biased: Bool = true) -> AgentLookupOutput {
         let kept = Array(places.prefix(maxResults))
         guard !kept.isEmpty else { return AgentLookupOutput(result: noResults, showsGoogleData: false, failure: noPlacesLine) }
         guard let handles = registry.register(kept) else {

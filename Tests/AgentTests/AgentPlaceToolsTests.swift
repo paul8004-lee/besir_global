@@ -1334,6 +1334,182 @@ final class AgentPlaceToolsTests: XCTestCase {
         XCTAssertNil(AgentPlaces.devicePlace(manual: nil, current: nil))
     }
 
+    // MARK: - TRAVELLEGS: the limit of a trip and the search origin (SPEC-TRAVELLEGS-001)
+
+    /// The test's own copy of the refused-lookup answer (plan.md 4.5); the source spells it once.
+    private static let tooLongText = #"{"message":"That trip is too long to plan, so no travel time is given. Tell the user, check that the places are the ones the user named, and do not estimate the travel time.","status":"no_route"}"#
+    /// The test's own copy of the message an unbiased search carries (plan.md 4.5).
+    private static let unbiasedMessage = "The user's position is not known, so these places may be far from the user. Check each place's name and address against what the user named, and ask the user for the area when they differ."
+
+    /// A toolbox built here so that the device origin and the search origin can differ.
+    private func toolbox(device: Place?, search: (() -> Place?)?, places: PlacesTransportStub, routes: RoutesTransportStub) -> AgentToolbox {
+        let store = EmptyStore.make()
+        store.config = AppConfig()
+        let clock = MutableClock(now: TestClock.date(TestClock.nowString))
+        return AgentToolbox(store: store, now: { clock.now }, timeZone: { clock.zone },
+                            deviceOrigin: { device }, searchOrigin: search,
+                            places: { PlaceSearch(config: PlaceSentinel.config, transport: places.transport) },
+                            directions: { DirectionsService(config: PlaceSentinel.config, transport: routes.transport) })
+    }
+
+    private func runTool(_ tools: AgentToolbox, _ name: String, _ args: [String: Any]) async -> PlaceReply {
+        let data = (try? JSONSerialization.data(withJSONObject: args, options: [.sortedKeys])) ?? Data()
+        switch tools.handle(name: name, arguments: String(decoding: data, as: UTF8.self)) {
+        case .result(let text): return PlaceReply(text: text, card: nil, isLookup: false, showsGoogleData: false)
+        case .card(let card): return PlaceReply(text: nil, card: card, isLookup: false, showsGoogleData: false)
+        case .lookup(let lookup):
+            let output = await lookup.run()
+            return PlaceReply(text: output.result, card: nil, isLookup: true, showsGoogleData: output.showsGoogleData)
+        }
+    }
+
+    func testTRAVELLEGS_T01_ATravelTimeOverTheLimitIsNotRegisteredAndGivesNoRouteIdOrMinutes() async {
+        // Positive control: exactly six hours is still answered, with a handle and the minutes.
+        let inside = PlaceRig(routes: PlaceStubs.routes(seconds: 21_600))
+        _ = await inside.search("cafe")
+        let answered = await inside.travel("p1", "car")
+        XCTAssertEqual(answered.status, "ok")
+        XCTAssertEqual(answered.json?["route_id"] as? String, "r1")
+        XCTAssertEqual(answered.json?["minutes"] as? Int, 360)
+        XCTAssertEqual(inside.tools.registry.routeHandles, ["r1"])
+
+        // Each refused row on a rig of its own, so "Routes was called once" is per rig.
+        let rows: [(mode: String, seconds: Int)] = [("car", 21_601), ("transit", 21_601), ("walk", 21_601), ("bicycle", 21_601),
+                                                    ("transit", 297_780)]
+        for row in rows {
+            let label = "\(row.mode) \(row.seconds)"
+            let rig = PlaceRig(routes: PlaceStubs.routes(seconds: row.seconds))
+            _ = await rig.search("cafe")
+            let before = rig.snapshot
+            let reply = await rig.travel("p1", row.mode)
+            XCTAssertTrue(reply.isLookup, label)
+            XCTAssertEqual(reply.text, Self.tooLongText, label)
+            XCTAssertEqual(Set(reply.json?.keys.map { $0 } ?? []), ["status", "message"], label)
+            XCTAssertEqual(reply.status, "no_route", label)
+            for banned in ["route_id", "minutes", "leave_by", "r1", "360", "21601", "297780"] {
+                XCTAssertFalse(reply.text?.contains(banned) ?? true, "\(label): \(banned)")
+            }
+            XCTAssertFalse(reply.showsGoogleData, label)
+            XCTAssertTrue(rig.tools.registry.routeHandles.isEmpty, label)
+            XCTAssertEqual(rig.routes.callCount, 1, "\(label): the lookup ran")
+            XCTAssertEqual(rig.snapshot, before, label)
+            XCTAssertTrue(rig.store.activities.isEmpty, label)
+        }
+
+        // A value that is not a number fails closed.
+        for odd in [TimeInterval.nan, TimeInterval.infinity] {
+            var registry = AgentPlaceRegistry()
+            let output = AgentPlaces.travelOutput(PlaceFixture.route(to: PlaceFixture.device, seconds: odd), leaveBy: nil, registry: &registry)
+            XCTAssertEqual(output.result, Self.tooLongText, "\(odd)")
+            XCTAssertFalse(output.showsGoogleData, "\(odd)")
+            XCTAssertNil(output.failure, "\(odd): no user line at the step limit")
+            XCTAssertTrue(registry.routeHandles.isEmpty, "\(odd)")
+        }
+    }
+
+    func testTRAVELLEGS_T02_ARefusedRouteCannotBeNamedByCreateActivityAndNothingIsStored() async throws {
+        let rig = PlaceRig(routes: PlaceStubs.routes(seconds: 21_601))
+        _ = await rig.search("cafe")
+        let before = rig.snapshot
+        let refused = await rig.travel("p1", "car")
+        XCTAssertEqual(refused.status, "no_route")
+        XCTAssertEqual(rig.snapshot, before, "the lookup itself stores nothing")
+
+        for outcome in [rig.create(place: "p1", route: "r1"), rig.create(route: "r1")] {
+            XCTAssertNil(outcome.card)
+            XCTAssertEqual(outcome.status, "rejected")
+            XCTAssertEqual(outcome.message, PlaceText.createRoute)
+        }
+        XCTAssertEqual(rig.snapshot, before)
+        XCTAssertTrue(rig.store.activities.isEmpty)
+
+        // Positive control: a lookup of exactly six hours gives a card with the leave line and the mark, and Confirm stores it.
+        let inside = PlaceRig(routes: PlaceStubs.routes(seconds: 21_600))
+        _ = await inside.search("cafe")
+        _ = await inside.travel("p1", "car")
+        let card = try XCTUnwrap(inside.create(place: "p1", route: "r1").card)
+        XCTAssertTrue(card.lines.contains { $0.hasPrefix("Leave") }, "\(card.lines)")
+        XCTAssertTrue(card.lines.contains(AgentPlaces.verifiedLine), "\(card.lines)")
+        _ = await card.resolve(.confirm)
+        XCTAssertEqual(inside.store.activities.count, 1)
+    }
+
+    func testTRAVELLEGS_T03_TheRegistryRefusesARouteOverTheLimitAndSpendsNoHandle() {
+        var registry = AgentPlaceRegistry()
+        for seconds in [TimeInterval(21_601), .nan, .infinity] {
+            XCTAssertNil(registry.register(PlaceFixture.route(to: PlaceFixture.device, seconds: seconds)), "\(seconds)")
+            XCTAssertTrue(registry.routeHandles.isEmpty, "\(seconds)")
+        }
+        let inside = PlaceFixture.route(to: PlaceFixture.device, seconds: 21_600)
+        XCTAssertEqual(registry.register(inside), "r1", "the refusals spent no number")
+        XCTAssertNil(registry.register(PlaceFixture.route(to: PlaceFixture.device, seconds: 21_601)))
+        XCTAssertEqual(registry.routeHandles, ["r1"])
+        XCTAssertEqual(registry.route("r1", now: TestClock.now), inside)
+    }
+
+    func testTRAVELLEGS_T04_TheSearchBiasFollowsTheSearchOriginWhileATripKeepsTheDeviceOrigin() async {
+        // No device origin, a search origin: the search is biased there; a trip with no origin named is still refused.
+        let places = PlaceStubs.places("places-search-three")
+        let routes = PlaceStubs.routesByMode()
+        let tools = toolbox(device: nil, search: { PlaceFixture.device }, places: places, routes: routes)
+        let found = await runTool(tools, "search_places", ["query": "cafe"])
+        XCTAssertEqual(found.status, "ok")
+        let center = PlaceBody.biasCenter(PlaceBody.json(places.requests.first))
+        XCTAssertEqual(center?.latitude ?? 0, 37.7749, accuracy: 1e-9)
+        XCTAssertEqual(center?.longitude ?? 0, -122.4194, accuracy: 1e-9)
+        let trip = await runTool(tools, "get_travel_time", ["place_id": "p1", "mode": "transit"])
+        XCTAssertEqual(trip.status, "rejected")
+        XCTAssertEqual(trip.message, PlaceText.noOrigin, "the search origin never starts a trip")
+        XCTAssertEqual(routes.callCount, 0)
+
+        // A device origin and a search origin that gives nothing: the closure that is given wins, so no bias.
+        let plainPlaces = PlaceStubs.places("places-search-three")
+        let plain = toolbox(device: PlaceFixture.device, search: { nil }, places: plainPlaces, routes: PlaceStubs.routesByMode())
+        _ = await runTool(plain, "search_places", ["query": "cafe"])
+        XCTAssertEqual(plainPlaces.callCount, 1)
+        XCTAssertNil(PlaceBody.json(plainPlaces.requests.first)?["locationBias"], "the given search origin is nil")
+
+        // Built without a search origin: the device origin biases the search, as before.
+        let oldPlaces = PlaceStubs.places("places-search-three")
+        let old = toolbox(device: PlaceFixture.device, search: nil, places: oldPlaces, routes: PlaceStubs.routesByMode())
+        _ = await runTool(old, "search_places", ["query": "cafe"])
+        let oldCenter = PlaceBody.biasCenter(PlaceBody.json(oldPlaces.requests.first))
+        XCTAssertEqual(oldCenter?.latitude ?? 0, 37.7749, accuracy: 1e-9)
+        XCTAssertEqual(oldCenter?.longitude ?? 0, -122.4194, accuracy: 1e-9)
+    }
+
+    func testTRAVELLEGS_T05_ASearchWithNoBiasTellsThePositionIsUnknownAndABiasedOneIsUnchanged() async {
+        let unbiased = PlaceRig(device: nil)
+        let reply = await unbiased.search("cafe")
+        XCTAssertEqual(reply.status, "ok")
+        XCTAssertEqual(Set(reply.json?.keys.map { $0 } ?? []), ["status", "count", "places", "message"])
+        XCTAssertEqual(reply.message, Self.unbiasedMessage)
+        let message = reply.message ?? ""
+        XCTAssertNil(message.firstIndex { $0.isNumber }, "no digit")
+        XCTAssertFalse(message.contains("p1"), "no handle")
+        XCTAssertNil(PlaceBody.json(unbiased.places.requests.first)?["locationBias"])
+
+        let biased = PlaceRig()
+        let biasedReply = await biased.search("cafe")
+        XCTAssertEqual(Set(biasedReply.json?.keys.map { $0 } ?? []), ["status", "count", "places"])
+        XCTAssertNotNil(PlaceBody.biasCenter(PlaceBody.json(biased.places.requests.first)), "positive control: this one carried a bias")
+
+        // The encoder alone: the message goes on the ok answer only.
+        let three = PlaceFixture.places("places-search-three")
+        var open = AgentPlaceRegistry()
+        let withoutBias = AgentPlaces.searchOutput(three, registry: &open, biased: false)
+        XCTAssertEqual(Set(TestClock.object(withoutBias.result)?.keys.map { $0 } ?? []), ["status", "count", "places", "message"])
+        var other = AgentPlaceRegistry()
+        let withBias = AgentPlaces.searchOutput(three, registry: &other, biased: true)
+        XCTAssertEqual(Set(TestClock.object(withBias.result)?.keys.map { $0 } ?? []), ["status", "count", "places"])
+        var empty = AgentPlaceRegistry()
+        XCTAssertEqual(TestClock.object(AgentPlaces.searchOutput([], registry: &empty, biased: false).result) as NSDictionary?,
+                       Text.noResults as NSDictionary, "no places: the text of today")
+        var full = AgentPlaceRegistry(nextPlaceNumber: 9999)
+        XCTAssertEqual(TestClock.object(AgentPlaces.searchOutput(three, registry: &full, biased: false).result) as NSDictionary?,
+                       Text.placesUnavailable as NSDictionary, "a full registry: the text of today")
+    }
+
     // MARK: - STEPFAIL: the failure line of a lookup output (SPEC-STEPFAIL-001)
 
     /// Calls get_travel_time for p1 through the toolbox and runs the lookup to the end.
