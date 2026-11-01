@@ -861,7 +861,10 @@ final class AgentToolbox {
             throw Rejection(refusal.message)
         }
         let stops = AgentDayPlan.effective(parsed, events: context.events)
-        let pairs = AgentDayPlan.legPairs(stops, cap: AgentDayPlan.lookupCap).pairs
+        let split = AgentDayPlan.legPairs(stops, cap: AgentDayPlan.lookupCap)
+        let pairs = split.pairs
+        // The pairs beyond the cap get no lookup; `evaluate` says so as the reason of their unchecked legs.
+        let notLookedUp = Set(split.overCap)
         let mode = context.mode
         return .lookup(AgentLookup { [self] in
             let service = directionsProvider?() ?? store.directions
@@ -878,7 +881,8 @@ final class AgentToolbox {
                                           warnings: estimate.warnings, createdAt: now())
             }
             guard !Task.isCancelled else { return AgentPlaces.travelFailure(nil) }
-            let evaluated = AgentDayPlan.evaluate(stops: stops, routes: routes, bufferMinutes: AgentPlaces.legBufferMinutes)
+            let evaluated = AgentDayPlan.evaluate(stops: stops, routes: routes, bufferMinutes: AgentPlaces.legBufferMinutes,
+                                                  notLookedUp: notLookedUp)
             let created = now()
             let check = AgentDayPlan.Check(
                 handle: "d\(nextPlanNumber)", stops: stops, legs: evaluated.legs, problems: evaluated.problems, createdAt: created,

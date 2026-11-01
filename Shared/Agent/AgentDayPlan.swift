@@ -320,10 +320,11 @@ enum AgentDayPlan {
         var legs: [Leg] = []
         var late: [Problem] = []
         for (pair, lookup) in candidates(stops) {
-            guard lookup, let route = routes[pair], route.seconds <= AgentPlaces.maxLegSeconds else {
-                legs.append(Leg(from: pair.from, to: pair.to, route: nil, leave: nil, why: nil))
-                continue
-            }
+            func skip(_ why: Unchecked) { legs.append(Leg(from: pair.from, to: pair.to, route: nil, leave: nil, why: why)) }
+            guard lookup else { skip(.noPlace); continue }
+            guard !notLookedUp.contains(pair) else { skip(.notLookedUp); continue }
+            guard let route = routes[pair] else { skip(.noAnswer); continue }
+            guard route.seconds <= AgentPlaces.maxLegSeconds else { skip(.tooLong); continue }
             let leave = Store.departureTime(arrival: stops[pair.to - 1].start, travelSeconds: route.seconds, bufferMinutes: bufferMinutes)
             legs.append(Leg(from: pair.from, to: pair.to, route: route, leave: leave, why: nil))
             let behind = stops[pair.from - 1].end.timeIntervalSince(leave)
@@ -335,7 +336,8 @@ enum AgentDayPlan {
     // MARK: The result for the model (REQ-PLANDAY-009)
 
     /// Sorted keys: `message`, `plan_id`, `problems` (type, minutes, the two stops by event id or title), `status` and
-    /// `unchecked` (position pairs). Only the app's numbers and fixed words; the last allowed check says so.
+    /// `unchecked` (position pairs) and, only while a leg is unchecked, `unchecked_reasons` (reason word to position pairs).
+    /// Only the app's numbers and fixed words; the last allowed check says so.
     static func resultJSON(_ check: Check, checksMade: Int) -> String {
         func named(_ position: Int) -> [String: String] {
             guard check.stops.indices.contains(position - 1) else { return [:] }
@@ -352,9 +354,24 @@ enum AgentDayPlan {
             }
         }
         let ok = check.problems.isEmpty
-        let message = ok ? Say.okMessage : (checksMade >= checksPerTurn ? Say.lastMessage : Say.conflictMessage)
-        return AgentToolbox.encode(["status": ok ? "ok" : "conflict", "plan_id": check.handle, "problems": problems,
-                                    "unchecked": check.legs.filter { $0.route == nil }.map { [$0.from, $0.to] }, "message": message])
+        let open = check.legs.filter { $0.route == nil }
+        let conflictText = checksMade >= checksPerTurn ? Say.lastMessage : Say.conflictMessage
+        // While a leg is unchecked the texts no longer read as a clean bill; with none unchecked they are the old texts.
+        let message: String
+        switch (ok, open.isEmpty) {
+        case (true, true): message = Say.okMessage
+        case (true, false): message = Say.okMessageUnchecked
+        case (false, true): message = conflictText
+        case (false, false): message = conflictText + " " + Say.uncheckedNote
+        }
+        var object: [String: Any] = ["status": ok ? "ok" : "conflict", "plan_id": check.handle, "problems": problems,
+                                     "unchecked": open.map { [$0.from, $0.to] }, "message": message]
+        if !open.isEmpty {
+            var grouped: [String: [[Int]]] = [:]
+            for leg in open { if let why = leg.why { grouped[why.rawValue, default: []].append([leg.from, leg.to]) } }
+            object["unchecked_reasons"] = grouped
+        }
+        return AgentToolbox.encode(object)
     }
 
     // MARK: The card (REQ-PLANDAY-010, 011)
