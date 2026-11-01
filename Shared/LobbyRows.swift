@@ -141,6 +141,32 @@ enum LobbyRows {
     @MainActor
     static func rows(store: Store, records: PartnerRecords, ledger: BudgetLedger, now: Date,
                      calendar: Calendar) -> [LobbyRow] {
-        rows(items: [], stays: [], spentCents: 0, entries: [], now: now, calendar: calendar)
+        let day = store.activities(on: now, calendar: calendar)
+
+        // An activity is an item with the departure and travel time of its outbound leg.
+        var items: [LobbyItem] = day.map { activity in
+            let leg = store.legs(of: activity.id).outbound
+            return LobbyItem(id: activity.id.uuidString, title: activity.title, start: activity.startDate,
+                             leaveBy: leg?.departureDate, travelSeconds: leg?.travelSeconds.map { Int($0.rounded()) },
+                             mode: leg?.mode)
+        }
+        // A travel event that no activity owns is an item by its own anchor time. The owner is looked up
+        // with the lobby's calendar, so a repeat's occurrence resolves in the same zone as the day.
+        for event in store.events where event.isListed(on: now, calendar: calendar) {
+            if let owner = event.linkedActivityId, store.activity(id: owner, calendar: calendar) != nil { continue }
+            items.append(LobbyItem(id: event.id.uuidString, title: event.title, start: event.anchorDate,
+                                   leaveBy: event.departureDate, travelSeconds: event.travelSeconds.map { Int($0.rounded()) },
+                                   mode: event.mode))
+        }
+
+        let stays: [LobbyStay] = day.compactMap { activity in
+            guard let record = records.record(forActivity: activity.id) else { return nil }
+            return LobbyStay(id: activity.id.uuidString, start: activity.startDate,
+                             partnerID: record.partnerID, partnerName: record.partnerName)
+        }
+
+        let week = BudgetWeek.start(of: now, in: calendar.timeZone)
+        return rows(items: items, stays: stays, spentCents: ledger.spentCents(weekStart: week),
+                    entries: ledger.weekEntries(weekStart: week), now: now, calendar: calendar)
     }
 }
