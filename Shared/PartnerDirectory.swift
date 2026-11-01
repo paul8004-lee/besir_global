@@ -10,6 +10,8 @@ struct PartnerEntry: Equatable {
     let title: String
     let summary: String
     let route: String
+    /// The name of the SF Symbol the partner announces for its button; nil unless the directory was asked for symbols.
+    var symbol: String? = nil
 }
 
 /// An entry together with the form it announced: its fields and the kinds of result it will give.
@@ -59,7 +61,7 @@ extension PartnerEntry {
 
     /// Accepts only the exact one-key answer: 1 to 8 entries, each exactly `id`, `name`, `title`, `summary`, `route`, with
     /// unique ids and unique routes. One defect in one entry makes the whole directory unusable.
-    static func list(from data: Data) -> [PartnerEntry]? {
+    static func list(from data: Data, symbols: Bool = false) -> [PartnerEntry]? {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], object.count == 1,
               let listed = object["partners"] as? [Any], (1...maxEntries).contains(listed.count) else { return nil }
         var entries: [PartnerEntry] = []

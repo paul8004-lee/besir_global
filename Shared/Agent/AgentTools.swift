@@ -946,6 +946,10 @@ final class AgentToolbox {
         return date >= Date(timeIntervalSince1970: minute) && date <= Date(timeIntervalSince1970: minute + Self.futureWindow)
     }
 
+    func loadPartners(flow: UUID, symbols: Bool) async -> [PartnerSpec] { [] }
+
+    func partnerCard(_ spec: PartnerSpec, seeds: [String: AgentFieldValue], source: AgentFieldSource) -> AgentCard? { nil }
+
     /// `get_partners`: the directory and one form for each entry, run as the request in flight. It writes nothing; the partners
     /// whose form is good are held in memory, and a failure, a task cancelled meanwhile or no good partner holds nothing new.
     private func partnersLookup(flow: UUID?) -> AgentToolOutcome {

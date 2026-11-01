@@ -21,7 +21,7 @@ final class PartnerClient {
     var isConfigured: Bool { config.hasProxy }
 
     /// Asks the directory route which partners there are. Records `Partners requested` and `Partners received`.
-    func directory(flow: UUID) async -> Result<[PartnerEntry], PartnerFailure> {
+    func directory(flow: UUID, symbols: Bool = false) async -> Result<[PartnerEntry], PartnerFailure> {
         await call(path: PartnerEntry.directoryPath, body: ["op": "list"], flow: flow, read: { PartnerEntry.list(from: $0) },
                    words: { _ in ("Partners requested", "Partners received", .ok) })
     }
