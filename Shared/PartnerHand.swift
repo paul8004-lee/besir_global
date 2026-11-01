@@ -35,7 +35,7 @@ enum PartnerHand {
     }
 
     /// The history row's estimate line: `Estimate $90.00`. Every price in the app is marked as an estimate.
-    static func estimateText(cents: Int) -> String { "" }
+    static func estimateText(cents: Int) -> String { "Estimate \(AgentBudget.dollars(cents: cents))" }
 }
 
 /// SPEC-FULLHAND-001 (card t101): the one cancel of a partner's request. The button and the toolbox's tool both call it; it names no
@@ -48,10 +48,28 @@ enum PartnerCancel {
     /// The warning both callers show after a cancel that changed nothing.
     static let notCancelledNotice = "Nothing was cancelled."
 
+    /// Cancels the partner request that made an entry. Finds the entry's record (none: nothing is sent), sends one cancel with the
+    /// record's request id under a new Connections flow and acts on the answer. The partner comes first, then the ledger, then the
+    /// entry, then the record. Only `cancelled` changes anything: the estimate is given back when the record kept its spend id,
+    /// the entry (and its linked legs) is deleted when it still exists, and the record is removed. A refusal or a failed call
+    /// writes nothing to the schedule, the ledger or the records.
     @MainActor
     static func run(activityID: UUID, store: Store, records: PartnerRecords, ledger: BudgetLedger,
                     client: PartnerClient) async -> Outcome {
-        .noRecord
+        guard let record = records.record(forActivity: activityID) else { return .noRecord }
+        let answer = await client.cancel(requestID: record.requestID, partner: (record.partnerName, record.route),
+                                         flow: ConnectionLog.beginFlow())
+        switch answer {
+        case .success(.cancelled):
+            if let spend = record.spendRequestID { ledger.remove(requestID: spend) }
+            if let entry = store.activity(id: activityID) { store.deleteActivity(entry) }
+            records.remove(activityID: activityID)
+            return .cancelled(partner: record.partnerName)
+        case .success(.declined):
+            return .declined(partner: record.partnerName)
+        case .failure:
+            return .unavailable(partner: record.partnerName)
+        }
     }
 }
 
@@ -71,6 +89,15 @@ struct PartnerHistoryRow: Identifiable, Equatable {
 }
 
 enum PartnerHistory {
+    /// The records joined with the entries they made, earliest start first. A record whose entry is gone is left out and left
+    /// alone: reading writes nothing.
     @MainActor
-    static func rows(records: PartnerRecords, store: Store) -> [PartnerHistoryRow] { [] }
+    static func rows(records: PartnerRecords, store: Store) -> [PartnerHistoryRow] {
+        let joined = records.records.compactMap { record -> PartnerHistoryRow? in
+            guard let entry = store.activity(id: record.activityID) else { return nil }
+            return PartnerHistoryRow(id: entry.id, title: entry.title, start: entry.startDate, end: entry.endDate, place: entry.location,
+                                     estimateCents: record.estimateCents, partnerName: record.partnerName)
+        }
+        return joined.enumerated().sorted { ($0.element.start, $0.offset) < ($1.element.start, $1.offset) }.map(\.element)
+    }
 }
