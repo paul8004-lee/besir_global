@@ -68,9 +68,11 @@ struct PlaceSearch {
                       near center: CLLocationCoordinate2D,
                       radiusMeters: Int = 1000,
                       sort: NearbySort = .distance,
-                      limit: Int = 5) async -> [NearbyPlace] {
+                      limit: Int = 5,
+                      photos: Bool = false) async -> [NearbyPlace] {
         guard let request = GooglePlaces.nearbyRequest(category: category, keyword: keyword, near: center,
-                                                       radiusMeters: radiusMeters, config: config) else { return [] }
+                                                       radiusMeters: radiusMeters, config: config,
+                                                       photos: photos) else { return [] }
         guard let data = await GooglePlaces.fetch(request, transport: transport) else {
             note("Search failed", .failed)
             return []

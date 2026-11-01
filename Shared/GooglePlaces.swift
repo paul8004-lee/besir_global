@@ -15,7 +15,7 @@ enum GooglePlaces {
     // @MX:NOTE Adding a phone-number field here would move every call to the Enterprise billing tier.
     static let fieldMask = "places.id,places.displayName,places.formattedAddress,places.location,places.primaryTypeDisplayName,places.googleMapsUri"
     /// Only the be full sir nearby search asks for this one: the six fields plus the place photo references.
-    static let photoFieldMask = fieldMask
+    static let photoFieldMask = fieldMask + ",places.photos"
     static let fieldMaskHeader = "x-goog-fieldmask"
 
     private static let path = "/places"
@@ -44,7 +44,7 @@ enum GooglePlaces {
             "pageSize": searchPageSize
         ]
         if let center { body["locationBias"] = biasCircle(center: center, radius: searchBiasRadius) }
-        return request(body: body, config: config)
+        return request(body: body, config: config, mask: fieldMask)
     }
 
     /// Nearby search: the keyword, else the category word, else "restaurants"; the radius is clamped to 100...50000.
@@ -60,7 +60,7 @@ enum GooglePlaces {
             "locationBias": biasCircle(center: center, radius: clampedRadius(radiusMeters))
         ]
         if let category { body["includedType"] = category.includedType }
-        return request(body: body, config: config)
+        return request(body: body, config: config, mask: photos ? photoFieldMask : fieldMask)
     }
 
     static func clampedRadius(_ radiusMeters: Int) -> Int {
@@ -75,10 +75,10 @@ enum GooglePlaces {
         ["circle": ["center": ["latitude": center.latitude, "longitude": center.longitude], "radius": radius]]
     }
 
-    private static func request(body: [String: Any], config: AppConfig) -> URLRequest? {
+    private static func request(body: [String: Any], config: AppConfig, mask: String) -> URLRequest? {
         guard let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]),
               var request = config.proxyPOSTRequest(path, body: data, timeout: timeout) else { return nil }
-        request.setValue(fieldMask, forHTTPHeaderField: fieldMaskHeader)
+        request.setValue(mask, forHTTPHeaderField: fieldMaskHeader)
         return request
     }
 
@@ -118,7 +118,8 @@ enum GooglePlaces {
                                                 category: raw.primaryTypeDisplayName?.text ?? "",
                                                 distanceMeters: Int(distance.rounded()),
                                                 phone: nil,
-                                                url: raw.googleMapsUri)))
+                                                url: raw.googleMapsUri,
+                                                photos: photoReferences(from: raw.photos))))
         }
         if sort == .distance {
             found = found.enumerated().sorted { lhs, rhs in
@@ -128,6 +129,43 @@ enum GooglePlaces {
             }.map(\.element)
         }
         return found.prefix(clampedLimit(limit)).map(\.item)
+    }
+
+    /// At most the first 3 photo elements in Google's order whose name has the shape `places/<id>/photos/<token>`;
+    /// a bad element is skipped alone. The author is the first attribution's name and, for an https address only, its page.
+    private static func photoReferences(from raw: [Lossy<Raw.Photo>]?) -> [NearbyPhoto] {
+        var kept: [NearbyPhoto] = []
+        for element in raw ?? [] {
+            guard kept.count < maxPhotos else { break }
+            guard let photo = element.value, let name = photo.name, isPhotoName(name) else { continue }
+            let author = photo.authorAttributions?.compactMap(\.value).first
+            // Same sanitizer the toolbox uses for every text it keeps: control, format and line-break characters go.
+            let cleaned = AgentToolbox.sanitized(author?.displayName ?? "")
+            let text = String(cleaned.prefix(maxAuthorLength)).trimmingCharacters(in: .whitespacesAndNewlines)
+            kept.append(NearbyPhoto(name: name, author: text, authorURL: httpsURL(author?.uri)))
+        }
+        return kept
+    }
+
+    /// `places/<id>/photos/<token>`, each of id and token one or more of A-Z a-z 0-9 _ -. Checked scalar by scalar,
+    /// so a trailing line break is refused.
+    private static func isPhotoName(_ name: String) -> Bool {
+        let parts = name.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 4, parts[0] == "places", parts[2] == "photos" else { return false }
+        return [parts[1], parts[3]].allSatisfy { part in
+            !part.isEmpty && part.unicodeScalars.allSatisfy { scalar in
+                switch scalar.value {
+                case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0x5F, 0x2D: return true
+                default: return false
+                }
+            }
+        }
+    }
+
+    private static func httpsURL(_ text: String?) -> URL? {
+        guard let text, let url = URL(string: text), url.scheme?.lowercased() == "https",
+              url.host?.isEmpty == false else { return nil }
+        return url
     }
 
     private static func place(from raw: Raw) -> Place? {
@@ -179,13 +217,34 @@ enum GooglePlaces {
                 longitude = try? container.decode(Double.self, forKey: .longitude)
             }
         }
+        struct Author: Decodable {
+            let displayName: String?
+            let uri: String?
+            private enum Keys: String, CodingKey { case displayName, uri }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: Keys.self)
+                displayName = try? container.decode(String.self, forKey: .displayName)
+                uri = try? container.decode(String.self, forKey: .uri)
+            }
+        }
+        struct Photo: Decodable {
+            let name: String?
+            let authorAttributions: [Lossy<Author>]?
+            private enum Keys: String, CodingKey { case name, authorAttributions }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: Keys.self)
+                name = try? container.decode(String.self, forKey: .name)
+                authorAttributions = try? container.decode([Lossy<Author>].self, forKey: .authorAttributions)
+            }
+        }
         let displayName: Words?
         let formattedAddress: String?
         let location: Spot?
         let primaryTypeDisplayName: Words?
         let googleMapsUri: String?
+        let photos: [Lossy<Photo>]?
         private enum Keys: String, CodingKey {
-            case displayName, formattedAddress, location, primaryTypeDisplayName, googleMapsUri
+            case displayName, formattedAddress, location, primaryTypeDisplayName, googleMapsUri, photos
         }
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: Keys.self)
@@ -194,6 +253,7 @@ enum GooglePlaces {
             location = try? container.decode(Spot.self, forKey: .location)
             primaryTypeDisplayName = try? container.decode(Words.self, forKey: .primaryTypeDisplayName)
             googleMapsUri = try? container.decode(String.self, forKey: .googleMapsUri)
+            photos = try? container.decode([Lossy<Photo>].self, forKey: .photos)
         }
     }
 }
