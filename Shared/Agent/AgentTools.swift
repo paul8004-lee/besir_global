@@ -1223,15 +1223,15 @@ final class AgentToolbox {
     // MARK: - Budget (SPEC-BUDGET-001)
 
     private func budgetClient() -> BudgetClient {
-        budgetProvider?() ?? BudgetClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
+        budgetProvider?() ?? BudgetDesk.makeClient(config: store.config)
     }
 
     /// `get_budget_left`: one `left` request for the current week, run as the request in flight. It writes nothing.
     private func budgetLeft(flow: UUID?) -> AgentToolOutcome {
-        let week = BudgetWeek.start(of: now(), in: zone())
+        let week = BudgetDesk.week(now: now(), zone: zone())
         let flow = flow ?? ConnectionLog.beginFlow()
         return .lookup(AgentLookup { [self] in
-            switch await budgetClient().left(weekStart: week, flow: flow) {
+            switch await BudgetDesk(client: budgetClient()).askLeft(weekStart: week, flow: flow) {
             case .failure:
                 return AgentLookupOutput(result: budgetUnavailable(AgentBudget.leftUnavailableMessage), showsGoogleData: false)
             case .success(let standing):
@@ -1248,13 +1248,11 @@ final class AgentToolbox {
     /// `record_spend`: no card. The amount is decided here before anything is made; the week and the request id are made now,
     /// so one call sends at most one request, and the lookup sends it when the session runs it.
     private func recordSpend(_ values: [String: String], flow: UUID?) throws -> AgentToolOutcome {
-        guard let text = values["amount"], let cents = AgentBudget.parseAmountCents(text) else { throw Rejection(Say.spendAmount) }
-        let week = BudgetWeek.start(of: now(), in: zone())
-        let requestID = UUID().uuidString
+        guard let text = values["amount"],
+              let plan = BudgetDesk.spendPlan(amountText: text, now: now(), zone: zone()) else { throw Rejection(Say.spendAmount) }
         let flow = flow ?? ConnectionLog.beginFlow()
         return .lookup(AgentLookup { [self] in
-            let answer = await budgetClient().spend(amountCents: cents, isEstimate: false, weekStart: week,
-                                                    requestID: requestID, flow: flow)
+            let answer = await BudgetDesk(client: budgetClient()).send(plan, flow: flow)
             switch answer {
             case .failure:
                 // A task cancelled meanwhile says nothing to the user, as in the partner request.
@@ -1265,12 +1263,12 @@ final class AgentToolbox {
                 object["status"] = "applied"
                 object["partner"] = BudgetClient.partnerName
                 object["simulated"] = true
-                object["recorded"] = AgentBudget.dollars(cents: cents)
+                object["recorded"] = AgentBudget.dollars(cents: plan.cents)
                 object["message"] = AgentBudget.spendMessage
                 // The partner's name is in the app's own line, not left to the model's wording.
-                let current = AgentBudget.weekPhrase(weekStart: week, currentWeekStart: BudgetWeek.start(of: now(), in: zone()))
+                let current = AgentBudget.weekPhrase(weekStart: plan.weekStart, currentWeekStart: BudgetWeek.start(of: now(), in: zone()))
                 return AgentLookupOutput(result: Self.encode(object), showsGoogleData: false,
-                                         notice: AgentBudget.spendNotice(amountCents: cents, standing: standing, week: current))
+                                         notice: AgentBudget.spendNotice(amountCents: plan.cents, standing: standing, week: current))
             }
         })
     }
