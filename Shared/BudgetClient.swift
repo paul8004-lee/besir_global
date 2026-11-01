@@ -58,6 +58,9 @@ final class BudgetClient {
 
     var isConfigured: Bool { config.hasProxy }
 
+    /// The entries of one week from this client's ledger (skeleton: card t103 M2 fills it).
+    func weekEntries(weekStart: String) -> [BudgetEntry] { [] }
+
     /// How the week stands, from the ledger's total for `weekStart`. Records the packets of the exchange under `flow`.
     func left(weekStart: String, flow: UUID) async -> Result<BudgetStanding, BudgetFailure> {
         guard config.hasProxy else { return .failure(.notSetUp) }

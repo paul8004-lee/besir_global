@@ -64,6 +64,12 @@ final class BudgetLedger: @unchecked Sendable {
         return entries.first { $0.requestID == requestID }
     }
 
+    /// Posted after an effective add or remove (skeleton: nothing posts it yet; card t103 M2).
+    static let didChange = Notification.Name("besir.budgetLedgerDidChange")
+
+    /// The entries of one week in insertion order (skeleton: card t103 M2 fills it).
+    func weekEntries(weekStart: String) -> [BudgetEntry] { [] }
+
     // MARK: Write
 
     /// Removes the entry a request id made. True when one was removed. The file is written as `add` writes it, and a failed
