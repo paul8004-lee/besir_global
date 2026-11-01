@@ -1934,7 +1934,7 @@ final class AgentPartnerToolTests: XCTestCase {
         for request in tables.requests {
             let text = requestText(request)
             XCTAssertFalse(text.contains("37.77"), text)
-            XCTAssertFalse(text.contains("-122.42"), text)
+            XCTAssertFalse(text.contains("-122.4194"), text)
         }
     }
 

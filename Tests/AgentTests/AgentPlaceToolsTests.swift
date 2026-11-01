@@ -1454,6 +1454,7 @@ final class AgentPlaceToolsTests: XCTestCase {
         let tools = toolbox(device: nil, search: { PlaceFixture.device }, places: places, routes: routes)
         let found = await runTool(tools, "search_places", ["query": "cafe"])
         XCTAssertEqual(found.status, "ok")
+        XCTAssertNil(found.message, "the search carried a bias from the search origin, so no unknown-position message")
         let center = PlaceBody.biasCenter(PlaceBody.json(places.requests.first))
         XCTAssertEqual(center?.latitude ?? 0, 37.7749, accuracy: 1e-9)
         XCTAssertEqual(center?.longitude ?? 0, -122.4194, accuracy: 1e-9)
@@ -1465,7 +1466,8 @@ final class AgentPlaceToolsTests: XCTestCase {
         // A device origin and a search origin that gives nothing: the closure that is given wins, so no bias.
         let plainPlaces = PlaceStubs.places("places-search-three")
         let plain = toolbox(device: PlaceFixture.device, search: { nil }, places: plainPlaces, routes: PlaceStubs.routesByMode())
-        _ = await runTool(plain, "search_places", ["query": "cafe"])
+        let plainReply = await runTool(plain, "search_places", ["query": "cafe"])
+        XCTAssertEqual(plainReply.message, Self.unbiasedMessage, "the request went out with no bias, so the unknown-position message")
         XCTAssertEqual(plainPlaces.callCount, 1)
         XCTAssertNil(PlaceBody.json(plainPlaces.requests.first)?["locationBias"], "the given search origin is nil")
 
