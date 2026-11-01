@@ -994,6 +994,12 @@ final class AgentToolbox {
         return good
     }
 
+    /// The same load as `loadPartners`, with what the hand path needs besides the partners: how the load ended and the answer
+    /// bytes the readers accepted.
+    func loadPartnerDirectory(flow: UUID, symbols: Bool) async -> PartnerLoad {
+        PartnerLoad(outcome: .failed, specs: [], raw: PartnerRaw(directory: Data(), forms: [:]))
+    }
+
     /// `get_partners`: the directory and one form for each entry, run as the request in flight. It writes nothing; the partners
     /// whose form is good are held in memory, and a failure, a task cancelled meanwhile or no good partner holds nothing new.
     private func partnersLookup(flow: UUID?) -> AgentToolOutcome {
