@@ -946,22 +946,25 @@ final class AgentToolbox {
         return date >= Date(timeIntervalSince1970: minute) && date <= Date(timeIntervalSince1970: minute + Self.futureWindow)
     }
 
-    func loadPartners(flow: UUID, symbols: Bool) async -> [PartnerSpec] { [] }
-
-    func partnerCard(_ spec: PartnerSpec, seeds: [String: AgentFieldValue], source: AgentFieldSource) -> AgentCard? { nil }
+    /// The directory and one form for each entry; the partners whose form is good, in the directory's order. `symbols` asks the
+    /// directory for the partners' symbols: only the hand path passes true, the model path passes false.
+    func loadPartners(flow: UUID, symbols: Bool) async -> [PartnerSpec] {
+        let client = partnerClient()
+        var good: [PartnerSpec] = []
+        if case .success(let entries) = await client.directory(flow: flow, symbols: symbols) {
+            for entry in entries {
+                if case .success(let spec) = await client.form(of: entry, flow: flow) { good.append(spec) }
+            }
+        }
+        return good
+    }
 
     /// `get_partners`: the directory and one form for each entry, run as the request in flight. It writes nothing; the partners
     /// whose form is good are held in memory, and a failure, a task cancelled meanwhile or no good partner holds nothing new.
     private func partnersLookup(flow: UUID?) -> AgentToolOutcome {
         let flow = flow ?? ConnectionLog.beginFlow()
         return .lookup(AgentLookup { [self] in
-            let client = partnerClient()
-            var good: [PartnerSpec] = []
-            if case .success(let entries) = await client.directory(flow: flow) {
-                for entry in entries {
-                    if case .success(let spec) = await client.form(of: entry, flow: flow) { good.append(spec) }
-                }
-            }
+            let good = await loadPartners(flow: flow, symbols: false)
             guard !good.isEmpty, !Task.isCancelled else {
                 let result = Self.encode(["status": "unavailable", "simulated": true, "message": AgentPartner.listUnavailableMessage])
                 return AgentLookupOutput(result: result, showsGoogleData: false)
@@ -980,25 +983,34 @@ final class AgentToolbox {
         let f = formats
         let filled = AgentPrefill.values(fieldsText: values["fields"], fields: spec.fields, userLines: userLines(), now: now(),
                                          calendar: f.calendar)
+        guard let card = partnerCard(spec, seeds: filled, source: .stated) else { throw Rejection(Say.partnerUnavailable) }
+        return .card(card)
+    }
+
+    /// The partner's card, exactly its field list in its order, from the values it starts with: `seeds` by field key (a group row by
+    /// `group.row.member`), each marked as coming from `source`. Nil where a field cannot be built. The one place a partner card is
+    /// made, for the model's `request_partner` (source `stated`) and for the hand path. Building the card writes nothing and sends
+    /// nothing.
+    func partnerCard(_ spec: PartnerSpec, seeds filled: [String: AgentFieldValue], source: AgentFieldSource) -> AgentCard? {
         var rows: [AgentFieldRow] = []
         for field in spec.fields {
             if field.kind == .group {
                 guard let group = AgentFieldGroup(field, addSymbol: AgentPartner.groupAddSymbol, addName: AgentPartner.groupAddName)
-                else { throw Rejection(Say.partnerUnavailable) }
+                else { return nil }
                 // The kept row numbers are compacted: numbers 1 and 3 give two rows. No kept number gives one blank row.
                 let numbers = AgentPrefill.rowNumbers(kept: filled, group: field.key)
                 let seeded = (numbers.isEmpty ? [0] : numbers).map { number in
                     group.members.map { member -> AgentFieldSeed in
                         let value = filled[AgentFieldCard.rowKey(field.key, number, member.key)]
-                        return AgentFieldSeed(value: value, source: value == nil ? .blank : .stated)
+                        return AgentFieldSeed(value: value, source: value == nil ? .blank : source)
                     }
                 }
                 rows.append(.repeating(group, rows: seeded))
                 continue
             }
-            guard let seed = AgentFieldSpec(field) else { throw Rejection(Say.partnerUnavailable) }
+            guard let seed = AgentFieldSpec(field) else { return nil }
             let kept = filled[field.key]
-            rows.append(.field(seed, value: kept, source: kept == nil ? .blank : .stated))
+            rows.append(.field(seed, value: kept, source: kept == nil ? .blank : source))
         }
         // The schedule choice is the app's own row and exists only when the partner announced a time result.
         let schedulable = spec.results.contains { $0.kind == .time }
@@ -1021,10 +1033,10 @@ final class AgentToolbox {
             }
         })
         let requestID = UUID().uuidString
-        return .card(AgentCard(fieldCard: fieldCard, showsGoogleMark: spec.fields.contains { $0.kind == .place }) { [self] in
+        return AgentCard(fieldCard: fieldCard, showsGoogleMark: spec.fields.contains { $0.kind == .place }) { [self] in
             // The one snapshot of the model (Confirm froze it): every use below reads it, never a value from the build.
             await confirmPartner(spec, taken: fieldCard.values, requestID: requestID, schedulable: schedulable)
-        })
+        }
     }
 
     /// Confirm, in order: the window check of every time field, the one trim and the required values, the length of the
