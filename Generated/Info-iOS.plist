@@ -41,6 +41,8 @@
 	<string>besir uses the camera to read a sign or a poster you take a photo of.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>besir uses your current location to calculate your departure time.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>besir uses the microphone to turn what you say into a chat message.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>
