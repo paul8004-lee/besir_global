@@ -108,27 +108,34 @@ enum PartnerForm {
         return fields
     }
 
-    private static func field(from object: [String: Any]) -> PartnerField? {
+    private static func field(from object: [String: Any], inGroup: Bool = false) -> PartnerField? {
         guard let key = object["key"] as? String, isFieldKey(key),
               let word = object["kind"] as? String, let kind = PartnerFieldKind(rawValue: word),
               let label = object["label"] as? String, isLabel(label, upTo: maxFieldLabelLength) else { return nil }
-        // A group is exactly `key`, `kind`, `label`, `fields`, `repeat`: it carries no `optional` and no `lookup`. `fields`
-        // holds its members, each read by this same reader and restricted to the scalar kinds a row can hold; at least one
-        // member is required, so a row with every member blank is never a valid row. `repeat` is the partner's maximum
-        // number of rows, a whole number of 1 or more.
+        // A group is exactly `key`, `kind`, `label`, `fields`, `repeat`, with an optional `fee_cents` after them (a whole
+        // number of 0 to `maxCents`, only while the item member's options carry prices): it carries no `optional` and no
+        // `lookup`. `fields` holds exactly two members, one `pick_one` (the item member) and one `number` (the count member),
+        // in either order and neither marked optional, so the card can draw the group as one list (SPEC-MENULIST-001
+        // REQ-001). `repeat` is the partner's maximum number of lines, a whole number of 1 or more.
         if kind == .group {
-            // SPEC-MENULIST-001 skeleton: a `fee_cents` key is read and ignored here (no value rule, nothing stored) until the
-            // real reader of REQ-001 to REQ-003 replaces this branch.
-            guard object.count == 5 || (object.count == 6 && object["fee_cents"] != nil), let listed = object["fields"] as? [Any],
-                  !listed.isEmpty, let maximum = integer(object["repeat"]), maximum > 0 else { return nil }
+            let hasFee = object["fee_cents"] != nil
+            guard object.count == (hasFee ? 6 : 5), let listed = object["fields"] as? [Any], listed.count == 2,
+                  let maximum = integer(object["repeat"]), maximum > 0 else { return nil }
             var members: [PartnerField] = []
             for element in listed {
-                guard let memberObject = element as? [String: Any], let member = field(from: memberObject),
-                      member.kind == .text || member.kind == .number || member.kind == .pickOne else { return nil }
+                guard let memberObject = element as? [String: Any], let member = field(from: memberObject, inGroup: true),
+                      member.kind == .pickOne || member.kind == .number, !member.isOptional else { return nil }
                 members.append(member)
             }
-            guard members.contains(where: { !$0.isOptional }) else { return nil }
-            return PartnerField(key: key, kind: kind, label: label, options: [], members: members, maxRows: maximum)
+            guard members.first(where: { $0.kind == .pickOne }) != nil, members.first(where: { $0.kind == .number }) != nil else { return nil }
+            var feeCents: Int?
+            if hasFee {
+                guard let fee = integer(object["fee_cents"]), (0...maxCents).contains(fee),
+                      let item = members.first(where: { $0.kind == .pickOne }),
+                      item.options.contains(where: { $0.priceCents != nil }) else { return nil }
+                feeCents = fee
+            }
+            return PartnerField(key: key, kind: kind, label: label, options: [], members: members, maxRows: maximum, feeCents: feeCents)
         }
         // `optional` is looked up as a key of the parsed dictionary, never as a position. Only the boolean `true` is a marker:
         // `false`, a text, a number and null are refused, and so is the marker on a switch.
@@ -151,30 +158,41 @@ enum PartnerForm {
             return object.count == keyCount
                 ? PartnerField(key: key, kind: kind, label: label, options: [], isOptional: optional, canLookUp: lookup) : nil
         }
-        guard object.count == keyCount + 1, let listed = object["options"] as? [Any], let options = options(from: listed, kind: kind) else { return nil }
+        guard object.count == keyCount + 1, let listed = object["options"] as? [Any],
+              let options = options(from: listed, kind: kind, inGroup: inGroup) else { return nil }
         return PartnerField(key: key, kind: kind, label: label, options: options, isOptional: optional)
     }
 
     /// `pick_one`: one or more entries with unique ids of `a-z0-9-_`. `on_off`: exactly two, the ids `true` then `false`, two
-    /// different labels. Every entry is exactly `{id, label}`; every label is 1 to 60 characters with no hidden one.
-    private static func options(from list: [Any], kind: PartnerFieldKind) -> [PartnerOption]? {
+    /// different labels. Every entry is exactly `{id, label}`, or `{id, label, price_cents}` on the item member of a group,
+    /// where `price_cents` is a JSON number with a whole value of 1 to `maxCents` that every option of the member carries or
+    /// none does (SPEC-MENULIST-001 REQ-002); every label is 1 to 60 characters with no hidden one.
+    private static func options(from list: [Any], kind: PartnerFieldKind, inGroup: Bool) -> [PartnerOption]? {
         let count = kind == .onOff ? list.count == 2 : !list.isEmpty
         guard count else { return nil }
+        let pricesAllowed = inGroup && kind == .pickOne
         var options: [PartnerOption] = []
         for (index, element) in list.enumerated() {
-            // SPEC-MENULIST-001 skeleton: a `price_cents` key is read and ignored here (no value rule, nothing stored) until the
-            // real reader of REQ-002 replaces this line.
-            guard let object = element as? [String: Any], object.count == 2 || (object.count == 3 && object["price_cents"] != nil),
+            let hasPrice = element as? [String: Any] != nil && (element as? [String: Any])?["price_cents"] != nil
+            guard let object = element as? [String: Any], object.count == (hasPrice ? 3 : 2), hasPrice == false || pricesAllowed,
                   let id = object["id"] as? String, let label = object["label"] as? String,
                   isLabel(label, upTo: maxOptionLabelLength) else { return nil }
+            var priceCents: Int?
+            if hasPrice {
+                guard let price = integer(object["price_cents"]), (1...maxCents).contains(price) else { return nil }
+                priceCents = price
+            }
             if kind == .onOff {
                 guard id == (index == 0 ? "true" : "false") else { return nil }
             } else {
                 guard isOptionID(id), !options.contains(where: { $0.id == id }) else { return nil }
             }
-            options.append(PartnerOption(id: id, label: label))
+            options.append(PartnerOption(id: id, label: label, priceCents: priceCents))
         }
         if kind == .onOff, options[0].label == options[1].label { return nil }
+        // All or none: while any option of the member carries a price, every option of it carries one.
+        let priced = options.filter { $0.priceCents != nil }.count
+        guard priced == 0 || priced == options.count else { return nil }
         return options
     }
 
