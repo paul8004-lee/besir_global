@@ -10,9 +10,6 @@ enum AgentDayPlan {
     static let checksPerTurn = 3
     /// `search_places` calls that are executed in one plan turn.
     static let searchesPerTurn = 6
-    /// The longest leg the app counts. A Routes answer above this (a wrongly matched, far-away place) is an unchecked leg, not a
-    /// late arrival: exactly this many seconds is still checked.
-    static let maxLegSeconds: TimeInterval = 6 * 3600
     private static let firstIdeaMax = 2
     private static let changeMax = 2
 
@@ -40,6 +37,18 @@ enum AgentDayPlan {
         case late(from: Int, to: Int, minutes: Int)
     }
 
+    /// Why a leg is unchecked. The raw values are the words the model reads in `unchecked_reasons`.
+    enum Unchecked: String, CaseIterable {
+        /// A stop of the pair has no place, so no lookup was made.
+        case noPlace = "no_place"
+        /// The pair was beyond the lookup cap of one check, so no lookup was made.
+        case notLookedUp = "not_looked_up"
+        /// The lookup gave no duration (failed, offline, no route, not set up).
+        case noAnswer = "no_answer"
+        /// The duration was above `AgentPlaces.maxLegSeconds`.
+        case tooLong = "too_long"
+    }
+
     /// The travel between the earlier stop that ends last (`from`) and a later stop (`to`). `route` nil means unchecked:
     /// no number is ever given to it.
     struct Leg: Equatable {
@@ -48,6 +57,8 @@ enum AgentDayPlan {
         let route: AgentRoute?
         /// The time to leave (`start of to - travel - buffer`); nil with the route.
         let leave: Date?
+        /// Why the leg is unchecked; non-nil exactly when `route` is nil.
+        let why: Unchecked?
     }
 
     /// What the Store held in the signature window when the check was made (`Confirm` compares it again).
@@ -92,6 +103,9 @@ enum AgentDayPlan {
         static let okMessage = "No overlap or late arrival was found. Call show_day_plan with this plan_id. Do not state any time that this result does not give."
         static let conflictMessage = "Fix these problems by changing the stops, then call check_day_plan again. Do not state any time that this result does not give."
         static let lastMessage = "This is the last check. Call show_day_plan with this plan_id."
+        /// Added to the conflict and last-check messages while a leg is unchecked, and spelled in the `ok` text below.
+        static let uncheckedNote = "Some legs were not checked, so a late arrival on them was not looked for."
+        static let okMessageUnchecked = "No overlap was found, and no late arrival on the legs that were checked. \(uncheckedNote) Call show_day_plan with this plan_id. Do not state any time that this result does not give."
         /// Notices after Confirm.
         static let partialAdded = "Some events were not added."
         static let nothingAdded = "Nothing was added."
@@ -301,16 +315,18 @@ enum AgentDayPlan {
     /// The legs and every problem: overlaps first, then late arrivals. `routes` holds the answers of the lookups; a pair with
     /// no answer (failed, cancelled, offline, beyond the cap), with a missing place or longer than `maxLegSeconds` is an unchecked leg. A leg is late by
     /// the whole minutes (rounded up) that the leave time is before the end of the stop it starts from.
-    static func evaluate(stops: [Stop], routes: [Pair: AgentRoute], bufferMinutes: Int) -> (legs: [Leg], problems: [Problem]) {
+    static func evaluate(stops: [Stop], routes: [Pair: AgentRoute], bufferMinutes: Int,
+                         notLookedUp: Set<Pair> = []) -> (legs: [Leg], problems: [Problem]) {
         var legs: [Leg] = []
         var late: [Problem] = []
         for (pair, lookup) in candidates(stops) {
-            guard lookup, let route = routes[pair], route.seconds <= maxLegSeconds else {
-                legs.append(Leg(from: pair.from, to: pair.to, route: nil, leave: nil))
-                continue
-            }
+            func skip(_ why: Unchecked) { legs.append(Leg(from: pair.from, to: pair.to, route: nil, leave: nil, why: why)) }
+            guard lookup else { skip(.noPlace); continue }
+            guard !notLookedUp.contains(pair) else { skip(.notLookedUp); continue }
+            guard let route = routes[pair] else { skip(.noAnswer); continue }
+            guard AgentPlaces.withinLegLimit(route.seconds) else { skip(.tooLong); continue }
             let leave = Store.departureTime(arrival: stops[pair.to - 1].start, travelSeconds: route.seconds, bufferMinutes: bufferMinutes)
-            legs.append(Leg(from: pair.from, to: pair.to, route: route, leave: leave))
+            legs.append(Leg(from: pair.from, to: pair.to, route: route, leave: leave, why: nil))
             let behind = stops[pair.from - 1].end.timeIntervalSince(leave)
             if behind > 0 { late.append(.late(from: pair.from, to: pair.to, minutes: Int((behind / 60).rounded(.up)))) }
         }
@@ -320,7 +336,8 @@ enum AgentDayPlan {
     // MARK: The result for the model (REQ-PLANDAY-009)
 
     /// Sorted keys: `message`, `plan_id`, `problems` (type, minutes, the two stops by event id or title), `status` and
-    /// `unchecked` (position pairs). Only the app's numbers and fixed words; the last allowed check says so.
+    /// `unchecked` (position pairs) and, only while a leg is unchecked, `unchecked_reasons` (reason word to position pairs).
+    /// Only the app's numbers and fixed words; the last allowed check says so.
     static func resultJSON(_ check: Check, checksMade: Int) -> String {
         func named(_ position: Int) -> [String: String] {
             guard check.stops.indices.contains(position - 1) else { return [:] }
@@ -337,9 +354,24 @@ enum AgentDayPlan {
             }
         }
         let ok = check.problems.isEmpty
-        let message = ok ? Say.okMessage : (checksMade >= checksPerTurn ? Say.lastMessage : Say.conflictMessage)
-        return AgentToolbox.encode(["status": ok ? "ok" : "conflict", "plan_id": check.handle, "problems": problems,
-                                    "unchecked": check.legs.filter { $0.route == nil }.map { [$0.from, $0.to] }, "message": message])
+        let open = check.legs.filter { $0.route == nil }
+        let conflictText = checksMade >= checksPerTurn ? Say.lastMessage : Say.conflictMessage
+        // While a leg is unchecked the texts no longer read as a clean bill; with none unchecked they are the old texts.
+        let message: String
+        switch (ok, open.isEmpty) {
+        case (true, true): message = Say.okMessage
+        case (true, false): message = Say.okMessageUnchecked
+        case (false, true): message = conflictText
+        case (false, false): message = conflictText + " " + Say.uncheckedNote
+        }
+        var object: [String: Any] = ["status": ok ? "ok" : "conflict", "plan_id": check.handle, "problems": problems,
+                                     "unchecked": open.map { [$0.from, $0.to] }, "message": message]
+        if !open.isEmpty {
+            var grouped: [String: [[Int]]] = [:]
+            for leg in open { if let why = leg.why { grouped[why.rawValue, default: []].append([leg.from, leg.to]) } }
+            object["unchecked_reasons"] = grouped
+        }
+        return AgentToolbox.encode(object)
     }
 
     // MARK: The card (REQ-PLANDAY-010, 011)

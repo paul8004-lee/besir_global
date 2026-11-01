@@ -228,13 +228,6 @@ final class PartnerFormTests: XCTestCase {
         let reordered = try XCTUnwrap(PartnerForm.fields(from: wireText(listText("6", repeatFirst: true))))
         XCTAssertEqual(reordered[1].maxRows, 6)
 
-        // One member and twenty members decode.
-        let single = try XCTUnwrap(fields([group("items", "Items", members: [field("item", "pick_one", "Item", options: menu)], repeat: 3)]))
-        XCTAssertEqual(single[0].members.count, 1)
-        let twentyKeys = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t"]
-        let twenty = try XCTUnwrap(fields([group("items", "Items", members: twentyKeys.map { field($0, "text", $0.capitalized) }, repeat: 3)]))
-        XCTAssertEqual(twenty[0].members.count, 20)
-
         // The group is one of the eight entries; its members are not counted.
         let seven = (0..<7).map { field(String(repeating: "a", count: $0 + 1), "text", "L") }
         let eighth = try XCTUnwrap(fields(seven + [group("items", "Items", members: members, repeat: 2)]))
@@ -244,11 +237,6 @@ final class PartnerFormTests: XCTestCase {
         // A group label of 40 characters, the label rule of any field.
         let wide = try XCTUnwrap(fields([group("items", String(repeating: "L", count: 40), members: members, repeat: 2)]))
         XCTAssertEqual(wide[0].label.count, 40)
-
-        // A member with `optional: true` beside a required one decodes.
-        let mixed = try XCTUnwrap(fields([group("items", "Items", members: [field("item", "pick_one", "Item", options: menu),
-                                                                            field("note", "text", "Note", optional: true)], repeat: 2)]))
-        XCTAssertEqual(mixed[0].members.map(\.isOptional), [false, true])
     }
 
     func testGROUP_GW3_ADefectInTheGroupEntryMakesTheWholeListUnusable() throws {
@@ -315,6 +303,156 @@ final class PartnerFormTests: XCTestCase {
             ("a ninth entry", (0..<8).map { field(String(repeating: "a", count: $0 + 1), "text", "L") } + [entry()]),
         ]
         for (name, value) in cases { XCTAssertNil(fields(value), name) }
+    }
+
+    // MARK: MENULIST T01-T03 the list group, the option price and the fee (SPEC-MENULIST-001, card t106)
+
+    /// The six menu options with a price on each: the ids and labels of the delivery menu, priced as the Worker's table is.
+    /// The price is `Any` so a defect value (a boolean, a text, null) rides the same shape.
+    private func pricedMenu(_ cents: [Any]) -> [[String: Any]] {
+        let names = [("ramen", "Ramen"), ("gyoza", "Gyoza"), ("curry", "Curry rice"),
+                     ("pizza", "Cheese pizza"), ("salad", "Garden salad"), ("lemonade", "Lemonade")]
+        return names.enumerated().map { index, pair in
+            var entry = option(pair.0, pair.1)
+            entry["price_cents"] = cents[index]
+            return entry
+        }
+    }
+
+    /// The list group of the tests: an item member of the six menu options and a count member.
+    private func listGroup(itemOptions: [[String: Any]], members: [[String: Any]]? = nil, repeat maximum: Int = 6,
+                           fee: Any? = nil) -> [String: Any] {
+        let two = members ?? [field("item", "pick_one", "Item", options: itemOptions), field("quantity", "number", "Quantity")]
+        var object: [String: Any] = ["key": "items", "kind": "group", "label": "Items", "fields": two, "repeat": maximum]
+        if let fee { object["fee_cents"] = fee }
+        return object
+    }
+
+    func testMENULIST_T01_AGroupIsAListOnlyWhenItHoldsOneRequiredPickOneAndOneRequiredNumber() throws {
+        let menu: [[String: Any]] = [
+            option("ramen", "Ramen"), option("gyoza", "Gyoza"), option("curry", "Curry rice"),
+            option("pizza", "Cheese pizza"), option("salad", "Garden salad"), option("lemonade", "Lemonade")]
+        let item = field("item", "pick_one", "Item", options: menu)
+        let count = field("quantity", "number", "Quantity")
+        // Positive first: a pick_one then a number, and a number then a pick_one, decode, `repeat` 1 and 6.
+        for (name, members, kinds) in [("item first", [item, count], [PartnerFieldKind.pickOne, .number]),
+                                       ("count first", [count, item], [PartnerFieldKind.number, .pickOne])] {
+            for maximum in [1, 6] {
+                let decoded = try XCTUnwrap(fields([listGroup(itemOptions: menu, members: members, repeat: maximum)]),
+                                            "\(name), repeat \(maximum)")
+                XCTAssertEqual(decoded[0].kind, .group, "\(name), repeat \(maximum)")
+                XCTAssertEqual(decoded[0].members.map(\.kind), kinds, "\(name), repeat \(maximum)")
+                XCTAssertEqual(decoded[0].maxRows, maximum, "\(name), repeat \(maximum)")
+            }
+        }
+        // Each other shape makes the whole list unusable.
+        let twenty = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t"]
+        let cases: [(String, [[String: Any]])] = [
+            ("one member, the pick_one alone", [item]),
+            ("three members, the third optional", [item, count, field("note", "text", "Note", optional: true)]),
+            ("three members, all required (only the member count refuses it)",
+             [item, count, field("note", "text", "Note")]),
+            ("a pick_one and a text", [item, field("note", "text", "Note")]),
+            ("two numbers", [count, field("again", "number", "Again")]),
+            ("two pick_ones", [item, field("more", "pick_one", "More", options: menu)]),
+            ("a text and a number", [field("note", "text", "Note"), count]),
+            ("an optional pick_one beside a number", [field("item", "pick_one", "Item", options: menu, optional: true), count]),
+            ("a pick_one beside an optional number", [item, field("quantity", "number", "Quantity", optional: true)]),
+            ("twenty text members", twenty.map { field($0, "text", $0.capitalized) }),
+            ("a pick_one beside an optional text", [item, field("note", "text", "Note", optional: true)]),
+        ]
+        for (name, members) in cases {
+            XCTAssertNil(fields([listGroup(itemOptions: menu, members: members)]), name)
+        }
+    }
+
+    func testMENULIST_T02_AnOptionPriceIsAWholeNumberOfCentsOnAGroupMemberAndAllOrNoneOfTheOptionsCarryOne() throws {
+        let cents = [1400, 700, 1300, 2500, 900, 400]
+        // A priced group decodes with each price in option order, the ids and labels unchanged, and the count member has no
+        // options.
+        let decoded = try XCTUnwrap(fields([listGroup(itemOptions: pricedMenu(cents))]))
+        let items = decoded[0]
+        XCTAssertEqual(items.members[0].options.map(\.priceCents), cents)
+        XCTAssertEqual(items.members[0].options.map(\.id), ["ramen", "gyoza", "curry", "pizza", "salad", "lemonade"])
+        XCTAssertEqual(items.members[0].options.map(\.label), ["Ramen", "Gyoza", "Curry rice", "Cheese pizza", "Garden salad", "Lemonade"])
+        XCTAssertEqual(items.members[1].options, [], "the count member has no options")
+        XCTAssertEqual(items.feeCents, nil)
+        // The edges of the range decode.
+        for edge in [1, 1_000_000] {
+            let one = try XCTUnwrap(fields([listGroup(itemOptions: pricedMenu(Array(repeating: edge, count: 6)))]), "\(edge)")
+            XCTAssertEqual(one[0].members[0].options.map(\.priceCents), Array(repeating: edge, count: 6), "\(edge)")
+        }
+        // `2.0`, read from JSON text as written, is 2.
+        let pricedText = listGroup(itemOptions: pricedMenu([2, 2, 2, 2, 2, 2]))
+        let two = try XCTUnwrap(PartnerForm.fields(from: wireText(String(decoding: try JSONSerialization.data(withJSONObject: [pricedText]), as: UTF8.self)
+            .replacingOccurrences(of: "\"price_cents\":2", with: "\"price_cents\":2.0"))))
+        XCTAssertEqual(two[0].members[0].options.map(\.priceCents), Array(repeating: 2, count: 6))
+        // Each value outside the range, or not a number, makes the whole list nil.
+        let badPrices: [(String, Any)] = [("0", 0), ("-1", -1), ("1.5", 1.5), ("true", true), ("the text \"1400\"", "1400"),
+                                          ("null", NSNull()), ("1,000,001", 1_000_001)]
+        for (name, bad) in badPrices {
+            XCTAssertNil(fields([listGroup(itemOptions: pricedMenu(Array(repeating: bad, count: 6)))]), name)
+        }
+        // All or none: one option unpriced among priced, and only the first priced, are unusable.
+        var oneUnpriced = pricedMenu(cents)
+        oneUnpriced[2].removeValue(forKey: "price_cents")
+        XCTAssertNil(fields([listGroup(itemOptions: oneUnpriced)]), "one option unpriced among priced")
+        var firstOnly = pricedMenu(cents)
+        for index in 1..<6 { firstOnly[index].removeValue(forKey: "price_cents") }
+        XCTAssertNil(fields([listGroup(itemOptions: firstOnly)]), "only the first priced")
+        // An unpriced group decodes with every price nil.
+        let menu: [[String: Any]] = [
+            option("ramen", "Ramen"), option("gyoza", "Gyoza"), option("curry", "Curry rice"),
+            option("pizza", "Cheese pizza"), option("salad", "Garden salad"), option("lemonade", "Lemonade")]
+        let plain = try XCTUnwrap(fields([listGroup(itemOptions: menu)]))
+        XCTAssertEqual(plain[0].members[0].options.map(\.priceCents), Array(repeating: nil, count: 6))
+        // A price on any other option stays unusable: a scalar pick_one, an on_off option, an option beside an extra key, and
+        // the key `price` (not `price_cents`).
+        XCTAssertNil(fields([field("size", "pick_one", "Size", options: pricedMenu(cents))]), "a scalar pick_one")
+        XCTAssertNil(fields([field("door", "on_off", "Door", options: [["id": "true", "label": "Yes", "price_cents": 1],
+                                                                        ["id": "false", "label": "No", "price_cents": 1]])]), "an on_off option")
+        XCTAssertNil(fields([listGroup(itemOptions: [["id": "ramen", "label": "Ramen", "price_cents": 1400, "extra": 1]])]),
+                     "an option beside an extra key")
+        XCTAssertNil(fields([listGroup(itemOptions: [["id": "ramen", "label": "Ramen", "price": 1400]])]), "the key price")
+    }
+
+    func testMENULIST_T03_TheGroupFeeIsAWholeNumberOfCentsAndNeedsPrices() throws {
+        let cents = [1400, 700, 1300, 2500, 900, 400]
+        // A priced group with a fee decodes with the fee, also when the key is written before `fields`.
+        let decoded = try XCTUnwrap(fields([listGroup(itemOptions: pricedMenu(cents), fee: 500)]))
+        XCTAssertEqual(decoded[0].feeCents, 500)
+        XCTAssertEqual(decoded[0].members[0].options.map(\.priceCents), cents, "the fee does not disturb the prices")
+        var feeFirst = listGroup(itemOptions: pricedMenu(cents), fee: 500)
+        feeFirst = ["key": "items", "kind": "group", "label": "Items", "fee_cents": 500,
+                    "fields": feeFirst["fields"] ?? [], "repeat": 6]
+        let reordered = try XCTUnwrap(fields([feeFirst]))
+        XCTAssertEqual(reordered[0].feeCents, 500, "key order is not a position")
+        // The edges of the range decode; an absent fee gives nil.
+        for edge in [0, 1_000_000] {
+            let one = try XCTUnwrap(fields([listGroup(itemOptions: pricedMenu(cents), fee: edge)]), "\(edge)")
+            XCTAssertEqual(one[0].feeCents, edge, "\(edge)")
+        }
+        XCTAssertNil(try XCTUnwrap(fields([listGroup(itemOptions: pricedMenu(cents))]))[0].feeCents)
+        // Each value outside the range, or not a number, makes the whole list nil.
+        let badFees: [(String, Any)] = [("1,000,001", 1_000_001), ("-1", -1), ("1.5", 1.5), ("the text \"500\"", "500"),
+                                        ("true", true), ("null", NSNull())]
+        for (name, bad) in badFees {
+            XCTAssertNil(fields([listGroup(itemOptions: pricedMenu(cents), fee: bad)]), name)
+        }
+        // A fee beside unpriced options, a sixth key other than fee_cents, a seventh key, and a fee on a number field.
+        let menu: [[String: Any]] = [
+            option("ramen", "Ramen"), option("gyoza", "Gyoza"), option("curry", "Curry rice"),
+            option("pizza", "Cheese pizza"), option("salad", "Garden salad"), option("lemonade", "Lemonade")]
+        XCTAssertNil(fields([listGroup(itemOptions: menu, fee: 500)]), "a fee beside unpriced options")
+        var hint = listGroup(itemOptions: pricedMenu(cents), fee: 500)
+        hint["hint"] = "x"
+        XCTAssertNil(fields([hint]), "a sixth key other than fee_cents")
+        var seventh = listGroup(itemOptions: pricedMenu(cents), fee: 500)
+        seventh["hint"] = "x"
+        seventh["more"] = 1
+        XCTAssertNil(fields([seventh]), "a seventh key")
+        XCTAssertNil(fields([field("count", "number", "Count").merging(["fee_cents": 500]) { _, new in new }]),
+                     "a fee on a number field")
     }
 
     // MARK: W05-W07 the number kind and the optional marker

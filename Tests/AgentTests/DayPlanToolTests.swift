@@ -136,7 +136,7 @@ final class DayPlanToolTests: XCTestCase {
     }
 
     func testPLANDAY_T68_aLegOverSixHoursIsUncheckedNotLateAndExactlySixHoursStaysAsBefore() {
-        XCTAssertEqual(AgentDayPlan.maxLegSeconds, 6 * 3600)
+        XCTAssertEqual(AgentPlaces.maxLegSeconds, 6 * 3600)
 
         var exactly = dayRoutes
         exactly["Foo Kitchen>Mission Hall"] = 6 * 3600
@@ -164,6 +164,7 @@ final class DayPlanToolTests: XCTestCase {
         XCTAssertFalse(card.contains { $0.contains("late") || $0.contains("4968") }, "no late line: \(card)")
         let json = AgentDayPlan.resultJSON(check(walk), checksMade: 1)
         XCTAssertTrue(json.contains(#""problems":[],"status":"ok","unchecked":[[1,2]]"#), "the model is told the leg is unchecked: \(json)")
+        XCTAssertTrue(json.contains(#""unchecked_reasons":{"too_long":[[1,2]]}"#), "and why: \(json)")
     }
 
     // MARK: arithmetic against all events (T59-T63)
@@ -426,6 +427,18 @@ final class DayPlanToolTests: XCTestCase {
 
     private func unchecked(_ reply: PlaceReply) -> [[Int]] {
         (reply.json?["unchecked"] as? [[Int]]) ?? []
+    }
+
+    /// The test's own copies of the texts of SPEC-TRAVELLEGS-001 plan.md 4.5, so a change of the source text is caught.
+    private let uncheckedNoteText = "Some legs were not checked, so a late arrival on them was not looked for."
+    private let okUncheckedText = "No overlap was found, and no late arrival on the legs that were checked. Some legs were not checked, so a late arrival on them was not looked for. Call show_day_plan with this plan_id. Do not state any time that this result does not give."
+    private let conflictText = "Fix these problems by changing the stops, then call check_day_plan again. Do not state any time that this result does not give."
+    private let lastText = "This is the last check. Call show_day_plan with this plan_id."
+    private let okText = "No overlap or late arrival was found. Call show_day_plan with this plan_id. Do not state any time that this result does not give."
+
+    /// The decoded `unchecked_reasons` of a result (nil when the key is absent), compared by value and not by key order.
+    private func reasons(_ reply: PlaceReply) -> NSDictionary? {
+        reply.json?["unchecked_reasons"] as? NSDictionary
     }
 
     // MARK: sessions and declarations (T29-T31)
@@ -715,6 +728,7 @@ final class DayPlanToolTests: XCTestCase {
         let placeless = await check(none, [stopObject("Snack", "18:30", "19:00")])
         XCTAssertEqual(none.routes.callCount, 0)
         XCTAssertEqual(unchecked(placeless), [[1, 2]])
+        XCTAssertEqual(reasons(placeless), ["no_place": [[1, 2]]] as NSDictionary, "a stop without a place says so")
 
         // The turn's flow reaches the lookup.
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("planday-\(UUID().uuidString)", isDirectory: true)
@@ -747,6 +761,8 @@ final class DayPlanToolTests: XCTestCase {
         for (label, reply, rig) in [("offline", down, offline), ("no route", none, noRoute), ("not configured", missing, notConfigured)] {
             XCTAssertEqual(reply.status, "ok", label)
             XCTAssertEqual(unchecked(reply), [[1, 2], [2, 3]], label)
+            XCTAssertEqual(reasons(reply), ["no_answer": [[1, 2], [2, 3]]] as NSDictionary, label)
+            XCTAssertEqual(reply.message, okUncheckedText, "\(label): the ok text no longer reads as a clean bill")
             XCTAssertFalse(reply.text?.contains("minutes") ?? true, "\(label): no number")
             let stored = rig.tools.checks.last
             XCTAssertEqual(stored?.legs.count, 2, label)
@@ -763,6 +779,7 @@ final class DayPlanToolTests: XCTestCase {
         })
         let half = await check(mixed, dayStops())
         XCTAssertEqual(unchecked(half), [[2, 3]])
+        XCTAssertEqual(reasons(half), ["no_answer": [[2, 3]]] as NSDictionary)
         XCTAssertEqual(mixed.tools.checks.last?.legs.map { $0.route?.seconds }, [1080, nil])
 
         // A cancelled run stores nothing, makes no further lookup and does not use up a plan handle.
@@ -915,10 +932,94 @@ final class DayPlanToolTests: XCTestCase {
         XCTAssertEqual(reply.status, "ok")
         XCTAssertEqual(rig.routes.callCount, 10, "the cap of ten lookups")
         XCTAssertEqual(unchecked(reply), [[11, 12], [12, 13], [13, 14], [14, 15]])
+        XCTAssertEqual(reasons(reply), ["not_looked_up": [[11, 12], [12, 13], [13, 14], [14, 15]]] as NSDictionary)
         let stored = try XCTUnwrap(rig.tools.checks.last)
         XCTAssertEqual(stored.legs.count, 14)
         XCTAssertEqual(stored.legs.filter { $0.route != nil }.count, 10)
         XCTAssertEqual(stored.legs.filter { $0.route == nil }.count, 4)
+    }
+
+    // MARK: SPEC-TRAVELLEGS-001: the reason of an unchecked leg (T07, T08)
+
+    func testTRAVELLEGS_T07_EachUncheckedLegHasOneReasonAndTheResultGroupsThemBesideTheUncheckedPairs() throws {
+        // Seven new stops one hour apart; adjacent places differ, so every pair is a leg.
+        let places: [Place?] = [p1, p2, nil, p3, p4, p5, p1]
+        let news = places.enumerated().map { index, place in
+            newStop("Stop \(index + 1)", String(format: "%02d:00", 9 + index), String(format: "%02d:30", 9 + index), place: place)
+        }
+        let stops = AgentDayPlan.effective(news, events: [])
+        XCTAssertEqual(stops.map(\.title), (1...7).map { "Stop \($0)" })
+        let routes: [Pair: AgentRoute] = [
+            Pair(from: 1, to: 2): route(p1, p2, seconds: 600),
+            Pair(from: 5, to: 6): route(p4, p5, seconds: 6 * 3600 + 1)]
+        let evaluated = AgentDayPlan.evaluate(stops: stops, routes: routes, bufferMinutes: AgentPlaces.legBufferMinutes,
+                                              notLookedUp: [Pair(from: 6, to: 7)])
+        XCTAssertEqual(evaluated.legs.map { [$0.from, $0.to] }, [[1, 2], [2, 3], [3, 4], [4, 5], [5, 6], [6, 7]])
+        let expectedWhy: [AgentDayPlan.Unchecked?] = [nil, .noPlace, .noPlace, .noAnswer, .tooLong, .notLookedUp]
+        XCTAssertEqual(evaluated.legs.map(\.why), expectedWhy)
+        for leg in evaluated.legs {
+            XCTAssertEqual(leg.route == nil, leg.why != nil, "a reason exactly when the leg is unchecked: \(leg)")
+            XCTAssertEqual(leg.route == nil, leg.leave == nil, "\(leg)")
+        }
+        XCTAssertEqual(evaluated.problems, [], "an unchecked leg is no problem")
+
+        let stored = AgentDayPlan.Check(handle: "d1", stops: stops, legs: evaluated.legs, problems: evaluated.problems,
+                                        createdAt: TestClock.now, signature: [])
+        let json = AgentDayPlan.resultJSON(stored, checksMade: 1)
+        let object = try XCTUnwrap(TestClock.object(json))
+        let pairs = [[2, 3], [3, 4], [4, 5], [5, 6], [6, 7]]
+        XCTAssertEqual(object["unchecked"] as? [[Int]], pairs, "the pairs, in order, as before: \(json)")
+        let grouped: NSDictionary = ["no_place": [[2, 3], [3, 4]], "no_answer": [[4, 5]], "too_long": [[5, 6]], "not_looked_up": [[6, 7]]]
+        XCTAssertEqual(object["unchecked_reasons"] as? NSDictionary, grouped, json)
+        let union = (object["unchecked_reasons"] as? [String: [[Int]]] ?? [:]).values.flatMap { $0 }
+        XCTAssertEqual(union.count, pairs.count, "no pair twice")
+        XCTAssertEqual(Set(union.map { "\($0)" }), Set(pairs.map { "\($0)" }), "the union is the unchecked pairs")
+        XCTAssertFalse(json.contains("21601"), "no duration of the refused leg: \(json)")
+        XCTAssertFalse(json.contains("360"), json)
+
+        let clean = run(events: [dayA()], news: [dayB(), dayC()], seconds: dayRoutes)
+        let cleanObject = try XCTUnwrap(TestClock.object(AgentDayPlan.resultJSON(check(clean), checksMade: 1)))
+        XCTAssertNil(cleanObject["unchecked_reasons"], "no key while nothing is unchecked")
+    }
+
+    func testTRAVELLEGS_T08_AResultWithAnUncheckedLegNoLongerReadsAsACleanBill() throws {
+        func message(_ outcome: Outcome, _ checksMade: Int) throws -> String {
+            let object = try XCTUnwrap(TestClock.object(AgentDayPlan.resultJSON(check(outcome), checksMade: checksMade)))
+            return try XCTUnwrap(object["message"] as? String)
+        }
+
+        // One unchecked leg (the second lookup has no answer), no problem.
+        let partly = run(events: [dayA()], news: [dayB(), dayC()], seconds: ["Team HQ>Foo Kitchen": 1080])
+        XCTAssertNil(partly.legs[1].route)
+        let okMessage = try message(partly, 1)
+        XCTAssertEqual(okMessage, okUncheckedText)
+        XCTAssertFalse(okMessage.contains("No overlap or late arrival was found"), "no clean bill: \(okMessage)")
+
+        // One unchecked leg and an overlap: the conflict text and the last-check text get the note.
+        let conflicting = run(events: [dayA()], news: [dayB("17:50", "18:50"), dayC()])
+        XCTAssertEqual(conflicting.problems, [.overlap(1, 2, minutes: 10)])
+        XCTAssertEqual(conflicting.legs.filter { $0.route == nil }.count, 1)
+        XCTAssertEqual(try message(conflicting, 1), conflictText + " " + uncheckedNoteText)
+        XCTAssertEqual(try message(conflicting, 3), lastText + " " + uncheckedNoteText)
+
+        // Nothing unchecked: the three texts are the texts of today, byte for byte.
+        let whole = run(events: [dayA()], news: [dayB(), dayC()], seconds: dayRoutes)
+        XCTAssertEqual(AgentDayPlan.resultJSON(check(whole), checksMade: 1),
+                       #"{"message":"No overlap or late arrival was found. Call show_day_plan with this plan_id. Do not state any time that this result does not give.","plan_id":"d1","problems":[],"status":"ok","unchecked":[]}"#)
+        XCTAssertEqual(try message(whole, 1), okText)
+        let wholeConflict = run(events: [dayA()], news: [dayB("17:50", "18:50"), dayC()], seconds: ["Foo Kitchen>Mission Hall": 600])
+        XCTAssertEqual(wholeConflict.legs.filter { $0.route == nil }.count, 0)
+        XCTAssertEqual(try message(wholeConflict, 1), conflictText)
+        XCTAssertEqual(try message(wholeConflict, 3), lastText)
+
+        // The new texts hold no number, no reason word and no tool name that would invite a call.
+        XCTAssertEqual(AgentDayPlan.Say.uncheckedNote, uncheckedNoteText)
+        XCTAssertEqual(AgentDayPlan.Say.okMessageUnchecked, okUncheckedText)
+        let words = ["minutes", "no_place", "not_looked_up", "no_answer", "too_long", "check_day_plan", "get_travel_time", "search_places"]
+        for text in [okMessage, uncheckedNoteText] {
+            XCTAssertNil(text.firstIndex { $0.isNumber }, "no digit: \(text)")
+            for word in words { XCTAssertFalse(text.contains(word), "\(word): \(text)") }
+        }
     }
 
     // MARK: M2b rigs

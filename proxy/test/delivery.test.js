@@ -24,7 +24,8 @@ const CARDS = [
 const FEE = 500;
 const PRICE = Object.fromEntries(MENU.map((entry) => [entry.id, entry.price_cents]));
 
-// The form the fields answer holds, written out here on purpose, in the partner's order and with the key order of the contract.
+// The form the fields answer holds, written out here on purpose, in the partner's order and with the key order of the contract
+// (SPEC-MENULIST-001: each item option carries its price, the group carries the fee after repeat).
 const FIELDS = [
   { key: "restaurant", kind: "text", label: "Restaurant" },
   {
@@ -32,10 +33,11 @@ const FIELDS = [
     kind: "group",
     label: "Items",
     fields: [
-      { key: "item", kind: "pick_one", label: "Item", options: MENU.map(({ id, name }) => ({ id, label: name })) },
+      { key: "item", kind: "pick_one", label: "Item", options: MENU.map(({ id, name, price_cents }) => ({ id, label: name, price_cents })) },
       { key: "quantity", kind: "number", label: "Quantity" },
     ],
     repeat: 6,
+    fee_cents: FEE,
   },
   { key: "arrive_at", kind: "time", label: "Arrival" },
   { key: "address", kind: "place", label: "Delivery place", lookup: true },
@@ -129,19 +131,21 @@ test("AC-DELIVERYCARD-002 D03: the fields answer holds exactly four keys, the fi
   assert.equal(body.simulated, true);
   assert.deepEqual(body.fields.map((field) => field.key), ["restaurant", "items", "arrive_at", "address", "card_id"]);
   assert.deepEqual(body.fields, FIELDS);
-  // The key order of every field shape, including the group and its members.
+  // The key order of every field shape, including the group and its members, the priced options and the fee.
   assert.deepEqual(Object.keys(body.fields[0]), ["key", "kind", "label"]);
-  assert.deepEqual(Object.keys(body.fields[1]), ["key", "kind", "label", "fields", "repeat"]);
+  assert.deepEqual(Object.keys(body.fields[1]), ["key", "kind", "label", "fields", "repeat", "fee_cents"]);
   assert.deepEqual(Object.keys(body.fields[1].fields[0]), ["key", "kind", "label", "options"]);
   assert.deepEqual(Object.keys(body.fields[1].fields[1]), ["key", "kind", "label"]);
+  assert.deepEqual(Object.keys(body.fields[1].fields[0].options[0]), ["id", "label", "price_cents"]);
   assert.deepEqual(Object.keys(body.fields[3]), ["key", "kind", "label", "lookup"]);
   assert.deepEqual(Object.keys(body.fields[4]), ["key", "kind", "label", "options"]);
   assert.equal(body.fields[1].repeat, 6);
-  assert.deepEqual(body.fields[1].fields[0].options, MENU.map(({ id, name }) => ({ id, label: name })));
+  assert.equal(body.fields[1].fee_cents, FEE);
+  assert.deepEqual(body.fields[1].fields[0].options, MENU.map(({ id, name, price_cents }) => ({ id, label: name, price_cents })));
   assert.deepEqual(body.fields[4].options, CARDS);
   assert.deepEqual(body.result_fields, RESULT_FIELDS);
   assert.deepEqual(Object.keys(body.result_fields[0]), ["name", "kind"]);
-  // No key anywhere holds a price, a fee or a total.
+  // Only `price_cents` under an option of the item member and `fee_cents` on the group; no total key anywhere.
   const keyProblems = [];
   const walkKeys = (value, path) => {
     if (Array.isArray(value)) {
@@ -156,32 +160,40 @@ test("AC-DELIVERYCARD-002 D03: the fields answer holds exactly four keys, the fi
     }
   };
   walkKeys(body, "");
-  assert.deepEqual(keyProblems, []);
+  const allowed = /^\.fields\[1\]\.fee_cents$|^\.fields\[1\]\.fields\[0\]\.options\[\d+\]\.price_cents$/;
+  assert.deepEqual(keyProblems.filter((path) => !allowed.test(path)), []);
+  assert.equal(keyProblems.length, 7, "the fee once and a price on each of the six options");
   // The same text every time.
   const text = await (await call({ op: "fields" })).text();
   assert.equal(text, JSON.stringify(body));
 });
 
-// An independent statement of the field grammar (SPEC-GROUPFIELD-001 v0.3.1): nothing here is imported from the route.
+// An independent statement of the field grammar (SPEC-GROUPFIELD-001 v0.3.1 with the list group, prices and the fee of
+// SPEC-MENULIST-001): nothing here is imported from the route.
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 const SCALAR_KINDS = ["text", "place", "time", "pick_one", "on_off", "number"];
-const MEMBER_KINDS = ["text", "number", "pick_one"];
+const MEMBER_KINDS = ["pick_one", "number"];
+const PRICE_MAX = 1_000_000;
 const codePoints = (text) => [...text].length;
 const plain = (text, longest) => typeof text === "string" && !HIDDEN.test(text) && codePoints(text) >= 1 && codePoints(text) <= longest;
 const plainObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const keyForm = (key) => typeof key === "string" && /^[a-z_]{1,32}$/.test(key);
+const wholeCents = (value, lowest) => typeof value === "number" && Number.isInteger(value) && value >= lowest && value <= PRICE_MAX;
 
-function optionDefects(field) {
+function optionDefects(field, pricesAllowed) {
   const defects = [];
   const options = field.options;
   if (!Array.isArray(options) || options.length < 1) return [`${field.key}: options missing`];
   for (const option of options) {
-    if (!plainObject(option) || JSON.stringify(Object.keys(option).sort()) !== '["id","label"]') {
+    const keys = plainObject(option) ? JSON.stringify(Object.keys(option).sort()) : null;
+    const priced = keys === '["id","label","price_cents"]';
+    if (!plainObject(option) || (!priced && keys !== '["id","label"]') || (priced && !pricesAllowed)) {
       defects.push(`${field.key}: option keys`);
-    } else {
-      if (!plain(option.label, 60)) defects.push(`${field.key}: option label`);
-      if (typeof option.id !== "string" || !/^[a-z0-9_-]{1,32}$/.test(option.id)) defects.push(`${field.key}: option id`);
+      continue;
     }
+    if (!plain(option.label, 60)) defects.push(`${field.key}: option label`);
+    if (typeof option.id !== "string" || !/^[a-z0-9_-]{1,32}$/.test(option.id)) defects.push(`${field.key}: option id`);
+    if (priced && !wholeCents(option.price_cents, 1)) defects.push(`${field.key}: option price`);
   }
   if (defects.length > 0) return defects;
   const ids = options.map((option) => option.id);
@@ -190,11 +202,16 @@ function optionDefects(field) {
     if (JSON.stringify(ids) !== '["true","false"]') defects.push(`${field.key}: on_off ids`);
     if (options.length === 2 && options[0].label === options[1].label) defects.push(`${field.key}: on_off labels`);
   }
+  // All or none: while any option carries a price, every option of the member carries one.
+  if (pricesAllowed && options.some((option) => option.price_cents !== undefined) && !options.every((option) => option.price_cents !== undefined)) {
+    defects.push(`${field.key}: price all or none`);
+  }
   return defects;
 }
 
-// One scalar field: `kinds` says which kinds are allowed here (a group member allows fewer than a top-level entry).
-function scalarDefects(field, kinds, seen) {
+// One scalar field: `kinds` says which kinds are allowed here (a group member allows fewer than a top-level entry), and
+// `pricesAllowed` says whether an option may carry a price (only the item member of a group may).
+function scalarDefects(field, kinds, seen, pricesAllowed = false) {
   const defects = [];
   const names = Object.keys(field);
   const withOptions = field.kind === "pick_one" || field.kind === "on_off";
@@ -215,7 +232,7 @@ function scalarDefects(field, kinds, seen) {
   seen.add(field.key);
   if (!kinds.includes(field.kind)) defects.push(`${field.key}: kind`);
   if (!plain(field.label, 40)) defects.push(`${field.key}: label`);
-  if (withOptions) defects.push(...optionDefects(field));
+  if (withOptions) defects.push(...optionDefects(field, pricesAllowed));
   return defects;
 }
 
@@ -229,9 +246,10 @@ function fieldListDefects(fields) {
       continue;
     }
     if (field.kind === "group") {
-      if (JSON.stringify(Object.keys(field)) !== JSON.stringify(["key", "kind", "label", "fields", "repeat"])) {
-        defects.push(`${field.key}: group keys`);
-      }
+      const names = Object.keys(field);
+      const withFee = names.includes("fee_cents");
+      const groupKeys = withFee ? ["key", "kind", "label", "fields", "repeat", "fee_cents"] : ["key", "kind", "label", "fields", "repeat"];
+      if (JSON.stringify(names) !== JSON.stringify(groupKeys)) defects.push(`${field.key}: group keys`);
       if (!keyForm(field.key)) defects.push(`${field.key}: key form`);
       if (seen.has(field.key)) defects.push(`${field.key}: key repeated`);
       seen.add(field.key);
@@ -240,20 +258,28 @@ function fieldListDefects(fields) {
       if (typeof repeat !== "number" || !Number.isInteger(repeat) || repeat < 1 || repeat >= 1e12) {
         defects.push(`${field.key}: repeat`);
       }
-      if (!Array.isArray(field.fields) || field.fields.length < 1) {
-        defects.push(`${field.key}: members missing`);
+      if (withFee && !wholeCents(field.fee_cents, 0)) defects.push(`${field.key}: fee`);
+      if (!Array.isArray(field.fields) || field.fields.length !== 2) {
+        defects.push(`${field.key}: member count`);
         continue;
       }
-      let optional = 0;
+      // A list group holds exactly one required pick_one (the item member) and one required number (the count member), in
+      // either order; a price may ride only the item member's options.
+      const item = field.fields.find((member) => plainObject(member) && member.kind === "pick_one");
+      const count = field.fields.find((member) => plainObject(member) && member.kind === "number");
+      if (!item || !count || item.optional !== undefined || count.optional !== undefined) {
+        defects.push(`${field.key}: member shape`);
+      }
       for (const member of field.fields) {
-        if (plainObject(member) && member.optional === true) optional += 1;
         if (!plainObject(member)) {
           defects.push(`${field.key}: member is not an object`);
           continue;
         }
-        defects.push(...scalarDefects(member, MEMBER_KINDS, seen));
+        defects.push(...scalarDefects(member, MEMBER_KINDS, seen, member === item));
       }
-      if (optional === field.fields.length) defects.push(`${field.key}: every member optional`);
+      if (withFee && item && Array.isArray(item.options) && !item.options.every((option) => option.price_cents !== undefined)) {
+        defects.push(`${field.key}: fee without prices`);
+      }
     } else {
       defects.push(...scalarDefects(field, SCALAR_KINDS, seen));
     }
@@ -276,8 +302,20 @@ function resultFieldsDefects(items) {
 }
 
 test("AC-DELIVERYCARD-002 D04: an independent validator accepts the fields answer and refuses planted defects", async () => {
-  // The validator itself: every scalar kind, a group with members and repeat, the trailing markers (eight entries, the cap).
+  // The validator itself: every scalar kind, a list group with priced options and a fee, the trailing markers (eight entries,
+  // the cap).
   const entry = (key, kind, extra = {}) => ({ key, kind, label: "L", ...extra });
+  const item = (over = {}) => ({
+    key: "pick",
+    kind: "pick_one",
+    label: "Pick",
+    options: [
+      { id: "a", label: "A", price_cents: 100 },
+      { id: "b", label: "B", price_cents: 200 },
+    ],
+    ...over,
+  });
+  const count = { key: "count", kind: "number", label: "Count" };
   const good = [
     entry("note", "text"),
     entry("where", "place", { lookup: true }),
@@ -290,8 +328,9 @@ test("AC-DELIVERYCARD-002 D04: an independent validator accepts the fields answe
       key: "rows",
       kind: "group",
       label: "Rows",
-      fields: [entry("one", "text"), { key: "pick", kind: "pick_one", label: "Pick", options: MENU.map(({ id }) => ({ id, label: id })) }],
+      fields: [item({ options: MENU.map(({ id, name }) => ({ id, label: name, price_cents: PRICE[id] })) }), count],
       repeat: 6,
+      fee_cents: 500,
     },
   ];
   assert.deepEqual(fieldListDefects(good), []);
@@ -304,12 +343,21 @@ test("AC-DELIVERYCARD-002 D04: an independent validator accepts the fields answe
     fieldListDefects([entry("pick", "pick_one", { options: MENU.map(({ id, name }) => ({ id, label: name })) })]),
     [],
   );
+  // A list group with the count member first, and an unpriced one with no fee, are accepted.
+  assert.deepEqual(fieldListDefects([{ key: "rows", kind: "group", label: "Rows", fields: [count, item()], repeat: 2, fee_cents: 0 }]), []);
+  assert.deepEqual(
+    fieldListDefects([
+      { key: "rows", kind: "group", label: "Rows", fields: [item({ options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] }), count], repeat: 2 },
+    ]),
+    [],
+  );
   const group = (over = {}) => ({
     key: "rows",
     kind: "group",
     label: "Rows",
-    fields: [{ key: "one", kind: "text", label: "One" }],
+    fields: [item(), count],
     repeat: 2,
+    fee_cents: 300,
     ...over,
   });
   const swapFirst = (list, field) => [field, ...list.slice(1)];
@@ -340,7 +388,7 @@ test("AC-DELIVERYCARD-002 D04: an independent validator accepts the fields answe
     ["a lookup on a text field", [entry("a", "text", { lookup: true })]],
     ["a lookup not last", [{ key: "a", kind: "place", lookup: true, label: "L" }]],
     ["a lookup beside an optional", [{ key: "a", kind: "place", label: "L", lookup: true, optional: true }]],
-    ["a group without repeat", [{ key: "rows", kind: "group", label: "Rows", fields: [{ key: "one", kind: "text", label: "One" }] }]],
+    ["a group without repeat", [{ key: "rows", kind: "group", label: "Rows", fields: [item(), count] }]],
     ["a group with repeat 0", [group({ repeat: 0 })]],
     ["a group with a negative repeat", [group({ repeat: -1 })]],
     ["a group with a fractional repeat", [group({ repeat: 2.5 })]],
@@ -351,12 +399,27 @@ test("AC-DELIVERYCARD-002 D04: an independent validator accepts the fields answe
     ["a group with a lookup marker", [group({ lookup: true })]],
     ["a group with an extra key", [group({ extra: 1 })]],
     ["a group without members", [group({ fields: [] })]],
+    ["a group with one member", [group({ fields: [item()] })]],
+    ["a group with a third member", [group({ fields: [item(), count, entry("note", "text")] })]],
     ["a group whose member is a group", [group({ fields: [group({ key: "inner" })] })]],
-    ["a group member of kind place", [group({ fields: [{ key: "one", kind: "place", label: "One" }] })]],
-    ["a group member with a lookup marker", [group({ fields: [{ key: "one", kind: "text", label: "One", lookup: true }] })]],
-    ["a group whose members are all optional", [group({ fields: [{ key: "one", kind: "text", label: "One", optional: true }] })]],
-    ["a group key repeated by a member of another field", [{ ...group(), fields: [{ key: "rows", kind: "text", label: "One" }] }]],
-    ["a key repeated between a group member and a top-level field", [swapFirst([group()], entry("one", "text"))]],
+    ["a group member of kind place", [group({ fields: [{ key: "one", kind: "place", label: "One" }, count] })]],
+    ["a group member with a lookup marker", [group({ fields: [{ key: "one", kind: "number", label: "One", lookup: true }, item()] })]],
+    ["a group of two numbers", [group({ fields: [count, { key: "again", kind: "number", label: "Again" }] })]],
+    ["a group of two pick_ones", [group({ fields: [item(), item({ key: "more" })] })]],
+    ["a group with an optional item member", [group({ fields: [item({ optional: true }), count] })]],
+    ["a group whose members are all optional", [group({ fields: [item({ optional: true }), { ...count, optional: true }] })]],
+    ["an option price of 0", [group({ fields: [item({ options: [{ id: "a", label: "A", price_cents: 0 }, { id: "b", label: "B", price_cents: 1 }] }), count] })]],
+    ["an option price of 1,000,001", [group({ fields: [item({ options: [{ id: "a", label: "A", price_cents: 1_000_001 }, { id: "b", label: "B", price_cents: 1 }] }), count] })]],
+    ["a fractional option price", [group({ fields: [item({ options: [{ id: "a", label: "A", price_cents: 1.5 }, { id: "b", label: "B", price_cents: 1 }] }), count] })]],
+    ["one option unpriced among priced", [group({ fields: [item({ options: [{ id: "a", label: "A", price_cents: 100 }, { id: "b", label: "B" }] }), count] })]],
+    ["a price on the options of a top-level pick_one", [entry("a", "pick_one", { options: [{ id: "x", label: "X", price_cents: 100 }] })]],
+    ["a price on the options of an on_off", [entry("a", "on_off", { options: [{ id: "true", label: "Y", price_cents: 100 }, { id: "false", label: "N" }] })]],
+    ["a fee beside unpriced options", [group({ fields: [item({ options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] }), count] })]],
+    ["a fee of 1,000,001", [group({ fee_cents: 1_000_001 })]],
+    ["a fractional fee", [group({ fee_cents: 1.5 })]],
+    ["a fee of the text \"500\"", [group({ fee_cents: "500" })]],
+    ["a group key repeated by a member of another field", [{ ...group(), fields: [{ key: "rows", kind: "number", label: "One" }, item()] }]],
+    ["a key repeated between a group member and a top-level field", [swapFirst([group()], entry("pick", "text"))]],
   ];
   for (const [name, list] of planted) {
     assert.notDeepEqual(fieldListDefects(list), [], `the validator misses ${name}`);
@@ -902,4 +965,39 @@ test("AC-DELIVERYCARD-004 D17: the order number differs from the reservation num
   assert.match(order.results[1].value, /^DL-[A-Z0-9]{6}$/);
   assert.notEqual(order.results[1].value.slice(3), reservation.value.slice(3));
   assert.equal(order.results[1].value, await expectedCode(ID));
+});
+
+test("AC-MENULIST-004 D18: the wired prices and fee and the estimated total cannot diverge", async () => {
+  // The ids and the numbers come from the fields answer, never from a table of the test's own.
+  const first = await (await call({ op: "fields" })).json();
+  const group = first.fields.find((field) => field.key === "items");
+  const options = group.fields.find((member) => member.key === "item").options;
+  for (const option of options) {
+    assert.equal(typeof option.price_cents, "number", `${option.id} carries an integer price`);
+    assert.ok(Number.isInteger(option.price_cents), `${option.id} price is whole`);
+  }
+  assert.equal(typeof group.fee_cents, "number", "the group carries an integer fee");
+  assert.ok(Number.isInteger(group.fee_cents), "the fee is whole");
+  const priceOf = Object.fromEntries(options.map((option) => [option.id, option.price_cents]));
+  const fee = group.fee_cents;
+  // One row of each option at each quantity, and two-row orders: the Estimated total of a submit always equals the sum of
+  // the wired price times the wired quantity plus the wired fee.
+  for (const option of options) {
+    for (const quantity of [1, 2, 9]) {
+      const body = await (await call(submitValues({ items: [{ item: option.id, quantity }] }))).json();
+      assert.equal(body.status, "confirmed", `${option.id} ${quantity}`);
+      assert.equal(totalOf(body), priceOf[option.id] * quantity + fee, `${option.id} ${quantity}`);
+    }
+  }
+  const pairs = [[options[0], options[1]], [options[3], options[5]], [options[5], options[0]]];
+  for (const [one, two] of pairs) {
+    const body = await (
+      await call(submitValues({ items: [{ item: one.id, quantity: 2 }, { item: two.id, quantity: 3 }] }))
+    ).json();
+    assert.equal(body.status, "confirmed");
+    assert.equal(totalOf(body), priceOf[one.id] * 2 + priceOf[two.id] * 3 + fee, `${one.id} and ${two.id}`);
+  }
+  // The fields answer is the same text on a second call.
+  const second = await (await call({ op: "fields" })).text();
+  assert.equal(second, JSON.stringify(first));
 });

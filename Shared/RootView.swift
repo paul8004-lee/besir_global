@@ -194,7 +194,7 @@ struct RootView: View {
             let location = location
             let origin = { AgentPlaces.devicePlace(manual: location.manualOrigin, current: location.realFixLocation) }
             let session = AgentSession(toolbox: AgentToolbox(store: store, now: { Date() }, timeZone: { TimeZone.current },
-                                                             deviceOrigin: origin),
+                                                             deviceOrigin: origin, searchOrigin: { location.searchOrigin }),
                                        transport: AgentClient(config: store.config, now: { Date() }, timeZone: { TimeZone.current }))
             // A held plan carries place handles of this conversation, so a new chat drops it.
             let shareImport = shareImport
