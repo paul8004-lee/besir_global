@@ -16,7 +16,7 @@ enum AgentPrefill {
     /// key, a member of a row of a repeatable group under its row key `group.row.member`. `userLines` are the lines the user
     /// wrote in this chat; `now` and `calendar` (with its zone) decide what a time means.
     static func values(fieldsText: String?, fields: [PartnerField], userLines: [String], now: Date,
-                       calendar: Calendar) -> [String: AgentFieldValue] {
+                       calendar: Calendar, place: (String) -> Place? = { _ in nil }) -> [String: AgentFieldValue] {
         guard let fieldsText, let data = fieldsText.data(using: .utf8),
               let list = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return [:] }
         var kinds: [String: PartnerFieldKind] = [:]
