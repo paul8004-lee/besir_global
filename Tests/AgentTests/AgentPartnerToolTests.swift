@@ -534,10 +534,10 @@ final class AgentPartnerToolTests: XCTestCase {
 
     func testPARTNER_G01_TwelveDeclarationsTheOldOnesUnchangedAndTheNewTwoStrict() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 12)
+        XCTAssertEqual(decls.count, 13)
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 12)
+        XCTAssertEqual(recorded.count, 13)
         for index in 0..<6 {
             XCTAssertTrue((decls[index] as AnyObject).isEqual(recorded[index]), "declaration \(index) changed")
         }
@@ -547,7 +547,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual((listParameters["properties"] as? [String: Any])?.count, 0)
         XCTAssertNil(listParameters["required"])
         XCTAssertEqual(listParameters["additionalProperties"] as? Bool, false)
-        let request = try XCTUnwrap(decls.last)
+        let request = try XCTUnwrap(decls.count > 11 ? decls[11] : nil)
         XCTAssertEqual(request["name"] as? String, "request_partner")
         XCTAssertEqual(request["type"] as? String, "function")
         let parameters = try XCTUnwrap(request["parameters"] as? [String: Any])
@@ -561,7 +561,7 @@ final class AgentPartnerToolTests: XCTestCase {
     }
 
     func testPARTNER_G02_TheDescriptionSaysSimulated() throws {
-        let request = try XCTUnwrap(declarations().last)
+        let request = try XCTUnwrap(declarations().count > 11 ? declarations()[11] : nil)
         let description = try XCTUnwrap(request["description"] as? String).lowercased()
         XCTAssertTrue(description.contains("simulated"))
     }
@@ -1395,10 +1395,10 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places", "get_travel_time",
                         "check_day_plan", "show_day_plan", "get_budget_left", "record_spend",
-                        "get_partners", "request_partner"])
+                        "get_partners", "request_partner", "cancel_booking"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 12)
+        XCTAssertEqual(recorded.count, 13)
         XCTAssertTrue((decls as AnyObject).isEqual(recorded), "the whole array equals the fixture")
         let list = try XCTUnwrap(decls.count > 10 ? decls[10] : nil)
         XCTAssertEqual(list["description"] as? String, Text.listDescription)
@@ -2245,8 +2245,8 @@ final class AgentPartnerToolTests: XCTestCase {
 
     func testGROUP_GT5_TheDeclarationsAreTwelveAndTheFieldsDescriptionTeachesRows() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 12)
-        XCTAssertEqual(Array(decls.compactMap { $0["name"] as? String }.suffix(2)), ["get_partners", "request_partner"])
+        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(Array(decls.compactMap { $0["name"] as? String }.suffix(3)), ["get_partners", "request_partner", "cancel_booking"])
         let request = try XCTUnwrap(decls.count > 11 ? decls[11] : nil)
         let parameters = try XCTUnwrap(request["parameters"] as? [String: Any])
         let properties = try XCTUnwrap(parameters["properties"] as? [String: Any])
@@ -2555,11 +2555,11 @@ final class AgentPartnerToolTests: XCTestCase {
 
     func testDELIVERY_T05_TheRemovedDeliveryToolsAreUnknownAndTheDeclarationsAreTwelve() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 12)
+        XCTAssertEqual(decls.count, 13)
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places",
                         "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend",
-                        "get_partners", "request_partner"])
+                        "get_partners", "request_partner", "cancel_booking"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let fixture = try XCTUnwrap(try? JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
         XCTAssertTrue((decls as AnyObject).isEqual(fixture), "the declarations equal Fixtures/tools.json")
