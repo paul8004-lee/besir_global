@@ -532,7 +532,7 @@ enum PlaceLine {
         var accessibilityName: String? = nil
     }
     /// One line of a list group (SPEC-MENULIST-001, card t106): the price text shown under the name, the stepper rule of the
-    /// quantity, and whether the line's round plus may add a quantity (the order holds fewer lines than the group's repeat).
+    /// line's count, and whether the line's round plus may add one (the order holds fewer lines than the group's repeat).
     struct MenuLine: Equatable {
         var price: String?
         var rule: NumberStepperRule

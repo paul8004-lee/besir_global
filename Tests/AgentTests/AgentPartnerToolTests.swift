@@ -2225,7 +2225,7 @@ final class AgentPartnerToolTests: XCTestCase {
     // MARK: SPEC-MENULIST-001 (card t106) the delivery menu as one list
 
     func testMENULIST_T12_TheDeliveryCardIsOneListAndConfirmSendsTheOrderedLinesInMenuOrder() async throws {
-        let rig = foodRig()
+        let rig = foodRig(budget: BudgetToolPartner())
         let card = try await foodOrderCard(rig)
         let fields = try model(card)
         let allKeys = fields.card.fields.map(\.key)
@@ -2290,7 +2290,8 @@ final class AgentPartnerToolTests: XCTestCase {
                        "positive control: the line shows the price")
         let group = try XCTUnwrap(((listing["partners"] as? [[String: Any]])?.first?["fields"] as? [[String: Any]])?
             .first { ($0["key"] as? String) == "items" })
-        for option in try XCTUnwrap(group["options"] as? [[String: Any]]) {
+        let item = try XCTUnwrap((group["fields"] as? [[String: Any]])?.first { ($0["key"] as? String) == "item" })
+        for option in try XCTUnwrap(item["options"] as? [[String: Any]]) {
             XCTAssertEqual(Set(option.keys), ["id", "label"], "the listing's options are exactly id and label")
         }
         try await typeAndPause(fields, "address", "Pasta")
@@ -2345,7 +2346,7 @@ final class AgentPartnerToolTests: XCTestCase {
     }
 
     func testMENULIST_T15_AWorkerWithoutPricesGivesTheSameListWithNoPriceAndNoTotal() async throws {
-        let rig = foodRig(shape: .delivery(priced: false))
+        let rig = foodRig(budget: BudgetToolPartner(), shape: .delivery(priced: false))
         let card = try await foodOrderCard(rig)
         let fields = try model(card)
         XCTAssertNil(fields.field("items.total"), "no total key without prices")

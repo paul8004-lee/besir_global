@@ -1021,7 +1021,7 @@ final class AgentToolbox {
         var rows: [AgentFieldRow] = []
         for field in spec.fields {
             if field.kind == .group {
-                guard let group = AgentFieldGroup(field, addSymbol: AgentPartner.groupAddSymbol, addName: AgentPartner.groupAddName)
+                guard let group = AgentFieldGroup(field, totalLabel: AgentPartner.menuTotalLabel)
                 else { return nil }
                 // The kept row numbers are compacted: numbers 1 and 3 give two rows. No kept number gives one blank row.
                 let numbers = AgentPrefill.rowNumbers(kept: filled, group: field.key)

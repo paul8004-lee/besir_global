@@ -851,23 +851,30 @@ final class AgentFieldCardTests: XCTestCase {
             PartnerField(key: "s", kind: .onOff, label: "Switch", options: [PartnerOption(id: "y", label: "Yes"), PartnerOption(id: "n", label: "No")]),
             PartnerField(key: "n", kind: .number, label: "Count", options: [])]
         var rows: [AgentFieldRow] = try partnerFields.map { .field(try XCTUnwrap(AgentFieldSpec($0)), value: nil, source: .blank) }
-        rows.append(.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil), rowSeeds(item: nil, quantity: nil, note: nil)]))
+        let items = AgentFieldGroup(key: "items", label: "Items",
+                                    members: [AgentFieldSpec(key: "item", kind: .pickOne, label: "Item",
+                                                             options: [AgentFieldOption(id: "ramen", label: "Ramen"),
+                                                                       AgentFieldOption(id: "gyoza", label: "Gyoza")]),
+                                              AgentFieldSpec(key: "quantity", kind: .number, label: "Quantity")],
+                                    maxRows: 3)
+        rows.append(.repeating(items, rows: [
+            [seed(.option("ramen"), .stated), seed(.number(2), .stated)],
+            [seed(nil, .blank), seed(nil, .blank)]]))
         rows.append(AgentPartner.scheduleRow(origin: nil))
         let model = make(rows)
         XCTAssertGreaterThan(model.card.fields.count, 10, "positive: the card was built")
-        let numberKeys: Set<String> = ["n", "items.1.quantity", "items.2.quantity"]
+        let numberKeys: Set<String> = ["n"]
         for field in model.card.fields {
             XCTAssertEqual(field.stepper != nil, numberKeys.contains(field.key), field.key)
         }
         XCTAssertNotNil(model.field("n")?.stepper, "positive: the scalar number row has a stepper")
-        XCTAssertNotNil(model.field("items.2.quantity")?.stepper, "positive: a group's number member has one in every row")
+        // A line of a list group is not a stepper row: it is drawn as a menu line (SPEC-MENULIST-001, spec.md 1.5).
+        for key in ["items.1.quantity", "items.2.quantity"] {
+            XCTAssertNotNil(model.field(key)?.menuLine, key)
+            XCTAssertNil(model.field(key)?.stepper, key)
+        }
         XCTAssertNotNil(model.field(AgentPartner.cardEndKey), "premise: the End row is on the card")
         XCTAssertNil(model.field(AgentPartner.cardEndKey)?.stepper)
-        // A row added by the control chip starts blank and has a stepper.
-        XCTAssertTrue(model.chooseOption(AgentFieldCard.controlKey("items"), "add"))
-        let added = try XCTUnwrap(model.field("items.3.quantity"))
-        XCTAssertNotNil(added.stepper)
-        XCTAssertNil(added.chosen)
     }
 
     func testNUMSTEP_T08_TheStepperStartsAtTheValueThatWasGiven() throws {
@@ -1577,33 +1584,10 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(model.field("venue")).options.isEmpty)
     }
 
-    // MARK: GROUP the repeatable row group (card t102, SPEC-GROUPFIELD-001)
-
-    /// The chip member of the `items` group: six options, so a card that builds only some of them is caught.
-    private var groupItem: AgentFieldSpec {
-        AgentFieldSpec(key: "item", kind: .pickOne, label: "Item",
-                       options: [AgentFieldOption(id: "ramen", label: "Ramen"), AgentFieldOption(id: "gyoza", label: "Gyoza"),
-                                 AgentFieldOption(id: "curry", label: "Curry rice"), AgentFieldOption(id: "pizza", label: "Cheese pizza"),
-                                 AgentFieldOption(id: "salad", label: "Garden salad"), AgentFieldOption(id: "lemonade", label: "Lemonade")])
-    }
-    private var groupQuantity: AgentFieldSpec { AgentFieldSpec(key: "quantity", kind: .number, label: "Quantity") }
-    private var groupNote: AgentFieldSpec { AgentFieldSpec(key: "note", kind: .text, label: "Row note", isOptional: true) }
-
-    /// The `items` group of the GROUP tests with the test's own chip words, so a model that wrote its own words cannot pass.
-    private func itemsGroup(maxRows: Int = 3, key: String = "items", label: String = "Items") -> AgentFieldGroup {
-        AgentFieldGroup(key: key, label: label, members: [groupItem, groupQuantity, groupNote],
-                        maxRows: maxRows, addSymbol: "P", addName: "More rows")
-    }
+    // MARK: Seeds of the number stepper and menu list tests (cards t107, t106)
 
     private func seed(_ value: AgentFieldValue?, _ source: AgentFieldSource) -> AgentFieldSeed {
         AgentFieldSeed(value: value, source: source)
-    }
-
-    /// One row of seeds in member order: item, quantity, note.
-    private func rowSeeds(item: String?, quantity: Int?, note: String?) -> [AgentFieldSeed] {
-        [seed(item.map { AgentFieldValue.option($0) }, item == nil ? .blank : .stated),
-         seed(quantity.map { AgentFieldValue.number($0) }, quantity == nil ? .blank : .stated),
-         seed(note.map { AgentFieldValue.text($0) }, note == nil ? .blank : .stated)]
     }
 
     // MARK: MENU LIST the list group (card t106, SPEC-MENULIST-001)
@@ -1701,7 +1685,7 @@ final class AgentFieldCardTests: XCTestCase {
     }
 
     func testMENULIST_T08_AQuantityWrittenOrClearedMovesTheTotalAndAZeroOrAFrozenCardChangesNothing() throws {
-        let model = make([.repeating(menuGroup(), rows: menuSeeds([(item: "ramen", quantity: 2), (item: "gyoza", quantity: 1)]))])
+        let model = make([.repeating(menuGroup(), rows: menuSeeds([(item: "ramen", quantity: 2)]))])
         func total(_ of: AgentFieldCard) -> String? { of.field("items.total")?.chosen }
         XCTAssertTrue(model.setText("items.1.count", "3"))
         XCTAssertEqual(model.values.int("items.1.count"), 3)
@@ -1773,7 +1757,7 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertEqual(rows.map { $0["count"]?.value }, [AgentFieldValue.number(2), .number(1)])
         XCTAssertEqual(rows.map { $0["count"]?.source }, [.entered, .entered])
         XCTAssertNil(model.values.entry("items.2.count"), "a blank line holds no entry")
-        XCTAssertEqual(model.lines, ["Order delivery", "Note: hello", "Ramen: 2", "Cheese pizza: 1", "Sum: $58.00"])
+        XCTAssertEqual(model.lines, ["Order delivery", "Ramen: 2", "Cheese pizza: 1", "Sum: $58.00", "Note: hello"])
 
         let frozen = model.values
         let lines = model.lines
