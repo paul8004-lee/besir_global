@@ -324,7 +324,7 @@ enum AgentDayPlan {
             guard lookup else { skip(.noPlace); continue }
             guard !notLookedUp.contains(pair) else { skip(.notLookedUp); continue }
             guard let route = routes[pair] else { skip(.noAnswer); continue }
-            guard route.seconds <= AgentPlaces.maxLegSeconds else { skip(.tooLong); continue }
+            guard AgentPlaces.withinLegLimit(route.seconds) else { skip(.tooLong); continue }
             let leave = Store.departureTime(arrival: stops[pair.to - 1].start, travelSeconds: route.seconds, bufferMinutes: bufferMinutes)
             legs.append(Leg(from: pair.from, to: pair.to, route: route, leave: leave, why: nil))
             let behind = stops[pair.from - 1].end.timeIntervalSince(leave)

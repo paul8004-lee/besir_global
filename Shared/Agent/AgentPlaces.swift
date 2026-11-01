@@ -43,6 +43,9 @@ enum AgentPlaces {
     private static let noRoute = AgentToolbox.encode([
         "status": "no_route",
         "message": "No route was found for that trip. Tell the user; do not estimate the travel time."])
+    private static let tripTooLong = AgentToolbox.encode([
+        "status": "no_route",
+        "message": "That trip is too long to plan, so no travel time is given. Tell the user, check that the places are the ones the user named, and do not estimate the travel time."])
     private static let travelUnavailable = AgentToolbox.encode([
         "status": "unavailable",
         "message": "The travel time could not be looked up. Tell the user it is unavailable; do not estimate it."])
@@ -90,7 +93,7 @@ enum AgentPlaces {
     }
 
     /// True when a trip of `seconds` is inside the limit. False for a value that is not a number, so it fails closed.
-    static func withinLegLimit(_ seconds: TimeInterval) -> Bool { true }
+    static func withinLegLimit(_ seconds: TimeInterval) -> Bool { seconds <= maxLegSeconds }
 
     /// A route is known for `routeMaxAge` seconds, the limit included.
     static func isFresh(_ route: AgentRoute, now: Date) -> Bool {
@@ -121,6 +124,9 @@ enum AgentPlaces {
 
     /// The `get_travel_time` answer for a route; registers it. `leaveBy` is the app-computed `YYYY-MM-DDTHH:MM`.
     static func travelOutput(_ route: AgentRoute, leaveBy: String?, registry: inout AgentPlaceRegistry) -> AgentLookupOutput {
+        // A trip above the limit is a wrong match, not a plan: no handle, no minutes, no leave time. It answers `no_route`, which the
+        // Connections log shows as a normal answer; the lookup ran, so no user line is added at the step limit.
+        guard withinLegLimit(route.seconds) else { return AgentLookupOutput(result: tripTooLong, showsGoogleData: false) }
         guard let handle = registry.register(route) else {
             return AgentLookupOutput(result: travelUnavailable, showsGoogleData: false)
         }
@@ -187,9 +193,9 @@ struct AgentPlaceRegistry {
         return handles
     }
 
-    /// The handle of a new route, or nil when no handle is left.
+    /// The handle of a new route, or nil when no handle is left or the trip is above `AgentPlaces.maxLegSeconds` (no number is spent).
     mutating func register(_ route: AgentRoute) -> String? {
-        guard nextRoute <= AgentPlaces.lastNumber else { return nil }
+        guard AgentPlaces.withinLegLimit(route.seconds), nextRoute <= AgentPlaces.lastNumber else { return nil }
         let handle = "r\(nextRoute)"
         nextRoute += 1
         routes = Array((routes + [(handle, route)]).suffix(AgentPlaces.registryCap))
