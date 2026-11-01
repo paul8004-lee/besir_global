@@ -8,11 +8,30 @@ protocol NetworkReachability: AnyObject {
     var isOffline: Bool { get }
 }
 
-/// The real probe.
+/// The real probe: one path monitor, started once for the app, whose latest status is kept under a lock.
 final class PathReachability: NetworkReachability, @unchecked Sendable {
     static let shared = PathReachability()
 
-    var isOffline: Bool { false }
+    private let lock = NSLock()
+    private var status: NWPath.Status?
+    private let monitor = NWPathMonitor()
+
+    private init() {
+        monitor.pathUpdateHandler = { [weak self] path in self?.update(path.status) }
+        monitor.start(queue: DispatchQueue(label: "besir.path-reachability"))
+    }
+
+    var isOffline: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return Self.isOffline(status)
+    }
+
+    private func update(_ newStatus: NWPath.Status) {
+        lock.lock()
+        status = newStatus
+        lock.unlock()
+    }
 
     /// The rule: only `unsatisfied` is offline. Not reported yet (nil) and every other status are not.
     static func isOffline(_ status: NWPath.Status?) -> Bool {
