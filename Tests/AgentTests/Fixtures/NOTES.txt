@@ -17,3 +17,4 @@ Top-level keys of the recorded stateless replay request (r10-c.req.json) minus m
 REQUEST_KEYS_STATELESS: include,input,instructions,parallel_tool_calls,tools
 tools.json, SPEC-BOOKCARD-001: amended to fourteen declarations; request_booking left and get_partners and request_partner were appended after order_delivery, so request_partner is last and the first twelve keep their places.
 tools.json, SPEC-FULLHAND-001: cancel_booking was appended after request_partner, so it is last and the earlier declarations are unchanged.
+tools.json, SPEC-CARDPLACE-001: the request_partner description and its fields description each gained one sentence about the place_id entry; names, order and parameters are unchanged.
