@@ -14,6 +14,8 @@ enum GooglePlaces {
 
     // @MX:NOTE Adding a phone-number field here would move every call to the Enterprise billing tier.
     static let fieldMask = "places.id,places.displayName,places.formattedAddress,places.location,places.primaryTypeDisplayName,places.googleMapsUri"
+    /// Only the be full sir nearby search asks for this one: the six fields plus the place photo references.
+    static let photoFieldMask = fieldMask
     static let fieldMaskHeader = "x-goog-fieldmask"
 
     private static let path = "/places"
@@ -27,6 +29,8 @@ enum GooglePlaces {
     private static let maxRadius = 50_000
     private static let minLimit = 1
     private static let maxLimit = 20
+    private static let maxPhotos = 3
+    private static let maxAuthorLength = 80
 
     // MARK: - Requests
 
@@ -46,7 +50,7 @@ enum GooglePlaces {
     /// Nearby search: the keyword, else the category word, else "restaurants"; the radius is clamped to 100...50000.
     /// Nil when the proxy is not configured.
     static func nearbyRequest(category: MealCategoryFilter?, keyword: String?, near center: CLLocationCoordinate2D,
-                              radiusMeters: Int, config: AppConfig) -> URLRequest? {
+                              radiusMeters: Int, config: AppConfig, photos: Bool = false) -> URLRequest? {
         let term = keyword?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         var body: [String: Any] = [
             "textQuery": term.isEmpty ? (category?.categoryWord ?? "restaurants") : term,
@@ -192,4 +196,12 @@ enum GooglePlaces {
             googleMapsUri = try? container.decode(String.self, forKey: .googleMapsUri)
         }
     }
+}
+
+/// One place photo reference as the be full sir row keeps it: Google's resource name, the first author's
+/// name (empty when Google gave none) and that author's page when it is an https address.
+struct NearbyPhoto: Equatable {
+    let name: String
+    let author: String
+    let authorURL: URL?
 }
