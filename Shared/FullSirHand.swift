@@ -218,6 +218,14 @@ struct PlacePhotoStrip: View {
     @State private var images: [String: Image] = [:]
     @State private var failed: Set<String> = []
 
+    /// The height the strip keeps for itself while a photo is on its way or shown, so the buttons below do not move when it arrives.
+    static func reservedHeight(photos: [NearbyPhoto], loaded: Set<String>, failed: Set<String>) -> CGFloat {
+        photos.contains { !failed.contains($0.name) || loaded.contains($0.name) } ? photoHeight + authorLineHeight : 0
+    }
+
+    private static let photoHeight: CGFloat = 140
+    private static let authorLineHeight: CGFloat = 18
+
     var body: some View {
         if !photos.isEmpty && store.config.hasProxy {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -228,7 +236,7 @@ struct PlacePhotoStrip: View {
                                 image
                                     .resizable()
                                     .scaledToFill()
-                                    .frame(width: 200, height: 140)
+                                    .frame(width: 200, height: Self.photoHeight)
                                     .clipShape(RoundedRectangle(cornerRadius: Theme.radius))
                                     .accessibilityHidden(true)
                                 if !photo.author.isEmpty {
@@ -245,6 +253,7 @@ struct PlacePhotoStrip: View {
                     }
                 }
             }
+            .frame(minHeight: Self.reservedHeight(photos: photos, loaded: Set(images.keys), failed: failed), alignment: .top)
             .task { await load() }
         }
     }

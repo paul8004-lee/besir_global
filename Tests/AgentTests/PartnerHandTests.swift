@@ -19,6 +19,20 @@ final class PartnerHandTests: XCTestCase {
         return field
     }
 
+    // MARK: R3 the photo strip keeps its height
+
+    func testFULLHAND_R3_TheStripKeepsItsHeightWhileAPhotoIsOnItsWayOrShownAndLetsGoWhenAllFailed() {
+        let one = NearbyPhoto(name: "a", author: "A", authorURL: nil)
+        let two = NearbyPhoto(name: "b", author: "B", authorURL: nil)
+        let height = PlacePhotoStrip.reservedHeight(photos: [one, two], loaded: [], failed: [])
+        XCTAssertGreaterThan(height, 140, "room for a photo (140 pt) and its author line")
+        XCTAssertEqual(PlacePhotoStrip.reservedHeight(photos: [one, two], loaded: ["a"], failed: []), height, "one shown, one on its way")
+        XCTAssertEqual(PlacePhotoStrip.reservedHeight(photos: [one, two], loaded: ["a"], failed: ["b"]), height, "one shown, one failed")
+        XCTAssertEqual(PlacePhotoStrip.reservedHeight(photos: [one, two], loaded: [], failed: ["a"]), height, "one failed, one on its way")
+        XCTAssertEqual(PlacePhotoStrip.reservedHeight(photos: [one, two], loaded: [], failed: ["a", "b"]), 0, "every photo failed: nothing to keep room for")
+        XCTAssertEqual(PlacePhotoStrip.reservedHeight(photos: [], loaded: [], failed: []), 0, "no photos")
+    }
+
     // MARK: T06 the hand seed
 
     func testFULLHAND_T06_HandSeedsGoOnlyIntoTheFirstFieldWhenItTakesAName() {
