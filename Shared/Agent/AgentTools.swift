@@ -442,6 +442,8 @@ final class AgentToolbox {
     /// All three providers default to the Store's own services; tests inject stub transports through them.
     var registry = AgentPlaceRegistry()
     let deviceOrigin: () -> Place?
+    /// The position that may bias a place search: the device origin, or the approximate position too. It never starts a trip.
+    let searchOrigin: () -> Place?
     let placeSearchProvider: (() -> PlaceSearch)?
     let directionsProvider: (() -> DirectionsService)?
     /// SPEC-BOOKCARD-001: the partner client, built on use from the live configuration; tests inject a stubbed one.
@@ -459,6 +461,7 @@ final class AgentToolbox {
     /// `timeZone` is read on every use, so a zone change while the app runs reaches dates, cards and the gate.
     init(store: Store, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone,
          deviceOrigin: @escaping () -> Place? = { nil },
+         searchOrigin: (() -> Place?)? = nil,
          places: (() -> PlaceSearch)? = nil,
          directions: (() -> DirectionsService)? = nil,
          partners: (() -> PartnerClient)? = nil,
@@ -468,6 +471,7 @@ final class AgentToolbox {
         self.now = now
         zone = timeZone
         self.deviceOrigin = deviceOrigin
+        self.searchOrigin = searchOrigin ?? deviceOrigin
         placeSearchProvider = places
         directionsProvider = directions
         partnersProvider = partners
@@ -477,12 +481,13 @@ final class AgentToolbox {
 
     convenience init(store: Store, now: @escaping () -> Date, timeZone: TimeZone,
                      deviceOrigin: @escaping () -> Place? = { nil },
+                     searchOrigin: (() -> Place?)? = nil,
                      places: (() -> PlaceSearch)? = nil,
                      directions: (() -> DirectionsService)? = nil,
                      partners: (() -> PartnerClient)? = nil,
                      budget: (() -> BudgetClient)? = nil,
                      partnerRecords: (() -> PartnerRecords)? = nil) {
-        self.init(store: store, now: now, timeZone: { timeZone }, deviceOrigin: deviceOrigin,
+        self.init(store: store, now: now, timeZone: { timeZone }, deviceOrigin: deviceOrigin, searchOrigin: searchOrigin,
                   places: places, directions: directions, partners: partners, budget: budget,
                   partnerRecords: partnerRecords)
     }
@@ -787,7 +792,7 @@ final class AgentToolbox {
     private func search(_ values: [String: String], flow: UUID?) throws -> AgentToolOutcome {
         guard let query = values["query"], query.count >= AgentPlaces.queryMin else { throw Rejection(Say.queryMissing) }
         if query.count > AgentPlaces.queryMax { throw Rejection(Say.queryLong) }
-        let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        let center = searchOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         if dayPlan != nil { searchesThisPlan += 1 }
         return .lookup(AgentLookup { [self] in
             let service = placeSearchProvider?() ?? store.placeSearch
@@ -795,7 +800,7 @@ final class AgentToolbox {
             // A cancelled lookup writes nothing: its answer is dropped by the session anyway.
             if Task.isCancelled { return AgentPlaces.searchOutput([], registry: &registry) }
             switch found {
-            case .found(let places): return AgentPlaces.searchOutput(places, registry: &registry)
+            case .found(let places): return AgentPlaces.searchOutput(places, registry: &registry, biased: center != nil)
             case .failed: return AgentPlaces.searchFailure()
             }
         })
@@ -856,7 +861,10 @@ final class AgentToolbox {
             throw Rejection(refusal.message)
         }
         let stops = AgentDayPlan.effective(parsed, events: context.events)
-        let pairs = AgentDayPlan.legPairs(stops, cap: AgentDayPlan.lookupCap).pairs
+        let split = AgentDayPlan.legPairs(stops, cap: AgentDayPlan.lookupCap)
+        let pairs = split.pairs
+        // The pairs beyond the cap get no lookup; `evaluate` says so as the reason of their unchecked legs.
+        let notLookedUp = Set(split.overCap)
         let mode = context.mode
         return .lookup(AgentLookup { [self] in
             let service = directionsProvider?() ?? store.directions
@@ -873,7 +881,8 @@ final class AgentToolbox {
                                           warnings: estimate.warnings, createdAt: now())
             }
             guard !Task.isCancelled else { return AgentPlaces.travelFailure(nil) }
-            let evaluated = AgentDayPlan.evaluate(stops: stops, routes: routes, bufferMinutes: AgentPlaces.legBufferMinutes)
+            let evaluated = AgentDayPlan.evaluate(stops: stops, routes: routes, bufferMinutes: AgentPlaces.legBufferMinutes,
+                                                  notLookedUp: notLookedUp)
             let created = now()
             let check = AgentDayPlan.Check(
                 handle: "d\(nextPlanNumber)", stops: stops, legs: evaluated.legs, problems: evaluated.problems, createdAt: created,
@@ -1044,10 +1053,10 @@ final class AgentToolbox {
         rows.append(.line(AgentPartner.partnerLine(spec.entry.name)))
 
         // The card's place search goes through the provider `search_places` uses. The device position is read when the card is
-        // built, for a card with a schedule choice (it is the first value of `Leave from`), and again when a search fires, where it
-        // reaches the Google Places request only.
+        // built, for a card with a schedule choice (it is the first value of `Leave from`). When a search fires the search origin
+        // is read instead (it may be the approximate position too), and it reaches the Google Places request only.
         let fieldCard = AgentFieldCard(header: spec.entry.title, rows: rows, favorites: store.favorites, search: { [self] query in
-            let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+            let center = searchOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
             return await (placeSearchProvider?() ?? store.placeSearch).search(query, near: center)
         }, now: { [self] in now() }, candidates: { [self] key, text in
             // A place row the partner resolves asks the partner's own route, never Google. The device position is read when the
