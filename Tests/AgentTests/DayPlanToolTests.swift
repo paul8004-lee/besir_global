@@ -1645,6 +1645,32 @@ final class DayPlanToolTests: XCTestCase {
         let after = await ended.run("list_activities", listArgs)
         XCTAssertEqual(after.text, empty, "the plan turn is over")
     }
+
+    // MARK: a plan id given to update_activity or delete_activity (card t63)
+
+    @MainActor
+    func testT63_aPlanTurnIdGivenToUpdateOrDeleteIsRefusedWithTheFindTheEventLineAndWritesNothing() {
+        let rig = planRig()
+        let gym = gymActivity()
+        rig.store.activities.append(gym)
+        let before = rig.snapshot
+        XCTAssertNotNil(rig.tools.dayPlan, "the plan turn is active")
+
+        // e1 is the calendar event the plan message showed; e9 names nothing at all.
+        for tool in ["update_activity", "delete_activity"] {
+            for planID in ["e1", "e9"] {
+                let outcome = rig.call(tool, ["id": planID, "title": "Moved"])
+                XCTAssertNil(outcome.card, "\(tool) \(planID): no card")
+                XCTAssertEqual(outcome.status, "rejected", "\(tool) \(planID)")
+                XCTAssertEqual(outcome.message, ToolText.findID(tool), "\(tool) \(planID)")
+            }
+        }
+        XCTAssertEqual(rig.snapshot, before, "nothing was written")
+
+        // Positive control: the stored record's own id is accepted in the same plan turn, so the refusals above come from the id.
+        XCTAssertNotNil(rig.call("update_activity", ["id": gym.id.uuidString, "title": "Moved"]).card)
+        XCTAssertNotNil(rig.call("delete_activity", ["id": gym.id.uuidString]).card)
+    }
 }
 
 private extension PlanMyDay.Event {
