@@ -140,11 +140,11 @@ final class PartnerTravelTests: XCTestCase {
         let card = try await built(rig)
         let fields = try model(card)
         XCTAssertEqual(card.lines.count, 10)
-        XCTAssertEqual(card.lines[7], "Length (min): 60")
+        XCTAssertEqual(card.lines[7], "End: " + BesirTime.when(TestClock.date(BookingFixture.start).addingTimeInterval(3600)))
         XCTAssertEqual(card.lines[8], "Travel: Don't Add")
         XCTAssertEqual(card.lines.last, "Example Tables - Simulated")
         XCTAssertEqual(fields.card.fields.map(\.key),
-                       ["restaurant", "party_size", "start", "name", "note", "add-to-schedule", "schedule-length", "schedule-travel", "0"])
+                       ["restaurant", "party_size", "start", "name", "note", "add-to-schedule", "schedule-end", "schedule-travel", "0"])
         XCTAssertEqual(fields.values.flag("schedule-travel"), false)
         XCTAssertEqual(fields.source(of: "schedule-travel"), .inferred)
         XCTAssertEqual(fields.field("schedule-travel")?.label, "Travel")
@@ -170,7 +170,7 @@ final class PartnerTravelTests: XCTestCase {
         XCTAssertFalse(card.showsGoogleMark, "the stub form has no place field and Travel is off")
         XCTAssertTrue(fields.chooseOption("schedule-travel", "true"))
         XCTAssertEqual(fields.card.fields.map(\.key),
-                       ["restaurant", "party_size", "start", "name", "note", "add-to-schedule", "schedule-length", "schedule-travel",
+                       ["restaurant", "party_size", "start", "name", "note", "add-to-schedule", "schedule-end", "schedule-travel",
                         "schedule-from", "schedule-mode", "0"])
         XCTAssertFalse(fields.card.fields.map(\.key).contains("schedule-place"), "there is no Place row")
         XCTAssertEqual(fields.field("schedule-from")?.label, "Leave from")
@@ -445,7 +445,7 @@ final class PartnerTravelTests: XCTestCase {
             XCTAssertEqual(card.mark, .cancelled)
             XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "party_size", "start", "name", "note", "0"], "\(how)")
             let text = card.lines.joined(separator: "\n")
-            for word in ["Travel", "Leave from", "Add to schedule", "Length (min)"] {
+            for word in ["Travel", "Leave from", "Add to schedule", "End:"] {
                 XCTAssertFalse(text.contains(word), "\(how): \(word)")
             }
             XCTAssertFalse(card.showsGoogleMark, "the row is gone, so is the mark: \(how)")

@@ -598,6 +598,9 @@ enum PlaceLine {
     var placeholder: String? = nil
     /// The repeatable row group this field belongs to; nil for every field that is not a member of one.
     var rowID: UUID? = nil
+    /// Set only for a number row of a partner card (SPEC-NUMSTEPPER-001): the view draws a minus/plus stepper in place of the text
+    /// box, and the row stays `Kind.title`. nil for every other row.
+    var stepper: NumberStepperRule? = nil
 
     var chosenLabel: String? {
         guard let chosen else { return nil }

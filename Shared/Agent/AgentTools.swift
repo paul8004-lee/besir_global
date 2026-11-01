@@ -1130,12 +1130,19 @@ final class AgentToolbox {
         if numberFields.count == 1, let item = items.first(where: { $0.key == numberFields[0].key }), case .number(let count) = item.value {
             quantityHint = count
         }
-        // The length is the app's own row: it counts only while the switch is on.
+        // The length is the span from the form's first time field to the app's own `End` row: it counts only while the switch is on.
+        // A form with no time field gives the default length.
         let scheduleOn = schedulable && taken.flag(AgentPartner.cardSwitchKey) == true
         var minutes = 0
         if scheduleOn {
-            guard let length = taken.int(AgentPartner.cardLengthKey), AgentPartner.lengthRange.contains(length) else { return partnerEditRejected() }
-            minutes = length
+            if let first = spec.fields.first(where: { $0.kind == .time }) {
+                guard let length = AgentPartner.lengthMinutes(start: taken.date(first.key), end: taken.date(AgentPartner.cardEndKey)) else {
+                    return partnerEditRejected()
+                }
+                minutes = length
+            } else {
+                minutes = AgentPartner.lengthInitial
+            }
         }
 
         // The booked entry's place is the candidate tapped in the first lookup field of the partner's own order; an unmarked place

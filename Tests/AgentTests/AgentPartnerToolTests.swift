@@ -517,6 +517,11 @@ final class AgentPartnerToolTests: XCTestCase {
     /// The card's field model; the test fails when the card is not a field card.
     private func model(_ card: AgentCard) throws -> AgentFieldCard { try XCTUnwrap(card.fieldCard) }
 
+    /// The `End` line of a card built with the fixture start: one hour after the start, as the card prints a time.
+    private func endLine(for start: String = BookingFixture.start) -> String {
+        "End: " + BesirTime.when(TestClock.date(start).addingTimeInterval(3600))
+    }
+
     private func built(_ rig: PartnerRig, _ fill: PartnerRig.Fill = .init(), partner: String = "booking", lookup: Bool = true) async throws -> AgentCard {
         let card = await rig.card(fill, partner: partner, lookup: lookup)
         return try XCTUnwrap(card)
@@ -627,7 +632,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(card.lines[4], "Name: Sam")
         XCTAssertEqual(card.lines[5], "Note:")
         XCTAssertEqual(card.lines[6], "Add to schedule: Add")
-        XCTAssertEqual(card.lines[7], "Length (min): 60")
+        XCTAssertEqual(card.lines[7], endLine())
         XCTAssertEqual(card.lines.last, "Example Tables - Simulated")
         XCTAssertFalse(card.showsGoogleMark)
         XCTAssertEqual(card.actions, ["Confirm", "Cancel"])
@@ -1052,7 +1057,7 @@ final class AgentPartnerToolTests: XCTestCase {
         let card = try await built(rig)
         let fields = try model(card)
         XCTAssertEqual(fields.header, "Reserve a table")
-        XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "party_size", "start", "name", "note", "add-to-schedule", "schedule-length", "schedule-travel", "0"])
+        XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "party_size", "start", "name", "note", "add-to-schedule", "schedule-end", "schedule-travel", "0"])
         XCTAssertEqual(fields.values.text("restaurant"), "Pasta Palace")
         XCTAssertEqual(fields.values.int("party_size"), 2)
         XCTAssertEqual(fields.values.date("start"), TestClock.date(BookingFixture.start))
@@ -1063,17 +1068,17 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(fields.field("add-to-schedule")?.options.map(\.label), ["Add", "Don't Add"])
         XCTAssertEqual(fields.values.flag("add-to-schedule"), true)
         XCTAssertEqual(fields.source(of: "add-to-schedule"), .inferred)
-        XCTAssertEqual(fields.field("schedule-length")?.label, "Length (min)")
-        XCTAssertEqual(fields.values.int("schedule-length"), 60)
-        XCTAssertEqual(fields.source(of: "schedule-length"), .inferred)
+        XCTAssertEqual(fields.field("schedule-end")?.label, "End")
+        XCTAssertEqual(fields.values.date("schedule-end"), TestClock.date(BookingFixture.start).addingTimeInterval(3600))
+        XCTAssertEqual(fields.source(of: "schedule-end"), .inferred)
         XCTAssertEqual(card.lines.last, "Example Tables - Simulated")
         XCTAssertFalse(card.showsGoogleMark)
         XCTAssertTrue(fields.isReady)
-        // The switch off takes the length row away, and back on brings it back.
+        // The switch off takes the End row away, and back on brings it back.
         XCTAssertTrue(fields.chooseOption("add-to-schedule", "false"))
-        XCTAssertNil(fields.field("schedule-length"))
+        XCTAssertNil(fields.field("schedule-end"))
         XCTAssertTrue(fields.chooseOption("add-to-schedule", "true"))
-        XCTAssertNotNil(fields.field("schedule-length"))
+        XCTAssertNotNil(fields.field("schedule-end"))
 
         // With no `fields` argument every field is blank, and building the card sends and writes nothing.
         let bare = makeRig()
@@ -1166,16 +1171,12 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertTrue(fields.setText("name", "  Sam  "))
         XCTAssertTrue(fields.setText("restaurant", "  Pasta Palace  "))
         XCTAssertTrue(card.canConfirm)
-        // The length: blank, 4 and 721 block Confirm while the switch is on, and nothing is checked while it is off.
-        for text in ["", "4", "721"] {
-            XCTAssertTrue(fields.setText("schedule-length", text))
-            XCTAssertFalse(card.canConfirm, "length \(text.isEmpty ? "blank" : text)")
-        }
+        // The End row is seeded, so the switch off and on again leaves the card ready, and a chosen End keeps it ready.
         XCTAssertTrue(fields.chooseOption("add-to-schedule", "false"))
         XCTAssertTrue(card.canConfirm)
         XCTAssertTrue(fields.chooseOption("add-to-schedule", "true"))
-        XCTAssertFalse(card.canConfirm, "the invalid length comes back with the switch")
-        XCTAssertTrue(fields.setText("schedule-length", "90"))
+        XCTAssertTrue(card.canConfirm, "the End comes back with the switch, seeded")
+        XCTAssertTrue(fields.chooseTime("schedule-end", TestClock.date(BookingFixture.start).addingTimeInterval(90 * 60)))
         XCTAssertTrue(card.canConfirm)
         let resolution = try await confirm(card)
         XCTAssertEqual(resolution.status, "applied")
@@ -1187,26 +1188,25 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(values["party_size"] as? Int, 2)
         XCTAssertNil(values["note"])
         XCTAssertNil(values["add-to-schedule"])
-        XCTAssertNil(values["schedule-length"])
+        XCTAssertNil(values["schedule-end"])
         XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
         // An edit after the tap changes nothing.
         XCTAssertFalse(fields.setText("name", "Zed"))
         XCTAssertEqual(fields.values.text("name"), "  Sam  ", "the card keeps what was typed; only the request is trimmed")
         XCTAssertEqual(rig.partner.bodies(op: "submit").count, 1)
 
-        // With Don't Add the same card confirms, even with an invalid length left in the row.
+        // With Don't Add the same card confirms and the schedule holds no entry.
         let off = makeRig()
         let offCard = try await built(off)
         let offFields = try model(offCard)
-        XCTAssertTrue(offFields.setText("schedule-length", "4"))
         XCTAssertTrue(offFields.chooseOption("add-to-schedule", "false"))
         XCTAssertTrue(offCard.canConfirm)
         let offResolution = try await confirm(offCard)
         XCTAssertEqual(offResolution.status, "applied")
         XCTAssertTrue(off.store.activities.isEmpty)
 
-        // Forced past the button: a blank required value, or a blank or out-of-range length with the switch on, is rejected.
-        for edit in [("name", ""), ("schedule-length", ""), ("schedule-length", "4"), ("schedule-length", "721")] {
+        // Forced past the button: a blank required value is rejected.
+        for edit in [("name", "")] {
             let forced = makeRig()
             let forcedCard = try await built(forced)
             XCTAssertTrue(try model(forcedCard).setText(edit.0, edit.1))
@@ -1217,6 +1217,73 @@ final class AgentPartnerToolTests: XCTestCase {
             XCTAssertEqual(forced.partner.bodies(op: "submit").count, 0, "\(edit)")
             XCTAssertTrue(forced.store.activities.isEmpty, "\(edit)")
         }
+    }
+
+    // MARK: NUMSTEP number fields as a stepper (card t107, SPEC-NUMSTEPPER-001)
+
+    /// Steps a number row the way the view does: the rule decides, and the card's own `setTitleText` action writes it.
+    private func step(_ fields: AgentFieldCard, _ key: String, plus times: Int) throws {
+        let field = try XCTUnwrap(fields.field(key))
+        let rule = try XCTUnwrap(field.stepper)
+        for _ in 0..<times {
+            let next = rule.increased(from: fields.values.int(key))
+            fields.actions.setTitleText?(field.id, next.map { String($0) } ?? "")
+        }
+    }
+
+    func testNUMSTEP_T17_ConfirmSendsTheNumberTheStepperShows() async throws {
+        let rig = makeRig()
+        let card = try await built(rig)
+        let fields = try model(card)
+        XCTAssertEqual(fields.values.int("party_size"), 2)
+        try step(fields, "party_size", plus: 2)
+        XCTAssertEqual(fields.values.int("party_size"), 4)
+        XCTAssertTrue(card.canConfirm)
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied")
+        let sent = rig.partner.bodies(op: "submit")
+        XCTAssertEqual(sent.count, 1)
+        let values = try XCTUnwrap(sent.first?["values"] as? [String: Any])
+        XCTAssertEqual(values["party_size"] as? Int, 4)
+        XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
+    }
+
+    func testNUMSTEP_T18_ABlankPartySizeKeepsConfirmLockedUntilThePlusIsTapped() async throws {
+        let rig = makeRig()
+        let card = try await built(rig, .init(party: nil))
+        let fields = try model(card)
+        let row = try XCTUnwrap(fields.field("party_size"))
+        XCTAssertNil(row.chosen)
+        XCTAssertNotNil(row.stepper)
+        XCTAssertFalse(card.canConfirm)
+        try step(fields, "party_size", plus: 1)
+        XCTAssertEqual(fields.values.int("party_size"), 1)
+        XCTAssertTrue(card.canConfirm)
+        _ = try await confirm(card)
+        let values = try XCTUnwrap(rig.partner.bodies(op: "submit").first?["values"] as? [String: Any])
+        XCTAssertEqual(values["party_size"] as? Int, 1)
+    }
+
+    func testNUMSTEP_T19_TheEntryEndsWhereTheEndRowSays() async throws {
+        let start = "2026-11-02T19:00"
+        let picked = makeRig()
+        let pickedCard = try await built(picked, .init(start: start))
+        XCTAssertTrue(try model(pickedCard).chooseTime("schedule-end", TestClock.date(start).addingTimeInterval(90 * 60)))
+        let resolution = try await confirm(pickedCard)
+        XCTAssertEqual(resolution.status, "applied")
+        let entry = try XCTUnwrap(picked.store.activities.first)
+        XCTAssertEqual(entry.startDate, TestClock.date(start))
+        XCTAssertEqual(entry.endDate.timeIntervalSince(entry.startDate), 90 * 60, "the End chosen before the tap")
+        let values = try XCTUnwrap(picked.partner.bodies(op: "submit").first?["values"] as? [String: Any])
+        XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
+        XCTAssertNil(values["schedule-end"])
+        XCTAssertFalse(values.keys.contains { $0.contains("length") }, "no length is sent")
+
+        let seeded = makeRig()
+        let seededCard = try await built(seeded, .init(start: start))
+        _ = try await confirm(seededCard)
+        let seededEntry = try XCTUnwrap(seeded.store.activities.first)
+        XCTAssertEqual(seededEntry.endDate.timeIntervalSince(seededEntry.startDate), 60 * 60, "the End left at its seed")
     }
 
     // MARK: T06 the edited time
@@ -1279,7 +1346,7 @@ final class AgentPartnerToolTests: XCTestCase {
         let budget = BudgetToolPartner()
         let rig = makeRig(budget: budget)
         let card = try await built(rig, .init(start: "2026-11-02T19:00"))
-        XCTAssertTrue(try model(card).setText("schedule-length", "90"))
+        XCTAssertTrue(try model(card).chooseTime("schedule-end", TestClock.date("2026-11-02T19:00").addingTimeInterval(90 * 60)))
         let resolution = try await confirm(card)
         XCTAssertEqual(resolution.status, "applied")
         let entry = try XCTUnwrap(rig.store.activities.first)
@@ -1579,9 +1646,11 @@ final class AgentPartnerToolTests: XCTestCase {
         let rig = makeRig()
         let card = try await built(rig)
         let fields = try model(card)
-        for key in ["restaurant", "party_size", "name", "note", "schedule-length"] {
+        for key in ["restaurant", "party_size", "name", "note"] {
             XCTAssertEqual(fields.field(key)?.placeholder, "", "\(key): a typed row of the card has an empty placeholder")
         }
+        XCTAssertNotNil(fields.field(AgentPartner.cardEndKey), "premise: the End row is on the card")
+        XCTAssertNil(fields.field(AgentPartner.cardEndKey)?.placeholder, "the End row is a time row like start")
         XCTAssertNil(fields.field("start")?.placeholder, "a time row keeps the view's own wording")
         XCTAssertNil(fields.field("add-to-schedule")?.placeholder)
 
@@ -1633,10 +1702,10 @@ final class AgentPartnerToolTests: XCTestCase {
     private func assertNoOwnRows(_ card: AgentCard, _ note: String, file: StaticString = #filePath, line: UInt = #line) throws {
         let text = shownLines(card)
         XCTAssertFalse(text.contains("Add to schedule"), "\(note): \(text)", file: file, line: line)
-        XCTAssertFalse(text.contains("Length (min)"), "\(note): \(text)", file: file, line: line)
+        XCTAssertFalse(text.contains("End:"), "\(note): \(text)", file: file, line: line)
         let keys = try model(card).card.fields.map(\.key)
         XCTAssertFalse(keys.contains("add-to-schedule"), note, file: file, line: line)
-        XCTAssertFalse(keys.contains("schedule-length"), note, file: file, line: line)
+        XCTAssertFalse(keys.contains(AgentPartner.cardEndKey), note, file: file, line: line)
         XCTAssertTrue(text.contains("Restaurant: Pasta Palace"), "premise: the partner's rows stay: \(note)", file: file, line: line)
     }
 
@@ -1644,7 +1713,7 @@ final class AgentPartnerToolTests: XCTestCase {
         // Before the end both rows are on the card.
         let waiting = try await built(makeRig())
         XCTAssertTrue(shownLines(waiting).contains("Add to schedule: Add"))
-        XCTAssertTrue(shownLines(waiting).contains("Length (min): 60"))
+        XCTAssertTrue(shownLines(waiting).contains(endLine()))
 
         for how in [AgentCardResolution.cancel, .dismiss] {
             let card = try await built(makeRig())
@@ -1684,7 +1753,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(first.status, "applied")
         XCTAssertEqual(addedCard.mark, .confirmed)
         XCTAssertTrue(shownLines(addedCard).contains("Add to schedule: Add"))
-        XCTAssertTrue(shownLines(addedCard).contains("Length (min): 60"))
+        XCTAssertTrue(shownLines(addedCard).contains(endLine()))
 
         let skipped = makeRig()
         let skippedCard = try await built(skipped)
@@ -1692,7 +1761,7 @@ final class AgentPartnerToolTests: XCTestCase {
         _ = try await confirm(skippedCard)
         XCTAssertEqual(skippedCard.mark, .confirmed)
         XCTAssertTrue(shownLines(skippedCard).contains("Add to schedule: Don't Add"))
-        XCTAssertFalse(shownLines(skippedCard).contains("Length (min)"), "the length row is gone with the switch off")
+        XCTAssertFalse(shownLines(skippedCard).contains("End:"), "the End row is gone with the switch off")
     }
 
     func testPARTNER_T18_ACardThatEndedWithoutAConfirmationKeepsThePartnersOwnSwitchAndChipFields() async throws {
@@ -1708,9 +1777,9 @@ final class AgentPartnerToolTests: XCTestCase {
             let fields = try model(card)
             XCTAssertTrue(fields.chooseOption("rush", "true"))
             XCTAssertTrue(fields.chooseOption("seat", "out"))
-            // Before the end the card holds the app's switch with its length row and the partner's own fields.
+            // Before the end the card holds the app's switch with its End row and the partner's own fields.
             XCTAssertEqual(fields.card.fields.map(\.key),
-                           ["restaurant", "party_size", "start", "name", "note", "rush", "seat", "add-to-schedule", "schedule-length", "schedule-travel", "0"])
+                           ["restaurant", "party_size", "start", "name", "note", "rush", "seat", "add-to-schedule", "schedule-end", "schedule-travel", "0"])
             XCTAssertTrue(shownLines(card).contains("Add to schedule: Add"))
             _ = await card.resolve(how)
             XCTAssertEqual(card.mark, .cancelled)
@@ -1719,7 +1788,7 @@ final class AgentPartnerToolTests: XCTestCase {
             XCTAssertTrue(text.contains("Rush: Rush it"), "the partner's on_off field stays: \(text)")
             XCTAssertTrue(text.contains("Seat: Outside"), "the partner's pick_one field stays: \(text)")
             XCTAssertFalse(text.contains("Add to schedule"), text)
-            XCTAssertFalse(text.contains("Length (min)"), text)
+            XCTAssertFalse(text.contains("End:"), text)
         }
     }
 
@@ -1731,7 +1800,7 @@ final class AgentPartnerToolTests: XCTestCase {
         for (name, arrange) in ends {
             let rig = makeRig()
             let card = try await built(rig)
-            XCTAssertTrue(shownLines(card).contains("Length (min): 60"), "premise: \(name)")
+            XCTAssertTrue(shownLines(card).contains(endLine()), "premise: \(name)")
             arrange(rig.partner)
             let resolution = await Task { await card.resolve(.confirm) }.value
             XCTAssertEqual(resolution?.status, "unavailable", name)
@@ -2150,7 +2219,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(fields.values.text("table"), "nine")
         // No schedule row, no total and no money line before Confirm.
         XCTAssertNil(fields.field(AgentPartner.cardSwitchKey))
-        XCTAssertNil(fields.field(AgentPartner.cardLengthKey))
+        XCTAssertNil(fields.field(AgentPartner.cardEndKey))
         XCTAssertFalse(card.lines.contains { $0.contains("$") || $0.contains("Estimated") || $0.lowercased().contains("total") })
         XCTAssertEqual(card.lines.first, "Order from the menu")
         XCTAssertEqual(card.lines.last, "Example Menu - Simulated")
@@ -2379,7 +2448,7 @@ final class AgentPartnerToolTests: XCTestCase {
         let fields = try model(card)
         XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "items.1.item", "items.1.quantity", "items.2.item",
                                                        "items.2.quantity", "items.controls", "arrive_at", "address", "card_id",
-                                                       "add-to-schedule", "schedule-length", "schedule-travel", "0"],
+                                                       "add-to-schedule", "schedule-end", "schedule-travel", "0"],
                        "the partner's fields in order, the two rows and the control row first")
         XCTAssertEqual(fields.source(of: "restaurant"), .stated)
         XCTAssertEqual(fields.source(of: "arrive_at"), .stated)
@@ -2422,7 +2491,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(submits.count, 1, "exactly one submit")
         let values = try XCTUnwrap(submits.first?["values"] as? [String: Any])
         XCTAssertEqual(Set(values.keys), ["restaurant", "items", "arrive_at", "address", "card_id"])
-        for key in ["add-to-schedule", "schedule-length", "schedule-travel"] {
+        for key in ["add-to-schedule", "schedule-end", "schedule-travel"] {
             XCTAssertFalse(values.keys.contains(key), key)
         }
         XCTAssertEqual(values["restaurant"] as? String, "Test Cafe")
