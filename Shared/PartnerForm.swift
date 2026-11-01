@@ -119,15 +119,20 @@ enum PartnerForm {
         // REQ-001). `repeat` is the partner's maximum number of lines, a whole number of 1 or more.
         if kind == .group {
             let hasFee = object["fee_cents"] != nil
-            guard object.count == (hasFee ? 6 : 5), let listed = object["fields"] as? [Any], listed.count == 2,
+            guard object.count == (hasFee ? 6 : 5), let listed = object["fields"] as? [Any],
                   let maximum = integer(object["repeat"]), maximum > 0 else { return nil }
             var members: [PartnerField] = []
             for element in listed {
                 guard let memberObject = element as? [String: Any], let member = field(from: memberObject, inGroup: true),
-                      member.kind == .pickOne || member.kind == .number, !member.isOptional else { return nil }
+                      member.kind == .text || member.kind == .number || member.kind == .pickOne else { return nil }
                 members.append(member)
             }
-            guard members.first(where: { $0.kind == .pickOne }) != nil, members.first(where: { $0.kind == .number }) != nil else { return nil }
+            // The list shape: exactly two members, one `pick_one` (the item member) and one `number` (the count member), in
+            // either order, neither optional (SPEC-MENULIST-001 REQ-001).
+            guard members.count == 2,
+                  members.filter({ $0.kind == .pickOne }).count == 1,
+                  members.filter({ $0.kind == .number }).count == 1,
+                  members.allSatisfy({ !$0.isOptional }) else { return nil }
             var feeCents: Int?
             if hasFee {
                 guard let fee = integer(object["fee_cents"]), (0...maxCents).contains(fee),
