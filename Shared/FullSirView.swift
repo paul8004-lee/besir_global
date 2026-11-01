@@ -338,7 +338,8 @@ struct FullSirView: View {
         if let handToolbox { return handToolbox }
         let location = location
         let built = AgentToolbox(store: store, now: { Date() }, timeZone: { TimeZone.current },
-                                 deviceOrigin: { AgentPlaces.devicePlace(manual: location.manualOrigin, current: location.realFixLocation) })
+                                 deviceOrigin: { AgentPlaces.devicePlace(manual: location.manualOrigin, current: location.realFixLocation) },
+                                 searchOrigin: { location.searchOrigin })
         handToolbox = built
         return built
     }

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// Why a budget request did not give an answer. No text of the server's answer is kept for any of them.
@@ -57,6 +58,14 @@ final class BudgetClient {
     }
 
     var isConfigured: Bool { config.hasProxy }
+
+    /// The entries of one week from this client's ledger, in insertion order.
+    func weekEntries(weekStart: String) -> [BudgetEntry] { ledger.weekEntries(weekStart: weekStart) }
+
+    /// Fires once for every effective add or remove of this client's ledger.
+    var changes: AnyPublisher<Void, Never> {
+        NotificationCenter.default.publisher(for: BudgetLedger.didChange, object: ledger).map { _ in () }.eraseToAnyPublisher()
+    }
 
     /// How the week stands, from the ledger's total for `weekStart`. Records the packets of the exchange under `flow`.
     func left(weekStart: String, flow: UUID) async -> Result<BudgetStanding, BudgetFailure> {

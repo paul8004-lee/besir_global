@@ -137,18 +137,27 @@ final class StubPartner {
     // MARK: Shapes
 
     static func field(_ key: String, _ kind: String, _ label: String, optional: Bool = false,
-                      options: [(String, String)]? = nil, lookup: Bool = false) -> [String: Any] {
+                      options: [(String, String)]? = nil, prices: [Int]? = nil, lookup: Bool = false) -> [String: Any] {
         var object: [String: Any] = ["key": key, "kind": kind, "label": label]
-        if let options { object["options"] = options.map { ["id": $0.0, "label": $0.1] } }
+        if let options {
+            object["options"] = options.enumerated().map { index, pair in
+                var option: [String: Any] = ["id": pair.0, "label": pair.1]
+                if let prices, index < prices.count { option["price_cents"] = prices[index] }
+                return option
+            }
+        }
         if optional { object["optional"] = true }
         if lookup { object["lookup"] = true }
         return object
     }
 
     /// A repeatable group as the field list holds it: exactly `key`, `kind`, `label`, `fields` (its members) and `repeat` (the
-    /// partner's maximum number of rows).
-    static func group(_ key: String, _ label: String, members: [[String: Any]], repeat maximum: Int) -> [String: Any] {
-        ["key": key, "kind": "group", "label": label, "fields": members, "repeat": maximum]
+    /// partner's maximum number of rows), with an optional `fee_cents` beside the prices of the item member's options
+    /// (SPEC-MENULIST-001).
+    static func group(_ key: String, _ label: String, members: [[String: Any]], repeat maximum: Int, fee: Int? = nil) -> [String: Any] {
+        var object: [String: Any] = ["key": key, "kind": "group", "label": label, "fields": members, "repeat": maximum]
+        if let fee { object["fee_cents"] = fee }
+        return object
     }
 
     /// A candidate as a lookup answer holds it: exactly `name`, `address` and `location` with the two coordinates.
@@ -230,50 +239,55 @@ extension StubPartner.Shape {
             })
     }
 
-    /// A menu partner: a table, up to 6 rows of an item (six options), a quantity and an optional note, and an optional memo. It
-    /// answers an order number and an estimated total (the unit price of each item times its quantity, summed over the rows); it
-    /// has no time result.
+    /// A menu partner: a table, one list group of an item (six priced options) and a quantity, and an optional memo. It answers
+    /// an order number and an estimated total (the unit price of each item times its quantity, summed over the rows, plus a fee);
+    /// it has no time result.
     static func menu() -> StubPartner.Shape {
         let prices = ["ramen": 1200, "gyoza": 600, "curry": 1000, "pizza": 1400, "salad": 800, "lemonade": 400]
+        let fee = 300
         let items = [("ramen", "Ramen"), ("gyoza", "Gyoza"), ("curry", "Curry"), ("pizza", "Cheese pizza"),
                      ("salad", "Garden salad"), ("lemonade", "Lemonade")]
+        let listed = [1200, 600, 1000, 1400, 800, 400]
         return StubPartner.Shape(
             id: "menu", name: "Example Menu", title: "Order from the menu", summary: "Takes an order from a menu.", route: "/menu",
             fields: [StubPartner.field("table", "text", "Table"),
-                     StubPartner.group("items", "Items", members: [StubPartner.field("item", "pick_one", "Item", options: items),
-                                                                   StubPartner.field("quantity", "number", "Quantity"),
-                                                                   StubPartner.field("row_note", "text", "Row note", optional: true)],
-                                       repeat: 6),
+                     StubPartner.group("items", "Items", members: [StubPartner.field("item", "pick_one", "Item", options: items, prices: listed),
+                                                                   StubPartner.field("quantity", "number", "Quantity")],
+                                       repeat: 6, fee: fee),
                      StubPartner.field("memo", "text", "Memo", optional: true)],
             resultFields: [StubPartner.item("Order number", "text"), StubPartner.item("Estimated total", "money")],
             answer: { values in
                 let rows = values["items"] as? [[String: Any]] ?? []
-                let total = rows.reduce(0) { $0 + (prices[$1["item"] as? String ?? ""] ?? 0) * ($1["quantity"] as? Int ?? 0) }
-                guard total > 0 else { return ["status": "declined", "partner": "Example Menu", "simulated": true, "reason": "no_items"] }
+                let total = rows.reduce(fee) { $0 + (prices[$1["item"] as? String ?? ""] ?? 0) * ($1["quantity"] as? Int ?? 0) }
+                guard total > fee else { return ["status": "declined", "partner": "Example Menu", "simulated": true, "reason": "no_items"] }
                 let results: [[String: Any]] = [["name": "Order number", "kind": "text", "value": "MN-4821"],
                                                 ["name": "Estimated total", "kind": "money", "value": total]]
                 return ["status": "confirmed", "partner": "Example Menu", "simulated": true, "results": results]
             })
     }
 
-    /// The delivery partner of SPEC-DELIVERYCARD-001 (card t91): a restaurant name, up to 6 rows of an item (six options) and a
-    /// quantity, an arrival, a delivery place it resolves itself (`"lookup": true`) and a card. It answers an arrival, an order
-    /// number, an estimated total and a status, and declines as the Worker route does: the hours rule first (10:00 to 22:00
-    /// inclusive), then a row quantity outside 1 to 9; the unit prices and the fee of 500 cents are written out here, not shared
-    /// with the route.
-    static func delivery(candidates: @escaping (_ field: String, _ text: String) -> [Place] = { _, _ in PartnerPlaceFixture.branches })
-        -> StubPartner.Shape {
+    /// The delivery partner of SPEC-DELIVERYCARD-001 (card t91), with the prices and the fee of SPEC-MENULIST-001 (card t106)
+    /// on the wire by default (`priced` false gives the Worker as deployed before card t106): a restaurant name, one list group
+    /// of an item (six options) and a quantity, an arrival, a delivery place it resolves itself (`"lookup": true`) and a card.
+    /// It answers an arrival, an order number, an estimated total and a status, and declines as the Worker route does: the
+    /// hours rule first (10:00 to 22:00 inclusive), then a row quantity outside 1 to 9; the unit prices and the fee of 500
+    /// cents are written out here, not shared with the route.
+    static func delivery(candidates: @escaping (_ field: String, _ text: String) -> [Place] = { _, _ in PartnerPlaceFixture.branches },
+                         priced: Bool = true) -> StubPartner.Shape {
         let prices = ["ramen": 1400, "gyoza": 700, "curry": 1300, "pizza": 2500, "salad": 900, "lemonade": 400]
         let items = [("ramen", "Ramen"), ("gyoza", "Gyoza"), ("curry", "Curry rice"), ("pizza", "Cheese pizza"),
                      ("salad", "Garden salad"), ("lemonade", "Lemonade")]
+        let listed = [1400, 700, 1300, 2500, 900, 400]
         func decline(_ reason: String) -> [String: Any] {
             ["status": "declined", "partner": "Example Delivery", "simulated": true, "reason": reason]
         }
         return StubPartner.Shape(
             id: "delivery", name: "Example Delivery", title: "Order delivery", summary: "Delivers food to a place at a set time.", route: "/delivery",
             fields: [StubPartner.field("restaurant", "text", "Restaurant"),
-                     StubPartner.group("items", "Items", members: [StubPartner.field("item", "pick_one", "Item", options: items),
-                                                                   StubPartner.field("quantity", "number", "Quantity")], repeat: 6),
+                     StubPartner.group("items", "Items", members: [StubPartner.field("item", "pick_one", "Item", options: items,
+                                                                                      prices: priced ? listed : nil),
+                                                                   StubPartner.field("quantity", "number", "Quantity")],
+                                       repeat: 6, fee: priced ? 500 : nil),
                      StubPartner.field("arrive_at", "time", "Arrival"),
                      StubPartner.field("address", "place", "Delivery place", lookup: true),
                      StubPartner.field("card_id", "pick_one", "Pay with", options: [("debit-4242", "Example Debit \u{2022}\u{2022}4242 (Simulated)"),
@@ -361,7 +375,7 @@ final class PartnerRig {
     let position = DevicePosition()
 
     init(config: AppConfig = PlaceSentinel.config, partner: StubPartner = StubPartner(), failingLog: Bool = false,
-         budget: BudgetToolPartner? = nil, places: PlacesTransportStub? = nil) {
+         budget: BudgetToolPartner? = nil, places: PlacesTransportStub? = nil, searchOrigin: (() -> Place?)? = nil) {
         let store = EmptyStore.make()
         store.config = AppConfig()
         let clock = MutableClock()
@@ -383,6 +397,7 @@ final class PartnerRig {
         }
         let toolbox = AgentToolbox(store: store, now: { clock.now }, timeZone: { clock.zone },
                                    deviceOrigin: { reads.count += 1; return position.place },
+                                   searchOrigin: searchOrigin,
                                    places: search,
                                    partners: { PartnerClient(config: box.config, send: partner.send, connections: log) },
                                    budget: budgetClient)
@@ -475,8 +490,9 @@ final class PartnerRig {
 @MainActor
 final class AgentPartnerToolTests: XCTestCase {
     private func makeRig(config: AppConfig = PlaceSentinel.config, partner: StubPartner = StubPartner(),
-                         budget: BudgetToolPartner? = nil, places: PlacesTransportStub? = nil) -> PartnerRig {
-        let rig = PartnerRig(config: config, partner: partner, budget: budget, places: places)
+                         budget: BudgetToolPartner? = nil, places: PlacesTransportStub? = nil,
+                         searchOrigin: (() -> Place?)? = nil) -> PartnerRig {
+        let rig = PartnerRig(config: config, partner: partner, budget: budget, places: places, searchOrigin: searchOrigin)
         let folder = rig.folder
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
         return rig
@@ -514,6 +530,11 @@ final class AgentPartnerToolTests: XCTestCase {
 
     /// The card's field model; the test fails when the card is not a field card.
     private func model(_ card: AgentCard) throws -> AgentFieldCard { try XCTUnwrap(card.fieldCard) }
+
+    /// The `End` line of a card built with the fixture start: one hour after the start, as the card prints a time.
+    private func endLine(for start: String = BookingFixture.start) -> String {
+        "End: " + BesirTime.when(TestClock.date(start).addingTimeInterval(3600))
+    }
 
     private func built(_ rig: PartnerRig, _ fill: PartnerRig.Fill = .init(), partner: String = "booking", lookup: Bool = true) async throws -> AgentCard {
         let card = await rig.card(fill, partner: partner, lookup: lookup)
@@ -625,7 +646,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(card.lines[4], "Name: Sam")
         XCTAssertEqual(card.lines[5], "Note:")
         XCTAssertEqual(card.lines[6], "Add to schedule: Add")
-        XCTAssertEqual(card.lines[7], "Length (min): 60")
+        XCTAssertEqual(card.lines[7], endLine())
         XCTAssertEqual(card.lines.last, "Example Tables - Simulated")
         XCTAssertFalse(card.showsGoogleMark)
         XCTAssertEqual(card.actions, ["Confirm", "Cancel"])
@@ -1050,7 +1071,7 @@ final class AgentPartnerToolTests: XCTestCase {
         let card = try await built(rig)
         let fields = try model(card)
         XCTAssertEqual(fields.header, "Reserve a table")
-        XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "party_size", "start", "name", "note", "add-to-schedule", "schedule-length", "schedule-travel", "0"])
+        XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "party_size", "start", "name", "note", "add-to-schedule", "schedule-end", "schedule-travel", "0"])
         XCTAssertEqual(fields.values.text("restaurant"), "Pasta Palace")
         XCTAssertEqual(fields.values.int("party_size"), 2)
         XCTAssertEqual(fields.values.date("start"), TestClock.date(BookingFixture.start))
@@ -1061,17 +1082,17 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(fields.field("add-to-schedule")?.options.map(\.label), ["Add", "Don't Add"])
         XCTAssertEqual(fields.values.flag("add-to-schedule"), true)
         XCTAssertEqual(fields.source(of: "add-to-schedule"), .inferred)
-        XCTAssertEqual(fields.field("schedule-length")?.label, "Length (min)")
-        XCTAssertEqual(fields.values.int("schedule-length"), 60)
-        XCTAssertEqual(fields.source(of: "schedule-length"), .inferred)
+        XCTAssertEqual(fields.field("schedule-end")?.label, "End")
+        XCTAssertEqual(fields.values.date("schedule-end"), TestClock.date(BookingFixture.start).addingTimeInterval(3600))
+        XCTAssertEqual(fields.source(of: "schedule-end"), .inferred)
         XCTAssertEqual(card.lines.last, "Example Tables - Simulated")
         XCTAssertFalse(card.showsGoogleMark)
         XCTAssertTrue(fields.isReady)
-        // The switch off takes the length row away, and back on brings it back.
+        // The switch off takes the End row away, and back on brings it back.
         XCTAssertTrue(fields.chooseOption("add-to-schedule", "false"))
-        XCTAssertNil(fields.field("schedule-length"))
+        XCTAssertNil(fields.field("schedule-end"))
         XCTAssertTrue(fields.chooseOption("add-to-schedule", "true"))
-        XCTAssertNotNil(fields.field("schedule-length"))
+        XCTAssertNotNil(fields.field("schedule-end"))
 
         // With no `fields` argument every field is blank, and building the card sends and writes nothing.
         let bare = makeRig()
@@ -1164,16 +1185,12 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertTrue(fields.setText("name", "  Sam  "))
         XCTAssertTrue(fields.setText("restaurant", "  Pasta Palace  "))
         XCTAssertTrue(card.canConfirm)
-        // The length: blank, 4 and 721 block Confirm while the switch is on, and nothing is checked while it is off.
-        for text in ["", "4", "721"] {
-            XCTAssertTrue(fields.setText("schedule-length", text))
-            XCTAssertFalse(card.canConfirm, "length \(text.isEmpty ? "blank" : text)")
-        }
+        // The End row is seeded, so the switch off and on again leaves the card ready, and a chosen End keeps it ready.
         XCTAssertTrue(fields.chooseOption("add-to-schedule", "false"))
         XCTAssertTrue(card.canConfirm)
         XCTAssertTrue(fields.chooseOption("add-to-schedule", "true"))
-        XCTAssertFalse(card.canConfirm, "the invalid length comes back with the switch")
-        XCTAssertTrue(fields.setText("schedule-length", "90"))
+        XCTAssertTrue(card.canConfirm, "the End comes back with the switch, seeded")
+        XCTAssertTrue(fields.chooseTime("schedule-end", TestClock.date(BookingFixture.start).addingTimeInterval(90 * 60)))
         XCTAssertTrue(card.canConfirm)
         let resolution = try await confirm(card)
         XCTAssertEqual(resolution.status, "applied")
@@ -1185,26 +1202,25 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(values["party_size"] as? Int, 2)
         XCTAssertNil(values["note"])
         XCTAssertNil(values["add-to-schedule"])
-        XCTAssertNil(values["schedule-length"])
+        XCTAssertNil(values["schedule-end"])
         XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
         // An edit after the tap changes nothing.
         XCTAssertFalse(fields.setText("name", "Zed"))
         XCTAssertEqual(fields.values.text("name"), "  Sam  ", "the card keeps what was typed; only the request is trimmed")
         XCTAssertEqual(rig.partner.bodies(op: "submit").count, 1)
 
-        // With Don't Add the same card confirms, even with an invalid length left in the row.
+        // With Don't Add the same card confirms and the schedule holds no entry.
         let off = makeRig()
         let offCard = try await built(off)
         let offFields = try model(offCard)
-        XCTAssertTrue(offFields.setText("schedule-length", "4"))
         XCTAssertTrue(offFields.chooseOption("add-to-schedule", "false"))
         XCTAssertTrue(offCard.canConfirm)
         let offResolution = try await confirm(offCard)
         XCTAssertEqual(offResolution.status, "applied")
         XCTAssertTrue(off.store.activities.isEmpty)
 
-        // Forced past the button: a blank required value, or a blank or out-of-range length with the switch on, is rejected.
-        for edit in [("name", ""), ("schedule-length", ""), ("schedule-length", "4"), ("schedule-length", "721")] {
+        // Forced past the button: a blank required value is rejected.
+        for edit in [("name", "")] {
             let forced = makeRig()
             let forcedCard = try await built(forced)
             XCTAssertTrue(try model(forcedCard).setText(edit.0, edit.1))
@@ -1215,6 +1231,73 @@ final class AgentPartnerToolTests: XCTestCase {
             XCTAssertEqual(forced.partner.bodies(op: "submit").count, 0, "\(edit)")
             XCTAssertTrue(forced.store.activities.isEmpty, "\(edit)")
         }
+    }
+
+    // MARK: NUMSTEP number fields as a stepper (card t107, SPEC-NUMSTEPPER-001)
+
+    /// Steps a number row the way the view does: the rule decides, and the card's own `setTitleText` action writes it.
+    private func step(_ fields: AgentFieldCard, _ key: String, plus times: Int) throws {
+        let field = try XCTUnwrap(fields.field(key))
+        let rule = try XCTUnwrap(field.stepper)
+        for _ in 0..<times {
+            let next = rule.increased(from: fields.values.int(key))
+            fields.actions.setTitleText?(field.id, next.map { String($0) } ?? "")
+        }
+    }
+
+    func testNUMSTEP_T17_ConfirmSendsTheNumberTheStepperShows() async throws {
+        let rig = makeRig()
+        let card = try await built(rig)
+        let fields = try model(card)
+        XCTAssertEqual(fields.values.int("party_size"), 2)
+        try step(fields, "party_size", plus: 2)
+        XCTAssertEqual(fields.values.int("party_size"), 4)
+        XCTAssertTrue(card.canConfirm)
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied")
+        let sent = rig.partner.bodies(op: "submit")
+        XCTAssertEqual(sent.count, 1)
+        let values = try XCTUnwrap(sent.first?["values"] as? [String: Any])
+        XCTAssertEqual(values["party_size"] as? Int, 4)
+        XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
+    }
+
+    func testNUMSTEP_T18_ABlankPartySizeKeepsConfirmLockedUntilThePlusIsTapped() async throws {
+        let rig = makeRig()
+        let card = try await built(rig, .init(party: nil))
+        let fields = try model(card)
+        let row = try XCTUnwrap(fields.field("party_size"))
+        XCTAssertNil(row.chosen)
+        XCTAssertNotNil(row.stepper)
+        XCTAssertFalse(card.canConfirm)
+        try step(fields, "party_size", plus: 1)
+        XCTAssertEqual(fields.values.int("party_size"), 1)
+        XCTAssertTrue(card.canConfirm)
+        _ = try await confirm(card)
+        let values = try XCTUnwrap(rig.partner.bodies(op: "submit").first?["values"] as? [String: Any])
+        XCTAssertEqual(values["party_size"] as? Int, 1)
+    }
+
+    func testNUMSTEP_T19_TheEntryEndsWhereTheEndRowSays() async throws {
+        let start = "2026-11-02T19:00"
+        let picked = makeRig()
+        let pickedCard = try await built(picked, .init(start: start))
+        XCTAssertTrue(try model(pickedCard).chooseTime("schedule-end", TestClock.date(start).addingTimeInterval(90 * 60)))
+        let resolution = try await confirm(pickedCard)
+        XCTAssertEqual(resolution.status, "applied")
+        let entry = try XCTUnwrap(picked.store.activities.first)
+        XCTAssertEqual(entry.startDate, TestClock.date(start))
+        XCTAssertEqual(entry.endDate.timeIntervalSince(entry.startDate), 90 * 60, "the End chosen before the tap")
+        let values = try XCTUnwrap(picked.partner.bodies(op: "submit").first?["values"] as? [String: Any])
+        XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
+        XCTAssertNil(values["schedule-end"])
+        XCTAssertFalse(values.keys.contains { $0.contains("length") }, "no length is sent")
+
+        let seeded = makeRig()
+        let seededCard = try await built(seeded, .init(start: start))
+        _ = try await confirm(seededCard)
+        let seededEntry = try XCTUnwrap(seeded.store.activities.first)
+        XCTAssertEqual(seededEntry.endDate.timeIntervalSince(seededEntry.startDate), 60 * 60, "the End left at its seed")
     }
 
     // MARK: T06 the edited time
@@ -1277,7 +1360,7 @@ final class AgentPartnerToolTests: XCTestCase {
         let budget = BudgetToolPartner()
         let rig = makeRig(budget: budget)
         let card = try await built(rig, .init(start: "2026-11-02T19:00"))
-        XCTAssertTrue(try model(card).setText("schedule-length", "90"))
+        XCTAssertTrue(try model(card).chooseTime("schedule-end", TestClock.date("2026-11-02T19:00").addingTimeInterval(90 * 60)))
         let resolution = try await confirm(card)
         XCTAssertEqual(resolution.status, "applied")
         let entry = try XCTUnwrap(rig.store.activities.first)
@@ -1577,9 +1660,11 @@ final class AgentPartnerToolTests: XCTestCase {
         let rig = makeRig()
         let card = try await built(rig)
         let fields = try model(card)
-        for key in ["restaurant", "party_size", "name", "note", "schedule-length"] {
+        for key in ["restaurant", "party_size", "name", "note"] {
             XCTAssertEqual(fields.field(key)?.placeholder, "", "\(key): a typed row of the card has an empty placeholder")
         }
+        XCTAssertNotNil(fields.field(AgentPartner.cardEndKey), "premise: the End row is on the card")
+        XCTAssertNil(fields.field(AgentPartner.cardEndKey)?.placeholder, "the End row is a time row like start")
         XCTAssertNil(fields.field("start")?.placeholder, "a time row keeps the view's own wording")
         XCTAssertNil(fields.field("add-to-schedule")?.placeholder)
 
@@ -1631,10 +1716,10 @@ final class AgentPartnerToolTests: XCTestCase {
     private func assertNoOwnRows(_ card: AgentCard, _ note: String, file: StaticString = #filePath, line: UInt = #line) throws {
         let text = shownLines(card)
         XCTAssertFalse(text.contains("Add to schedule"), "\(note): \(text)", file: file, line: line)
-        XCTAssertFalse(text.contains("Length (min)"), "\(note): \(text)", file: file, line: line)
+        XCTAssertFalse(text.contains("End:"), "\(note): \(text)", file: file, line: line)
         let keys = try model(card).card.fields.map(\.key)
         XCTAssertFalse(keys.contains("add-to-schedule"), note, file: file, line: line)
-        XCTAssertFalse(keys.contains("schedule-length"), note, file: file, line: line)
+        XCTAssertFalse(keys.contains(AgentPartner.cardEndKey), note, file: file, line: line)
         XCTAssertTrue(text.contains("Restaurant: Pasta Palace"), "premise: the partner's rows stay: \(note)", file: file, line: line)
     }
 
@@ -1642,7 +1727,7 @@ final class AgentPartnerToolTests: XCTestCase {
         // Before the end both rows are on the card.
         let waiting = try await built(makeRig())
         XCTAssertTrue(shownLines(waiting).contains("Add to schedule: Add"))
-        XCTAssertTrue(shownLines(waiting).contains("Length (min): 60"))
+        XCTAssertTrue(shownLines(waiting).contains(endLine()))
 
         for how in [AgentCardResolution.cancel, .dismiss] {
             let card = try await built(makeRig())
@@ -1682,7 +1767,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(first.status, "applied")
         XCTAssertEqual(addedCard.mark, .confirmed)
         XCTAssertTrue(shownLines(addedCard).contains("Add to schedule: Add"))
-        XCTAssertTrue(shownLines(addedCard).contains("Length (min): 60"))
+        XCTAssertTrue(shownLines(addedCard).contains(endLine()))
 
         let skipped = makeRig()
         let skippedCard = try await built(skipped)
@@ -1690,7 +1775,7 @@ final class AgentPartnerToolTests: XCTestCase {
         _ = try await confirm(skippedCard)
         XCTAssertEqual(skippedCard.mark, .confirmed)
         XCTAssertTrue(shownLines(skippedCard).contains("Add to schedule: Don't Add"))
-        XCTAssertFalse(shownLines(skippedCard).contains("Length (min)"), "the length row is gone with the switch off")
+        XCTAssertFalse(shownLines(skippedCard).contains("End:"), "the End row is gone with the switch off")
     }
 
     func testPARTNER_T18_ACardThatEndedWithoutAConfirmationKeepsThePartnersOwnSwitchAndChipFields() async throws {
@@ -1706,9 +1791,9 @@ final class AgentPartnerToolTests: XCTestCase {
             let fields = try model(card)
             XCTAssertTrue(fields.chooseOption("rush", "true"))
             XCTAssertTrue(fields.chooseOption("seat", "out"))
-            // Before the end the card holds the app's switch with its length row and the partner's own fields.
+            // Before the end the card holds the app's switch with its End row and the partner's own fields.
             XCTAssertEqual(fields.card.fields.map(\.key),
-                           ["restaurant", "party_size", "start", "name", "note", "rush", "seat", "add-to-schedule", "schedule-length", "schedule-travel", "0"])
+                           ["restaurant", "party_size", "start", "name", "note", "rush", "seat", "add-to-schedule", "schedule-end", "schedule-travel", "0"])
             XCTAssertTrue(shownLines(card).contains("Add to schedule: Add"))
             _ = await card.resolve(how)
             XCTAssertEqual(card.mark, .cancelled)
@@ -1717,7 +1802,7 @@ final class AgentPartnerToolTests: XCTestCase {
             XCTAssertTrue(text.contains("Rush: Rush it"), "the partner's on_off field stays: \(text)")
             XCTAssertTrue(text.contains("Seat: Outside"), "the partner's pick_one field stays: \(text)")
             XCTAssertFalse(text.contains("Add to schedule"), text)
-            XCTAssertFalse(text.contains("Length (min)"), text)
+            XCTAssertFalse(text.contains("End:"), text)
         }
     }
 
@@ -1729,7 +1814,7 @@ final class AgentPartnerToolTests: XCTestCase {
         for (name, arrange) in ends {
             let rig = makeRig()
             let card = try await built(rig)
-            XCTAssertTrue(shownLines(card).contains("Length (min): 60"), "premise: \(name)")
+            XCTAssertTrue(shownLines(card).contains(endLine()), "premise: \(name)")
             arrange(rig.partner)
             let resolution = await Task { await card.resolve(.confirm) }.value
             XCTAssertEqual(resolution?.status, "unavailable", name)
@@ -1808,6 +1893,63 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(bareLookups.count, 1)
         XCTAssertEqual(Set(try XCTUnwrap(bareLookups.first).keys), ["op", "field", "text"], "no position, no near key")
         XCTAssertTrue(places.requests.isEmpty)
+    }
+
+    func testTRAVELLEGS_T09_ThePartnerCardsPlaceSearchBiasFollowsTheSearchOriginNotTheDeviceOrigin() async throws {
+        // The search origin (37.7749, -122.4194) and the device position (the sentinel, 37.70, -122.30) differ on purpose.
+        let searchPlace = PlaceFixture.device
+        XCTAssertNotEqual(searchPlace, ToolFixture.device)
+
+        // The parcels card has no schedule row, so the device origin is not read at all; the bias is at the search origin.
+        let places = PlacesTransportStub.answering(with: PlaceFixture.data("places-search-three"))
+        let parcels = StubPartner()
+        parcels.shapes = [.parcels()]
+        let rig = makeRig(partner: parcels, places: places, searchOrigin: { searchPlace })
+        let fields = try model(try await built(rig, partner: "parcels"))
+        try await typeAndPause(fields, "where", "Tartine")
+        XCTAssertEqual(places.callCount, 1)
+        let center = PlaceBody.biasCenter(PlaceBody.json(places.requests.first))
+        XCTAssertNotNil(center, "positive control: the search carried a bias")
+        XCTAssertEqual(center?.latitude ?? 0, 37.7749, accuracy: 1e-9)
+        XCTAssertEqual(center?.longitude ?? 0, -122.4194, accuracy: 1e-9)
+        XCTAssertEqual(rig.reads.count, 0, "the device origin was not read")
+        for request in parcels.requests {
+            XCTAssertFalse(requestText(request).contains("37.7749"), "the search origin never reaches the partner")
+        }
+
+        // Compatibility: a toolbox built without a search origin biases around the device origin, as before.
+        let oldPlaces = PlacesTransportStub.answering(with: PlaceFixture.data("places-search-three"))
+        let oldParcels = StubPartner()
+        oldParcels.shapes = [.parcels()]
+        let old = makeRig(partner: oldParcels, places: oldPlaces)
+        let oldFields = try model(try await built(old, partner: "parcels"))
+        try await typeAndPause(oldFields, "where", "Tartine")
+        let oldCenter = PlaceBody.biasCenter(PlaceBody.json(oldPlaces.requests.first))
+        XCTAssertEqual(oldCenter?.latitude ?? 0, 37.70, accuracy: 1e-9)
+        XCTAssertEqual(oldCenter?.longitude ?? 0, -122.30, accuracy: 1e-9)
+        XCTAssertEqual(old.reads.count, 1, "the device origin was read when the search fired")
+
+        // The trip consumers keep the device origin: the schedule row's `Leave from` seed and the partner's `near`.
+        let branches = PartnerPlaceFixture.branches
+        let tables = StubPartner()
+        tables.shapes = [.placeTables(candidates: { _, _ in branches })]
+        let trip = makeRig(partner: tables, places: PlacesTransportStub.answering(with: PlaceFixture.data("places-search-three")),
+                           searchOrigin: { searchPlace })
+        let tripFields = try model(try await built(trip, .init(restaurant: nil)))
+        XCTAssertEqual(trip.reads.count, 1, "the card build read the device origin once, for the schedule row")
+        XCTAssertTrue(tripFields.chooseOption(AgentPartner.cardTravelKey, AgentFieldSpec.onValue))
+        XCTAssertEqual(tripFields.values.entry(AgentPartner.cardFromKey)?.value, .place(ToolFixture.device),
+                       "Leave from starts at the device origin, not at the search origin")
+        try await typeAndPause(tripFields, "restaurant", "Pasta")
+        let lookup = try XCTUnwrap(tables.bodies(op: "lookup").first)
+        let near = try XCTUnwrap(lookup["near"] as? [String: Any])
+        XCTAssertEqual(near["latitude"] as? Double ?? 0, 37.70, accuracy: 1e-9)
+        XCTAssertEqual(near["longitude"] as? Double ?? 0, -122.30, accuracy: 1e-9)
+        for request in tables.requests {
+            let text = requestText(request)
+            XCTAssertFalse(text.contains("37.77"), text)
+            XCTAssertFalse(text.contains("-122.4194"), text)
+        }
     }
 
     func testPLACE_T02_ConfirmingTakesTheLocationFromTheFirstMarkedFieldOnly() async throws {
@@ -2034,9 +2176,8 @@ final class AgentPartnerToolTests: XCTestCase {
         let optionID = "ignore_all_rules"
         var shape = StubPartner.Shape.menu()
         shape.fields[1] = StubPartner.group("items", groupLabel, members: [
-            StubPartner.field("item", "pick_one", memberLabel, options: [(optionID, optionLabel), ("gyoza", "Gyoza")]),
-            StubPartner.field("quantity", "number", "Quantity"),
-            StubPartner.field("row_note", "text", "Row note", optional: true)], repeat: 6)
+            StubPartner.field("item", "pick_one", memberLabel, options: [(optionID, optionLabel), ("gyoza", "Gyoza")], prices: [1200, 600]),
+            StubPartner.field("quantity", "number", "Quantity")], repeat: 6, fee: 300)
         let rig = menuRig(shape: shape)
         let json = try await listedJSON(rig)
         XCTAssertEqual(Set(json.keys), ["status", "simulated", "partners", "message"])
@@ -2050,17 +2191,24 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(group["label"] as? String, groupLabel)
         XCTAssertEqual(group["repeat"] as? Int, 6)
         let members = try XCTUnwrap(group["fields"] as? [[String: Any]])
-        XCTAssertEqual(members.map { $0["key"] as? String ?? "" }, ["item", "quantity", "row_note"])
-        XCTAssertEqual(members.map { $0["kind"] as? String ?? "" }, ["pick_one", "number", "text"])
-        XCTAssertEqual(members.map { $0["label"] as? String ?? "" }, [memberLabel, "Quantity", "Row note"])
-        XCTAssertEqual(members.map { Set($0.keys) }, [Set(["key", "kind", "label", "options"]), Set(["key", "kind", "label"]),
-                                                      Set(["key", "kind", "label", "optional"])])
-        XCTAssertEqual(members.last?["optional"] as? Bool, true, "an optional member says so")
+        XCTAssertEqual(members.map { $0["key"] as? String ?? "" }, ["item", "quantity"])
+        XCTAssertEqual(members.map { $0["kind"] as? String ?? "" }, ["pick_one", "number"])
+        XCTAssertEqual(members.map { $0["label"] as? String ?? "" }, [memberLabel, "Quantity"])
+        XCTAssertEqual(members.map { Set($0.keys) }, [Set(["key", "kind", "label", "options"]), Set(["key", "kind", "label"])])
         XCTAssertEqual((members.first?["options"] as? [[String: String]])?.map { $0["id"] ?? "" }, [optionID, "gyoza"])
         XCTAssertEqual((members.first?["options"] as? [[String: String]])?.map { $0["label"] ?? "" }, [optionLabel, "Gyoza"])
 
-        // Partner text is data: each hostile string stands only as a whole JSON string value, and the message is the constant.
+        // The listing holds no price and no fee while the stub's own field list carries both (SPEC-MENULIST-001 REQ-015).
         let listText = AgentToolbox.encode(json)
+        XCTAssertFalse(listText.contains("price_cents"), "the listing names no price")
+        XCTAssertFalse(listText.contains("fee_cents"), "the listing names no fee")
+        let stubText = AgentToolbox.encode(["fields": shape.fields])
+        XCTAssertTrue(stubText.contains("price_cents"), "positive control: the stub's own answer carries the price")
+        XCTAssertTrue(stubText.contains("fee_cents"), "positive control: the stub's own answer carries the fee")
+        let listedOptions = try XCTUnwrap(members.first?["options"] as? [[String: Any]])
+        for option in listedOptions { XCTAssertEqual(Set(option.keys), ["id", "label"], "the options are exactly id and label") }
+
+        // Partner text is data: each hostile string stands only as a whole JSON string value, and the message is the constant.
         func occurrences(_ needle: String, in text: String) -> Int { text.components(separatedBy: needle).count - 1 }
         for hostile in [groupLabel, memberLabel, optionLabel, optionID] {
             XCTAssertGreaterThan(occurrences(hostile, in: listText), 0, "positive control: \(hostile)")
@@ -2074,153 +2222,26 @@ final class AgentPartnerToolTests: XCTestCase {
         }
     }
 
-    func testGROUP_GT2_TheGroupCardKeepsTheNamedRowsHasNoScheduleOrMoneyLineAndEndsOnCancelOrDismiss() async throws {
-        let rig = menuRig()
-        let card = try await menuCard(rig)
-        let fields = try model(card)
-        // The model's rows 1 and 3 give two rows, numbered 1 and 2 on the card; the control row follows the last row.
-        XCTAssertEqual(fields.card.fields.map(\.key), ["table", "items.1.item", "items.1.quantity", "items.1.row_note",
-                                                       "items.2.item", "items.2.quantity", "items.2.row_note", "items.controls", "memo", "0"])
-        let rows = fields.values.rows(of: "items")
-        XCTAssertEqual(rows.count, 2)
-        XCTAssertEqual(rows.map { $0["item"]?.value }, [AgentFieldValue.option("ramen"), .option("gyoza")])
-        XCTAssertEqual(rows.map { $0["quantity"]?.value }, [AgentFieldValue.number(2), .number(1)])
-        XCTAssertEqual(rows.map { $0["item"]?.source }, [AgentFieldSource.stated, .stated])
-        XCTAssertEqual(rows.map { $0["quantity"]?.source }, [AgentFieldSource.stated, .stated])
-        XCTAssertEqual(rows.map { $0["row_note"]?.source }, [AgentFieldSource.blank, .blank], "every other member is blank")
-        XCTAssertEqual(fields.values.text("table"), "nine")
-        // No schedule row, no total and no money line before Confirm.
-        XCTAssertNil(fields.field(AgentPartner.cardSwitchKey))
-        XCTAssertNil(fields.field(AgentPartner.cardLengthKey))
-        XCTAssertFalse(card.lines.contains { $0.contains("$") || $0.contains("Estimated") || $0.lowercased().contains("total") })
-        XCTAssertEqual(card.lines.first, "Order from the menu")
-        XCTAssertEqual(card.lines.last, "Example Menu - Simulated")
-        // The control row holds one chip: the symbol and the name VoiceOver reads, as the app words them.
-        let control = try XCTUnwrap(fields.field(AgentFieldCard.controlKey("items")))
-        XCTAssertNil(control.chosen)
-        XCTAssertEqual(control.options.count, 1)
-        XCTAssertEqual(control.options.first?.label, "+")
-        XCTAssertEqual(control.options.first?.accessibilityName, "Add another")
-
-        // No row entry: one blank row. Entries for rows 1 to 7 with a maximum of 6: six rows and no control row.
-        let bare = menuRig()
-        let bareCard = try await menuCard(bare, [])
-        let bareFields = try model(bareCard)
-        let bareRows = bareFields.values.rows(of: "items")
-        XCTAssertEqual(bareRows.count, 1)
-        XCTAssertEqual(bareRows.first?.count, 3)
-        XCTAssertTrue(bareRows.first?.values.allSatisfy { $0.source == .blank } ?? false)
-        XCTAssertNotNil(bareFields.field(AgentFieldCard.controlKey("items")))
-        let many = menuRig()
-        let manyCard = try await menuCard(many, (1...7).map { MenuOrder.entry("items.\($0).quantity", String($0), "qty \($0)") },
-                                          line: (1...7).map { "qty \($0)" }.joined(separator: " "))
-        let manyFields = try model(manyCard)
-        XCTAssertEqual(manyFields.values.rows(of: "items").count, 6)
-        XCTAssertNil(manyFields.field(AgentFieldCard.controlKey("items")), "at the maximum the control row is gone")
-
-        // Cancel and dismiss after a row was added: the card is Cancelled, the control row is gone, the rows stay, nothing is sent.
-        for how in [AgentCardResolution.cancel, .dismiss] {
-            let ended = menuRig()
-            let endedCard = try await menuCard(ended)
-            let endedFields = try model(endedCard)
-            XCTAssertTrue(endedFields.chooseOption(AgentFieldCard.controlKey("items"), "add"))
-            XCTAssertEqual(endedFields.values.rows(of: "items").count, 3)
-            let resolved = await endedCard.resolve(how)
-            let resolution = try XCTUnwrap(resolved)
-            XCTAssertEqual(resolution.result, AgentToolbox.declinedResult)
-            XCTAssertEqual(resolution.status, "declined")
-            XCTAssertEqual(endedCard.mark, .cancelled)
-            XCTAssertNil(endedFields.field(AgentFieldCard.controlKey("items")), "the control row leaves the card")
-            XCTAssertEqual(endedFields.values.rows(of: "items").count, 3, "the rows stay")
-            XCTAssertEqual(endedCard.lines.filter { $0.hasPrefix("Quantity:") }.count, 3, "the rows stay in the summary")
-            XCTAssertEqual(ended.partner.bodies(op: "submit").count, 0)
-            XCTAssertTrue(ended.store.activities.isEmpty)
-            let lines = await ended.summaries()
-            XCTAssertEqual(lines, MenuOrder.lookupLines)
-        }
-    }
-
-    func testGROUP_GT3_ConfirmSendsTheRowsOfTheSnapshotAndRefusesABlankRequiredRow() async throws {
-        let budget = BudgetToolPartner()
-        let rig = menuRig(budget: budget)
-        let card = try await menuCard(rig)
-        let fields = try model(card)
-        let control = AgentFieldCard.controlKey("items")
-        // Add a third row and fill it; delete the middle row through the action the view calls.
-        XCTAssertTrue(fields.chooseOption(control, "add"))
-        XCTAssertTrue(fields.chooseOption(AgentFieldCard.rowKey("items", 3, "item"), "pizza"))
-        XCTAssertTrue(fields.setText(AgentFieldCard.rowKey("items", 3, "quantity"), "3"))
-        XCTAssertTrue(card.canConfirm)
-        let middle = try XCTUnwrap(fields.field(AgentFieldCard.rowKey("items", 2, "item"))?.rowID)
-        let delete = try XCTUnwrap(fields.actions.deleteRow)
-        delete(middle)
-        XCTAssertEqual(fields.values.rows(of: "items").count, 2)
-        XCTAssertNil(fields.field(AgentFieldCard.rowKey("items", 2, "item")))
-        let resolution = try await confirm(card)
-        XCTAssertEqual(resolution.status, "applied")
-        XCTAssertEqual(card.mark, .confirmed)
-        let sent = rig.partner.bodies(op: "submit")
-        XCTAssertEqual(sent.count, 1)
-        let values = try XCTUnwrap(sent.first?["values"] as? [String: Any])
-        XCTAssertEqual(Set(values.keys), ["table", "items"], "a blank optional value has no entry")
-        let items = try XCTUnwrap(values["items"] as? [[String: Any]])
-        XCTAssertEqual(items.map { $0["item"] as? String ?? "" }, ["ramen", "pizza"], "the rows of the snapshot, in card order")
-        XCTAssertEqual(items.map { $0["quantity"] as? Int ?? 0 }, [2, 3])
-        XCTAssertEqual(items.map { Set($0.keys) }, [Set(["item", "quantity"]), Set(["item", "quantity"])])
-        let submitText = String(decoding: try XCTUnwrap(rig.partner.requests.last?.httpBody), as: UTF8.self)
-        XCTAssertFalse(submitText.contains("gyoza"), "the deleted row is not in the body")
-        // The money item goes to the budget as an estimate; the menu has no time item, so there is no entry and no record.
-        XCTAssertEqual(budget.requests.count, 1)
-        XCTAssertEqual(budget.body()?["op"] as? String, "spend")
-        XCTAssertEqual(budget.body()?["amount_cents"] as? Int, 2 * 1200 + 3 * 1400)
-        XCTAssertTrue((resolution.notice ?? "").hasPrefix("Estimated spend $66.00"))
-        XCTAssertTrue(rig.store.activities.isEmpty, "no time item, no entry")
-        let results = try XCTUnwrap(resolution.json?["results"] as? [[String: String]])
-        XCTAssertEqual(results.map { $0["value"] ?? "" }, ["MN-4821", "$66.00"])
-        // After Confirm the control row is gone and the rows stay in the summary.
-        XCTAssertNil(fields.field(control))
-        XCTAssertEqual(fields.values.rows(of: "items").count, 2)
-        XCTAssertEqual(card.lines.filter { $0.hasPrefix("Item:") }.count, 2)
-
-        // A row with a required member blank, forced past the button: rejected with status and message only, nothing sent.
-        func forced(_ edit: (AgentFieldCard) -> Void, _ note: String) async throws {
-            let blank = menuRig()
-            let blankCard = try await menuCard(blank)
-            edit(try model(blankCard))
-            XCTAssertFalse(blankCard.canConfirm, note)
-            let rejected = try await confirm(blankCard)
-            XCTAssertEqual(rejected.status, "rejected", note)
-            XCTAssertEqual(Set(try XCTUnwrap(rejected.json).keys), ["status", "message"], note)
-            XCTAssertEqual(rejected.message, AgentPartner.editRejectedMessage, note)
-            XCTAssertEqual(blank.partner.bodies(op: "submit").count, 0, note)
-            XCTAssertTrue(blank.store.activities.isEmpty, note)
-            XCTAssertEqual(blankCard.mark, .notApplied, note)
-        }
-        try await forced({ XCTAssertTrue($0.chooseOption(control, "add")) }, "an added row is blank")
-        try await forced({ XCTAssertTrue($0.setText(AgentFieldCard.rowKey("items", 1, "quantity"), "")) }, "a cleared quantity")
-    }
-
     func testGROUP_GT4_ARowValueLeavesOnlyInTheSubmitBody() async throws {
         let budget = BudgetToolPartner()
         let rig = menuRig(budget: budget)
-        let line = "Table SENTINEL-TABLE: ramen 2, gyoza 1, note SENTINEL-ROW-A, note SENTINEL-ROW-B"
+        let line = "Table SENTINEL-TABLE: ramen 2, gyoza 1"
         let entries = [MenuOrder.entry("table", "SENTINEL-TABLE", "Table SENTINEL-TABLE"),
                        MenuOrder.entry("items.1.item", "ramen", "ramen 2"), MenuOrder.entry("items.1.quantity", "2", "ramen 2"),
-                       MenuOrder.entry("items.1.row_note", "SENTINEL-ROW-A", "note SENTINEL-ROW-A"),
-                       MenuOrder.entry("items.2.item", "gyoza", "gyoza 1"), MenuOrder.entry("items.2.quantity", "1", "gyoza 1"),
-                       MenuOrder.entry("items.2.row_note", "SENTINEL-ROW-B", "note SENTINEL-ROW-B")]
+                       MenuOrder.entry("items.2.item", "gyoza", "gyoza 1"), MenuOrder.entry("items.2.quantity", "1", "gyoza 1")]
         let card = try await menuCard(rig, entries, line: line)
         let fields = try model(card)
-        XCTAssertEqual(fields.values.text("items.2.row_note"), "SENTINEL-ROW-B", "premise: the model's value stands on the card")
-        // The user edits the second row's note: only the edited text may leave.
-        XCTAssertTrue(fields.setText("items.2.row_note", "EDITED-ROW-B"))
+        XCTAssertEqual(fields.values.int("items.2.quantity"), 1, "premise: the model's value stands on the card")
+        // The user edits the second line's quantity: only the final value may leave.
+        XCTAssertTrue(fields.setText("items.2.quantity", "3"))
         let resolution = try await confirm(card)
         XCTAssertEqual(resolution.status, "applied")
         let submit = String(decoding: try XCTUnwrap(rig.partner.requests.last?.httpBody), as: UTF8.self)
-        for sentinel in ["SENTINEL-TABLE", "SENTINEL-ROW-A", "EDITED-ROW-B"] {
-            XCTAssertTrue(submit.contains(sentinel), "positive control: \(sentinel) is in the submit body")
-        }
-        XCTAssertFalse(submit.contains("SENTINEL-ROW-B"), "the text the user replaced does not leave")
+        XCTAssertTrue(submit.contains("SENTINEL-TABLE"), "positive control: SENTINEL-TABLE is in the submit body")
+        let body = try XCTUnwrap(rig.partner.bodies(op: "submit").first)
+        let items = try XCTUnwrap((body["values"] as? [String: Any])?["items"] as? [[String: Any]])
+        XCTAssertEqual(items.map { $0["item"] as? String ?? "" }, ["ramen", "gyoza"])
+        XCTAssertEqual(items.map { $0["quantity"] as? Int ?? 0 }, [2, 3], "only the edited quantity is sent")
         await rig.log.flush()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -2236,11 +2257,8 @@ final class AgentPartnerToolTests: XCTestCase {
         }
         for (name, text) in elsewhere {
             XCTAssertFalse(text.isEmpty, name)
-            for sentinel in ["SENTINEL-TABLE", "SENTINEL-ROW-A", "SENTINEL-ROW-B", "EDITED-ROW-B"] {
-                XCTAssertFalse(text.contains(sentinel), "\(name) holds \(sentinel)")
-            }
+            XCTAssertFalse(text.contains("SENTINEL-TABLE"), "\(name) holds SENTINEL-TABLE")
         }
-        XCTAssertTrue(card.lines.joined().contains("EDITED-ROW-B"), "the card shows what the user is to check")
     }
 
     func testGROUP_GT5_TheDeclarationsAreTwelveAndTheFieldsDescriptionTeachesRows() throws {
@@ -2261,6 +2279,154 @@ final class AgentPartnerToolTests: XCTestCase {
         for phrase in ["YYYY-MM-DDTHH:MM", "digits only", "as the user said it", "exact words"] {
             XCTAssertTrue(description.contains(phrase), phrase)
         }
+    }
+
+    // MARK: SPEC-MENULIST-001 (card t106) the delivery menu as one list
+
+    func testMENULIST_T12_TheDeliveryCardIsOneListAndConfirmSendsTheOrderedLinesInMenuOrder() async throws {
+        let rig = foodRig(budget: BudgetToolPartner())
+        let card = try await foodOrderCard(rig)
+        let fields = try model(card)
+        let allKeys = fields.card.fields.map(\.key)
+        let lineKeys = allKeys.enumerated().filter { $0.element.hasPrefix("items.") }
+        XCTAssertEqual(lineKeys.map(\.element), (1...6).map { "items.\($0).quantity" } + ["items.total"],
+                       "one line per option, then the total")
+        let offsets = lineKeys.map(\.offset)
+        XCTAssertEqual(offsets, Array((offsets.first ?? 0)...(offsets.last ?? 0)), "the lines are contiguous")
+        XCTAssertGreaterThan(offsets.first ?? 0, allKeys.firstIndex(of: "restaurant") ?? -1, "after the restaurant")
+        XCTAssertLessThan(offsets.last ?? 99, allKeys.firstIndex(of: "arrive_at") ?? 99, "before the arrival")
+        XCTAssertEqual(try XCTUnwrap(fields.field("items.1.quantity")).menuLine?.price, "$14.00", "the line carries its price")
+        let total = try XCTUnwrap(fields.field("items.total"))
+        XCTAssertEqual(total.chosen, "$40.00", "2 x 1400 + 700 + the fee of 500")
+        XCTAssertEqual(total.label, "Total")
+        for text in ["Ramen: 2", "Gyoza: 1", "Total: $40.00"] {
+            XCTAssertTrue(card.lines.contains(text), text)
+        }
+        XCTAssertFalse(card.lines.contains { $0.contains("Curry rice") }, "a blank line prints nothing")
+
+        XCTAssertTrue(fields.setText("items.3.quantity", "1"))
+        XCTAssertEqual(fields.field("items.total")?.chosen, "$53.00")
+        try await typeAndPause(fields, "address", "Pasta")
+        XCTAssertTrue(fields.choosePlace("address", PartnerPlaceFixture.branches[0]))
+        XCTAssertTrue(fields.chooseOption("card_id", "debit-4242"))
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied")
+        let sent = rig.partner.bodies(op: "submit")
+        XCTAssertEqual(sent.count, 1)
+        let values = try XCTUnwrap(sent.first?["values"] as? [String: Any])
+        let items = try XCTUnwrap(values["items"] as? [[String: Any]])
+        XCTAssertEqual(items.map { $0["item"] as? String ?? "" }, ["ramen", "gyoza", "curry"], "the ordered lines in menu order")
+        XCTAssertEqual(items.map { $0["quantity"] as? Int ?? 0 }, [2, 1, 1])
+        XCTAssertTrue(items.allSatisfy { Set($0.keys) == ["item", "quantity"] }, "exactly the keys item and quantity")
+        XCTAssertTrue((resolution.notice ?? "").hasPrefix("Estimated spend $53.00"), "the budget notice is the card's own total")
+
+        // A fresh card Cancelled, and one dismissed, sends nothing and keeps only the ordered lines in its lines.
+        for how in [AgentCardResolution.cancel, .dismiss] {
+            let fresh = foodRig()
+            let freshCard = try await foodOrderCard(fresh)
+            let freshFields = try model(freshCard)
+            XCTAssertTrue(freshFields.setText("items.1.quantity", "2"))
+            let resolved = await freshCard.resolve(how)
+            XCTAssertNotNil(resolved)
+            XCTAssertEqual(fresh.partner.bodies(op: "submit").count, 0)
+            XCTAssertEqual(freshCard.lines.filter { $0.hasPrefix("Ramen: 2") }.count, 1)
+        }
+    }
+
+    func testMENULIST_T13_ThePricesAndTheFeeStayOffTheModelAndTheLogs() async throws {
+        let budget = BudgetToolPartner()
+        let shape = StubPartner.Shape.delivery()
+        let rig = foodRig(budget: budget, shape: shape)
+        // Positive controls first: the stub's own field list carries the two keys, and the line shows its price.
+        let stubText = AgentToolbox.encode(["fields": shape.fields])
+        XCTAssertTrue(stubText.contains("price_cents"), "positive control: the stub's answer carries the price")
+        XCTAssertTrue(stubText.contains("fee_cents"), "positive control: the stub's answer carries the fee")
+        let listing = try await listedJSON(rig)
+        let listingText = AgentToolbox.encode(listing)
+        let card = try await foodOrderCard(rig)
+        let fields = try model(card)
+        XCTAssertEqual(try XCTUnwrap(fields.field("items.1.quantity")).menuLine?.price, "$14.00",
+                       "positive control: the line shows the price")
+        let group = try XCTUnwrap(((listing["partners"] as? [[String: Any]])?.first?["fields"] as? [[String: Any]])?
+            .first { ($0["key"] as? String) == "items" })
+        let item = try XCTUnwrap((group["fields"] as? [[String: Any]])?.first { ($0["key"] as? String) == "item" })
+        for option in try XCTUnwrap(item["options"] as? [[String: Any]]) {
+            XCTAssertEqual(Set(option.keys), ["id", "label"], "the listing's options are exactly id and label")
+        }
+        try await typeAndPause(fields, "address", "Pasta")
+        XCTAssertTrue(fields.choosePlace("address", PartnerPlaceFixture.branches[0]))
+        XCTAssertTrue(fields.chooseOption("card_id", "debit-4242"))
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied")
+        await rig.log.flush()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let surfaces: [(String, String)] = [
+            ("get_partners result", listingText),
+            ("result", resolution.result),
+            ("notice", resolution.notice ?? ""),
+            ("packet summaries", rig.log.packets.map(\.summary).joined(separator: "\n")),
+            ("connections file", String(decoding: try Data(contentsOf: rig.folder.appendingPathComponent(ConnectionLog.fileName)), as: UTF8.self)),
+            ("schedule entry", rig.snapshot),
+            ("budget request", String(decoding: try XCTUnwrap(budget.requests.first?.httpBody), as: UTF8.self))]
+        let forbidden = ["price_cents", "fee_cents", "$14.00", "$7.00", "$13.00", "$25.00", "$9.00", "$4.00"]
+        for (name, text) in surfaces {
+            XCTAssertFalse(text.isEmpty, name)
+            for mark in forbidden {
+                XCTAssertFalse(text.contains(mark), "\(name) holds \(mark)")
+            }
+        }
+    }
+
+    func testMENULIST_T14_AGroupOfAnyOtherShapeMakesThePartnerUnusable() async throws {
+        // Positive first: the two-member priced menu stub is listed.
+        let good = menuRig()
+        let listed = try await listedJSON(good)
+        XCTAssertEqual(listed["status"] as? String, "ok")
+
+        // The same stub with a third member, a required text (so only the member count refuses it), is not listed.
+        var three = StubPartner.Shape.menu()
+        three.fields[1] = StubPartner.group("items", "Items", members: [
+            StubPartner.field("item", "pick_one", "Item", options: [("ramen", "Ramen")], prices: [1200]),
+            StubPartner.field("quantity", "number", "Quantity"),
+            StubPartner.field("row_note", "text", "Row note")], repeat: 6, fee: 300)
+        let rig = menuRig(shape: three)
+        let json = try await listedJSON(rig)
+        XCTAssertEqual(json["status"] as? String, "unavailable", "a partner whose group is not a list is not listed")
+        let outcome = rig.call("request_partner", ["partner": "menu", "fields": PartnerRig.fieldsText(MenuOrder.rowsOneAndThree)])
+        assertRefused(outcome, Text.first)
+
+        // A group of one text member is refused the same way.
+        var one = StubPartner.Shape.menu()
+        one.fields[1] = StubPartner.group("items", "Items", members: [StubPartner.field("note", "text", "Note")], repeat: 6)
+        let single = menuRig(shape: one)
+        let singleJSON = try await listedJSON(single)
+        XCTAssertEqual(singleJSON["status"] as? String, "unavailable")
+    }
+
+    func testMENULIST_T15_AWorkerWithoutPricesGivesTheSameListWithNoPriceAndNoTotal() async throws {
+        let rig = foodRig(budget: BudgetToolPartner(), shape: .delivery(priced: false))
+        let card = try await foodOrderCard(rig)
+        let fields = try model(card)
+        XCTAssertNil(fields.field("items.total"), "no total key without prices")
+        for line in 1...6 {
+            let menuLine = try XCTUnwrap(fields.field("items.\(line).quantity")?.menuLine,
+                                         "items.\(line).quantity is a line of the list")
+            XCTAssertNil(menuLine.price, "items.\(line).quantity carries no price")
+        }
+        XCTAssertFalse(card.lines.contains { $0.contains("$") }, "no dollar anywhere on the card")
+        try await typeAndPause(fields, "address", "Pasta")
+        XCTAssertTrue(fields.choosePlace("address", PartnerPlaceFixture.branches[0]))
+        XCTAssertTrue(fields.chooseOption("card_id", "debit-4242"))
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied")
+        let sent = rig.partner.bodies(op: "submit")
+        XCTAssertEqual(sent.count, 1)
+        let items = try XCTUnwrap(((sent.first?["values"] as? [String: Any])?["items"] as? [[String: Any]]))
+        XCTAssertEqual(items.map { $0["item"] as? String ?? "" }, ["ramen", "gyoza"])
+        XCTAssertEqual(items.map { $0["quantity"] as? Int ?? 0 }, [2, 1])
+        XCTAssertTrue((resolution.notice ?? "").hasPrefix("Estimated spend $40.00"),
+                      "the partner's own total reaches the notice as today")
     }
 
     // MARK: SPEC-DELIVERYCARD-001 (card t91) the chat path on the common card
@@ -2318,22 +2484,25 @@ final class AgentPartnerToolTests: XCTestCase {
         rig.tools.userLines = { [FoodOrder.line] }
         let card = try XCTUnwrap(rig.call("request_partner", ["partner": "delivery", "fields": PartnerRig.fieldsText(FoodOrder.entries)]).card)
         let fields = try model(card)
-        XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "items.1.item", "items.1.quantity", "items.2.item",
-                                                       "items.2.quantity", "items.controls", "arrive_at", "address", "card_id",
-                                                       "add-to-schedule", "schedule-length", "schedule-travel", "0"],
-                       "the partner's fields in order, the two rows and the control row first")
+        XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "items.1.quantity", "items.2.quantity", "items.3.quantity",
+                                                       "items.4.quantity", "items.5.quantity", "items.6.quantity", "items.total",
+                                                       "arrive_at", "address", "card_id",
+                                                       "add-to-schedule", "schedule-end", "schedule-travel", "0"],
+                       "the partner's fields in order, one line per option, the total after the last line")
         XCTAssertEqual(fields.source(of: "restaurant"), .stated)
         XCTAssertEqual(fields.source(of: "arrive_at"), .stated)
         let rows = fields.values.rows(of: "items")
         XCTAssertEqual(rows.map { $0["item"]?.value }, [AgentFieldValue.option("ramen"), .option("gyoza")])
+        XCTAssertEqual(rows.map { $0["item"]?.source }, [.inferred, .inferred], "the item of a line is the option it names")
         XCTAssertEqual(rows.map { $0["quantity"]?.value }, [AgentFieldValue.number(2), .number(1)])
-        XCTAssertEqual(rows.flatMap { $0.values.map(\.source) }, [.stated, .stated, .stated, .stated])
+        XCTAssertEqual(rows.map { $0["quantity"]?.source }, [.stated, .stated])
         XCTAssertEqual(fields.source(of: "address"), .blank, "the address is blank until a candidate is tapped")
         XCTAssertEqual(fields.source(of: "card_id"), .blank, "a chip row is never filled by the model")
         XCTAssertFalse(card.canConfirm)
-        for line in card.lines {
-            XCTAssertFalse(line.contains("$"), "no price on the card: \(line)")
-        }
+        XCTAssertTrue(card.lines.contains("Ramen: 2"), "the ordered lines print")
+        XCTAssertTrue(card.lines.contains("Gyoza: 1"))
+        XCTAssertTrue(card.lines.contains("Total: $40.00"), "the total is the prices times the quantities plus the fee")
+        XCTAssertFalse(card.lines.contains { $0.contains("Curry rice") }, "a blank line prints nothing")
         // No tool beyond the two common ones ran: the directory answered once, each partner's fields once, and no submit.
         XCTAssertEqual(stub.bodies(op: "list").count, 1)
         XCTAssertEqual(stub.bodies(op: "fields").count, 2, "one fields call per listed partner")
@@ -2363,7 +2532,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(submits.count, 1, "exactly one submit")
         let values = try XCTUnwrap(submits.first?["values"] as? [String: Any])
         XCTAssertEqual(Set(values.keys), ["restaurant", "items", "arrive_at", "address", "card_id"])
-        for key in ["add-to-schedule", "schedule-length", "schedule-travel"] {
+        for key in ["add-to-schedule", "schedule-end", "schedule-travel"] {
             XCTAssertFalse(values.keys.contains(key), key)
         }
         XCTAssertEqual(values["restaurant"] as? String, "Test Cafe")

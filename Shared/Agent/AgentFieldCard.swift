@@ -50,6 +50,8 @@ enum AgentFieldValue: Equatable {
 struct AgentFieldOption: Equatable {
     let id: String
     let label: String
+    /// The price of this option in whole cents, carried only by the item member of a list group (SPEC-MENULIST-001).
+    var priceCents: Int? = nil
 }
 
 struct AgentFieldSpec: Equatable {
@@ -68,9 +70,11 @@ struct AgentFieldSpec: Equatable {
     /// Place only: true when the partner resolves the field itself, so the card lists the partner's candidates (never besir's own
     /// place search) and the value is the candidate the user taps.
     var partnerLookup = false
+    /// Time only: true for the app's own `End` row of the schedule choice, which follows the card's first time field.
+    var isEndOfFirstTime = false
 
     init(key: String, kind: AgentFieldKind, label: String, options: [AgentFieldOption] = [], limit: Int? = nil,
-         isOptional: Bool = false, range: ClosedRange<Int>? = nil, partnerLookup: Bool = false) {
+         isOptional: Bool = false, range: ClosedRange<Int>? = nil, partnerLookup: Bool = false, isEndOfFirstTime: Bool = false) {
         self.key = key
         self.kind = kind
         self.label = label
@@ -79,7 +83,14 @@ struct AgentFieldSpec: Equatable {
         self.isOptional = isOptional
         self.range = range
         self.partnerLookup = partnerLookup
+        self.isEndOfFirstTime = isEndOfFirstTime
     }
+
+    /// What a number field with no range of its own may hold: from 1, with no highest value.
+    static let defaultNumberBounds = NumberBounds(lowest: 1)
+
+    /// The bounds of a number field: its own range, else the default.
+    var bounds: NumberBounds { range.map { NumberBounds($0) } ?? Self.defaultNumberBounds }
 
     /// The seed of a field the partner named; nil when its chips do not fit its kind.
     init?(_ field: PartnerField) {
@@ -89,7 +100,8 @@ struct AgentFieldSpec: Equatable {
         case .onOff: guard field.options.count == 2 else { return nil }
         case .text, .place, .time, .number: break
         }
-        self.init(key: field.key, kind: kind, label: field.label, options: field.options.map { AgentFieldOption(id: $0.id, label: $0.label) },
+        self.init(key: field.key, kind: kind, label: field.label,
+                  options: field.options.map { AgentFieldOption(id: $0.id, label: $0.label, priceCents: $0.priceCents) },
                   isOptional: field.isOptional, partnerLookup: field.canLookUp)
     }
 
@@ -110,28 +122,48 @@ struct AgentFieldSeed: Equatable {
     var source: AgentFieldSource
 }
 
-/// A repeatable group of rows: the partner's members and maximum number of rows, and the words of the one chip that adds a row
-/// (the symbol it shows and the name VoiceOver reads). The words live in the seed the caller passes; the card model writes none.
+/// A list group of a partner card (SPEC-MENULIST-001): the partner's members (exactly one `pick_one`, whose options are the
+/// lines, and one `number`, whose value is a line's count), the partner's maximum number of lines, the fee it charges a
+/// non-empty order and the word its total line shows. The word and the fee live in what the caller passes; the card model
+/// writes none of its own.
 struct AgentFieldGroup: Equatable {
     let key: String
     let label: String
     let members: [AgentFieldSpec]
     let maxRows: Int
-    let addSymbol: String
-    let addName: String
+    /// The group's fee in whole cents, carried only while its options carry prices.
+    var feeCents: Int? = nil
+    /// The word the group's total line shows; passed in the seed, never written by the model.
+    var totalLabel: String = ""
+
+    /// The `pick_one` member, whose options are the lines.
+    var itemMember: AgentFieldSpec { members.first { $0.kind == .pickOne } ?? members[0] }
+
+    /// The `number` member, whose value is a line's count.
+    var countMember: AgentFieldSpec { members.first { $0.kind == .number } ?? members[0] }
+
+    /// True when every option of the item member carries a price: only then does the card draw prices and a total line.
+    var isPriced: Bool {
+        let options = itemMember.options
+        return !options.isEmpty && options.allSatisfy { $0.priceCents != nil }
+    }
 }
 
 extension AgentFieldGroup {
-    /// The group a partner named: nil unless the field is of kind `group` and every member yields a scalar seed.
-    init?(_ field: PartnerField, addSymbol: String, addName: String) {
-        guard field.kind == .group else { return nil }
+    /// The group a partner named: nil unless the field is a group of the list shape (one required `pick_one` and one required
+    /// `number`, in either order), the defence behind the grammar's own rule (SPEC-MENULIST-001 REQ-001).
+    init?(_ field: PartnerField, totalLabel: String) {
+        guard field.kind == .group, field.members.count == 2,
+              field.members.contains(where: { $0.kind == .pickOne }),
+              field.members.contains(where: { $0.kind == .number }),
+              field.members.allSatisfy({ !$0.isOptional }) else { return nil }
         var members: [AgentFieldSpec] = []
         for member in field.members {
             guard let spec = AgentFieldSpec(member) else { return nil }
             members.append(spec)
         }
         self.init(key: field.key, label: field.label, members: members, maxRows: field.maxRows,
-                  addSymbol: addSymbol, addName: addName)
+                  feeCents: field.feeCents, totalLabel: totalLabel)
     }
 }
 
@@ -142,7 +174,8 @@ indirect enum AgentFieldRow {
     case field(AgentFieldSpec, value: AgentFieldValue?, source: AgentFieldSource)
     /// An `on_off` field that owns rows shown only while it is on.
     case switchField(AgentFieldSpec, value: AgentFieldValue?, source: AgentFieldSource, dependents: [AgentFieldRow])
-    /// A repeatable group of rows: one seed per member, in member order, for each row the card starts with.
+    /// A repeatable group of rows: one seed per member, in member order, for each row the model stated; the card matches the
+    /// rows to the group's lines by the item each row names (SPEC-MENULIST-001 REQ-007).
     case repeating(AgentFieldGroup, rows: [[AgentFieldSeed]])
 }
 
@@ -237,14 +270,18 @@ indirect enum AgentFieldRow {
     private var slots: [String: Slot] = [:]
     /// The repeatable groups the card holds, by the group's key.
     private var groups: [String: AgentFieldGroup] = [:]
-    /// The row numbers each group holds, ascending. A delete leaves a hole; a row number is only an address, never renumbered.
-    private var rowNumbers: [String: [Int]] = [:]
+    /// The line of each list group's count field: the group, the option the line is for and the option's number from 1. A
+    /// count field of a line is drawn as a menu line; the item field of a line holds no card field of its own.
+    private var lineOption: [String: (group: AgentFieldGroup, option: AgentFieldOption, number: Int)] = [:]
     private var layout: [Node] = []
     private let favoriteOptions: [EditField.Option]
     private let searchPlaces: @MainActor (String) async -> [Place]
     private let partnerCandidates: (@MainActor (String, String) async -> PlaceLookup)?
     private let now: () -> Date
     private var debouncer = PlaceSearchDebouncer()
+    /// The app's own `End` row and the partner's first time field it follows; both nil when the card has no `End` row.
+    private var endKey: String?
+    private var endBaseKey: String?
 
     /// `search` answers a place query (the caller decides the provider and the search centre); `now` is the clock the dial
     /// reads when its owner passes none. `candidates` answers the lookup of a place row the partner resolves itself, given the
@@ -259,37 +296,53 @@ indirect enum AgentFieldRow {
         card = EditCard(fields: [])
         var lineCount = 0
         layout = nodes(for: rows, lines: &lineCount)
+        resolveEnd()
         card = EditCard(fields: fields(for: layout))
     }
 
     // MARK: Reading
 
-    /// Every row on the card is chosen except the optional ones, and no number lies outside its range. A row that is off the card
-    /// (the dependents of a switch that is off) is not looked at. A number outside its range is never ready, optional or not.
+    /// Every row on the card is chosen except the optional ones, and no number lies outside its bounds. A row that is off the card
+    /// (the dependents of a switch that is off) is not looked at. A number outside its bounds is never ready, optional or not.
+    /// A blank line of a list group never blocks the card, and every group needs at least one ordered line (REQ-009).
     var isReady: Bool {
-        let controls = controlKeys
-        return card.fields.allSatisfy { field in
-            // A control row holds no value; it is a chip the user taps, never a field that blocks the card.
-            if controls.contains(field.key) { return true }
+        card.fields.allSatisfy { field in
+            // A line of a list group never blocks: blank or ordered, it is the user's to fill.
+            if lineOption[field.key] != nil { return true }
             guard let slot = slots[field.key] else { return field.chosen != nil }
-            if case .number(let number)? = slot.value, let range = slot.spec.range, !range.contains(number) { return false }
+            if case .number(let number)? = slot.value, !slot.spec.bounds.contains(number) { return false }
             return slot.spec.isOptional || field.chosen != nil
-        }
+        } && groups.values.allSatisfy { orderedCount(of: $0) >= 1 }
     }
 
+    /// The values of the card: for each ordered line of a list group an entry for its item (the option id, `inferred`) and one
+    /// for its count; a blank line holds no entry, and the total field holds none either (REQ-009).
     var values: Snapshot {
-        Snapshot(entries: card.fields.compactMap { field in
-            slots[field.key].map { Snapshot.Entry(key: field.key, value: $0.value, source: $0.source) }
-        })
+        var entries: [Snapshot.Entry] = []
+        for field in card.fields {
+            if let line = lineOption[field.key] {
+                guard let slot = slots[field.key], slot.value != nil else { continue }
+                entries.append(Snapshot.Entry(key: Self.rowKey(line.group.key, line.number, line.group.itemMember.key),
+                                              value: .option(line.option.id), source: .inferred))
+                entries.append(Snapshot.Entry(key: field.key, value: slot.value, source: slot.source))
+                continue
+            }
+            if let slot = slots[field.key] {
+                entries.append(Snapshot.Entry(key: field.key, value: slot.value, source: slot.source))
+            }
+        }
+        return Snapshot(entries: entries)
     }
 
-    /// The header, then one line per row on the card: a read-only row as its text, a field as `label: value` (`label:` while
-    /// blank; a chip field shows the word of its chosen chip). The control rows print nothing. The debug transcript and the
-    /// resolved card are drawn from it.
+    /// The header, then one line per row on the card: a read-only row as its text (a labelled one, like the total, as
+    /// `label: value`), a field as `label: value` (`label:` while blank; a chip field shows the word of its chosen chip). A
+    /// blank line of a list group prints nothing. The debug transcript and the resolved card are drawn from it.
     var lines: [String] {
-        let controls = controlKeys
-        return [header] + card.fields.filter { !controls.contains($0.key) }.map { field in
-            if field.kind == .readonly { return field.chosen ?? String() }
+        [header] + card.fields.compactMap { field in
+            if lineOption[field.key] != nil, slots[field.key]?.value == nil { return nil }
+            if field.kind == .readonly {
+                return field.label.isEmpty ? (field.chosen ?? String()) : "\(field.label): \(field.chosen ?? String())"
+            }
             return (field.label + ": " + (field.chosenLabel ?? String())).trimmingCharacters(in: .whitespaces)
         }
     }
@@ -300,9 +353,6 @@ indirect enum AgentFieldRow {
 
     /// The key of one member of one row of a group: `group.row.member`, the row counted from 1.
     static func rowKey(_ group: String, _ row: Int, _ member: String) -> String { "\(group).\(row).\(member)" }
-
-    /// The key of a group's control row, the one chip that adds a row.
-    static func controlKey(_ group: String) -> String { "\(group).controls" }
 
     /// The bundle of closures the edit card view calls. A row is found by its id and the change is the model's own.
     var actions: EditCardActions {
@@ -331,18 +381,15 @@ indirect enum AgentFieldRow {
             closeDial: { id, _, now in
                 if let key = self.key(of: id) { self.closeDial(key, now: now) }
             },
-            deleteRow: { rowID in _ = self.deleteRow(rowID) },
             confirm: {})
     }
 
     // MARK: Changes
 
     /// Chooses a chip. `pick_one`: the value is one of the listed ids. `on_off`: the value is `true` or `false` whatever the
-    /// chip words. For the switch of a group the dependent rows are inserted after it (on) or removed (off). The control row of
-    /// a repeatable group holds no slot, so its one tap is intercepted here, before the slot lookup, and adds a row.
+    /// chip words. For the switch of a group the dependent rows are inserted after it (on) or removed (off).
     @discardableResult
     func chooseOption(_ key: String, _ value: String) -> Bool {
-        if value == Self.addValue, let groupKey = controlGroup(of: key) { return addRow(to: groupKey) }
         guard !isFrozen, let index = index(of: key), var slot = slots[key] else { return false }
         switch slot.spec.kind {
         case .pickOne:
@@ -398,7 +445,15 @@ indirect enum AgentFieldRow {
             slot.value = blank ? nil : .text(cleaned)
             slot.source = blank ? .blank : .entered
         case .number:
-            let number = Self.number(from: text, upTo: slot.spec.limit)
+            var number = Self.number(from: text, upTo: slot.spec.limit)
+            if let line = lineOption[key] {
+                // A line of a list group: a number outside the count member's bounds reads as blank (SPEC-NUMSTEPPER-001's
+                // seed rule), and a new count on a blank line while the order holds the group's maximum is refused and
+                // changes nothing (SPEC-MENULIST-001 REQ-008).
+                number = number.flatMap { slot.spec.bounds.contains($0) ? $0 : nil }
+                let wasBlank = slot.value == nil
+                if number != nil, wasBlank, orderedCount(of: line.group) >= line.group.maxRows { return false }
+            }
             card.setTitleText(field: card.fields[index].id, text: number.map { String($0) } ?? String())
             slot.value = number.map { AgentFieldValue.number($0) }
             slot.source = number == nil ? .blank : .entered
@@ -406,6 +461,7 @@ indirect enum AgentFieldRow {
             return false
         }
         slots[key] = slot
+        if let line = lineOption[key] { refreshList(of: line.group) }
         return true
     }
 
@@ -422,12 +478,76 @@ indirect enum AgentFieldRow {
     @discardableResult
     func chooseTime(_ key: String, _ date: Date) -> Bool {
         guard !isFrozen, let index = index(of: key), var slot = slots[key], slot.spec.kind == .time else { return false }
+        // The `End` row takes only a time after its base and within the wheel's 24 hours; anything else changes nothing.
+        if slot.spec.isEndOfFirstTime {
+            guard let wheel = card.fields[index].endWheel, let base = card.endWheelBase(for: card.fields[index]),
+                  wheel.accepts(end: date, base: base) else {
+                card.fields[index].note = EndWheelSpec.notAfterBaseMessage
+                return false
+            }
+        }
+        let before = slot.value
         slot.value = .time(date)
         slot.source = .entered
         slots[key] = slot
         card.fields[index].chosen = BesirTime.isoFormatter.string(from: date)
         card.fields[index].note = nil
+        if key == endBaseKey { moveEnd(from: before, to: date) }
         return true
+    }
+
+    /// The `End` row follows its base: it keeps its span, or takes the base plus the default length while it holds no value. It is
+    /// written on its slot whether or not its row is on the card (the schedule switch off removes the row), so turning the switch
+    /// on again never shows an `End` before its base.
+    private func moveEnd(from before: AgentFieldValue?, to newBase: Date) {
+        guard let endKey, var end = slots[endKey] else { return }
+        let moved: Date
+        if case .time(let oldEnd)? = end.value, case .time(let oldBase)? = before {
+            moved = EndWheelSpec.followingEnd(oldStart: oldBase, oldEnd: oldEnd, newStart: newBase)
+        } else {
+            moved = newBase.addingTimeInterval(TimeInterval(AgentPartner.lengthInitial * 60))
+            end.source = .inferred
+        }
+        end.value = .time(moved)
+        slots[endKey] = end
+        if let at = index(of: endKey) {
+            card.fields[at].chosen = BesirTime.isoFormatter.string(from: moved)
+            card.fields[at].note = nil
+        }
+    }
+
+    /// Finds the `End` row, if the card has one, and the first time field of the partner's own order it follows. A card with no
+    /// time field loses the row; otherwise the row is seeded from the base's value, and stays blank while the base is blank.
+    private func resolveEnd() {
+        guard let end = layoutKeys.first(where: { slots[$0]?.spec.isEndOfFirstTime == true }) else { return }
+        let base = layout.compactMap { node -> String? in
+            guard case .field(let key) = node, let spec = slots[key]?.spec, spec.kind == .time, !spec.isEndOfFirstTime else { return nil }
+            return key
+        }.first
+        guard let base else {
+            layout = removing(end, from: layout)
+            slots.removeValue(forKey: end)
+            return
+        }
+        endKey = end
+        endBaseKey = base
+        if case .time(let start)? = slots[base]?.value, var row = slots[end] {
+            row.value = .time(start.addingTimeInterval(TimeInterval(AgentPartner.lengthInitial * 60)))
+            row.source = .inferred
+            slots[end] = row
+        }
+    }
+
+    private var layoutKeys: [String] { Array(keys(in: layout)) }
+
+    private func removing(_ key: String, from nodes: [Node]) -> [Node] {
+        nodes.compactMap { node in
+            switch node {
+            case .field(let found) where found == key: return nil
+            case .group(let groupKey, let dependents): return .group(key: groupKey, dependents: removing(key, from: dependents))
+            default: return node
+            }
+        }
     }
 
     /// Closing (or opening) a time wheel: a row with a value keeps it; a row with none takes the seed the wheel shows, which
@@ -440,8 +560,10 @@ indirect enum AgentFieldRow {
             return true
         }
         let field = card.fields[index]
-        guard let seed = card.dialSeed(for: field, base: nil, now: at ?? now()) else { return false }
-        return chooseTime(key, card.dialCommitCandidate(pick: seed, field: field, base: nil))
+        // An `End` row reads its base from the card; every other time row has none.
+        let base = card.endWheelBase(for: field)
+        guard let seed = card.dialSeed(for: field, base: base, now: at ?? now()) else { return false }
+        return chooseTime(key, card.dialCommitCandidate(pick: seed, field: field, base: base))
     }
 
     /// A query typed in a place row: the debouncer decides whether, when and with what text the search closure is called.
@@ -489,115 +611,74 @@ indirect enum AgentFieldRow {
         card.fields[index].searchSeed = nil
     }
 
-    /// The Confirm tap: from now on every change, search and result changes nothing. The control rows leave the card with it:
-    /// a frozen card shows its rows only, and `values` is unaffected because a control row holds no slot.
+    /// The Confirm tap: from now on every change, search and result changes nothing. The card keeps its rows; a frozen card
+    /// shows what was ordered (SPEC-MENULIST-001 REQ-009: the freeze removes nothing).
     func freeze() {
         isFrozen = true
         debouncer.cancelAll()
-        let controls = controlKeys
-        card.fields.removeAll { controls.contains($0.key) }
     }
 
-    /// Deletes the row whose fields carry `rowID`. Refused at one row, on a frozen card and for an id no field carries; every
-    /// other row keeps its values, ids and keys (a row number is only an address, never renumbered).
-    @discardableResult
-    func deleteRow(_ rowID: UUID) -> Bool {
-        guard !isFrozen, let field = card.fields.first(where: { $0.rowID == rowID }),
-              let groupKey = groups.keys.first(where: { field.key.hasPrefix($0 + ".") }),
-              let group = groups[groupKey], var numbers = rowNumbers[groupKey], numbers.count > 1 else { return false }
-        let parts = field.key.split(separator: ".")
-        guard parts.count == 3, let row = Int(parts[1]), numbers.contains(row) else { return false }
-        numbers.removeAll { $0 == row }
-        rowNumbers[groupKey] = numbers
-        let owned = group.members.map { Self.rowKey(groupKey, row, $0.key) }
-        for key in owned { slots.removeValue(forKey: key) }
-        card.fields.removeAll { owned.contains($0.key) }
-        // A group that was at its maximum regains its control row, after the last row it still holds.
-        if numbers.count < group.maxRows, index(of: Self.controlKey(groupKey)) == nil,
-           let after = card.fields.lastIndex(where: { $0.key.hasPrefix(groupKey + ".") }) {
-            card.fields.insert(controlField(of: group), at: after + 1)
+    // MARK: List groups (SPEC-MENULIST-001)
+
+    /// The key of a group's total line.
+    static func totalKey(_ group: String) -> String { "\(group).total" }
+
+    /// The number of lines of a group that hold a count.
+    private func orderedCount(of group: AgentFieldGroup) -> Int {
+        var count = 0
+        for (index, _) in group.itemMember.options.enumerated() {
+            if slots[Self.rowKey(group.key, index + 1, group.countMember.key)]?.value != nil { count += 1 }
         }
-        reconcileRowIDs(of: groupKey)
-        return true
+        return count
     }
 
-    // MARK: Repeatable row groups
-
-    /// The control-row keys of the card's groups; those rows hold no value, never block and never print.
-    private var controlKeys: Set<String> { Set(groups.keys.map { Self.controlKey($0) }) }
-
-    /// The value of the control row's one option; the words it shows and reads come from the group's seed, never from here.
-    private static let addValue = "add"
-
-    /// The group a control key belongs to, when the key is the control row of a group the card holds.
-    private func controlGroup(of key: String) -> String? {
-        groups.values.first { Self.controlKey($0.key) == key }?.key
-    }
-
-    /// Adds one blank row to a group: numbered one more than the highest row it holds, its fields inserted before the control
-    /// row so the earlier fields keep their ids. Refused on a frozen card and at the group's maximum.
-    private func addRow(to groupKey: String) -> Bool {
-        guard !isFrozen, let group = groups[groupKey], var numbers = rowNumbers[groupKey], numbers.count < group.maxRows,
-              let at = index(of: Self.controlKey(groupKey)) else { return false }
-        let row = (numbers.max() ?? 0) + 1
-        numbers.append(row)
-        rowNumbers[groupKey] = numbers
-        let id = UUID()
-        var fresh: [EditField] = []
-        for member in group.members {
-            let key = Self.rowKey(groupKey, row, member.key)
-            slots[key] = slot(Self.rowSpec(of: member, group: groupKey, row: row), nil, .blank)
-            var field = editField(key)
-            field.rowID = id
-            fresh.append(field)
+    /// The total of a group's order in whole cents, as `MenuListTotal` counts it.
+    private func totalCents(of group: AgentFieldGroup) -> Int {
+        let lines = group.itemMember.options.enumerated().compactMap { index, option -> (priceCents: Int, count: Int)? in
+            guard let price = option.priceCents,
+                  case .number(let count)? = slots[Self.rowKey(group.key, index + 1, group.countMember.key)]?.value else { return nil }
+            return (price, count)
         }
-        card.fields.insert(contentsOf: fresh, at: at)
-        if numbers.count >= group.maxRows {
-            card.fields.removeAll { $0.key == Self.controlKey(groupKey) }
-        }
-        reconcileRowIDs(of: groupKey)
-        return true
+        return MenuListTotal.cents(lines: lines, feeCents: group.feeCents)
     }
 
-    /// Gives every row of a group one shared rowID while it holds more than one row and clears them at one row; a field that
-    /// already carries one keeps it, so a row keeps its swipe identity.
-    private func reconcileRowIDs(of groupKey: String) {
-        guard let group = groups[groupKey], let numbers = rowNumbers[groupKey], let first = group.members.first else { return }
-        let single = numbers.count == 1
-        for row in numbers {
-            let id = single ? nil : (card.fields.first { $0.key == Self.rowKey(groupKey, row, first.key) }?.rowID ?? UUID())
-            for member in group.members {
-                if let index = index(of: Self.rowKey(groupKey, row, member.key)) { card.fields[index].rowID = id }
-            }
+    /// After a write to a line: sets `canAdd` on every line of the group (the order holds fewer lines than the group's
+    /// maximum) and rewrites the total line's text, in place, so the view's rows keep their ids (REQ-008, REQ-010).
+    private func refreshList(of group: AgentFieldGroup) {
+        let canAdd = orderedCount(of: group) < group.maxRows
+        for index in card.fields.indices where lineOption[card.fields[index].key]?.group.key == group.key {
+            card.fields[index].menuLine?.canAdd = canAdd
+        }
+        if group.isPriced, let total = index(of: Self.totalKey(group.key)) {
+            card.fields[total].chosen = AgentBudget.dollars(cents: totalCents(of: group))
         }
     }
 
-    /// The fields of every row a group holds, in row order, then its control row while it holds fewer than the maximum.
-    private func rowFields(of groupKey: String) -> [EditField] {
-        guard let group = groups[groupKey], let numbers = rowNumbers[groupKey] else { return [] }
+    /// The fields of a group's list: one line for each option of the item member, in the partner's order, then the total
+    /// line while the options carry prices (REQ-005, REQ-010).
+    private func lineFields(of groupKey: String) -> [EditField] {
+        guard let group = groups[groupKey] else { return [] }
         var built: [EditField] = []
-        for row in numbers {
-            let id = numbers.count > 1 ? UUID() : nil
-            for member in group.members {
-                var field = editField(Self.rowKey(groupKey, row, member.key))
-                field.rowID = id
-                built.append(field)
-            }
+        for index in group.itemMember.options.indices {
+            built.append(editField(Self.rowKey(groupKey, index + 1, group.countMember.key)))
         }
-        if numbers.count < group.maxRows { built.append(controlField(of: group)) }
+        if group.isPriced {
+            built.append(EditField(key: Self.totalKey(groupKey), kind: .readonly, label: group.totalLabel,
+                                   options: [], allowsCustom: false, chosen: AgentBudget.dollars(cents: totalCents(of: group))))
+        }
         return built
     }
 
-    /// The control row of a group: one chip that adds a row, with the words the group's seed gave.
-    private func controlField(of group: AgentFieldGroup) -> EditField {
-        EditField(key: Self.controlKey(group.key), kind: .toggle, label: group.label,
-                  options: [EditField.Option(label: group.addSymbol, value: Self.addValue, accessibilityName: group.addName)],
-                  allowsCustom: false, chosen: nil)
-    }
-
-    /// One blank row of seeds: one per member, in member order.
-    private func blankRowSeeds(of group: AgentFieldGroup) -> [AgentFieldSeed] {
-        group.members.map { _ in AgentFieldSeed(value: nil, source: .blank) }
+    /// The edit field of one line of a list group: the option's label with the price under it, the stepper rule of the
+    /// line's count and whether the round plus may add one; a `.title` row the view draws as a menu line (REQ-005, 006).
+    private func menuLineField(_ key: String, _ slot: Slot) -> EditField? {
+        guard let line = lineOption[key] else { return nil }
+        var row = EditField(key: key, kind: .title, label: line.option.label, options: [], allowsCustom: true,
+                            chosen: chosenText(slot.value), placeholder: String())
+        row.menuLine = EditField.MenuLine(price: line.option.priceCents.map { AgentBudget.dollars(cents: $0) },
+                                          rule: NumberStepperRule(bounds: slot.spec.bounds, allowsBlank: true),
+                                          canAdd: orderedCount(of: line.group) < line.group.maxRows)
+        return row
     }
 
     /// The member's spec under its row key: everything of the member but the key, so every rule of a scalar field applies.
@@ -633,14 +714,52 @@ indirect enum AgentFieldRow {
                 built.append(.group(key: spec.key, dependents: nodes(for: dependents, lines: &lines)))
             case .repeating(let group, let seeded):
                 groups[group.key] = group
-                // More seeds than the maximum build the maximum; no seed builds one blank row.
-                let rows = seeded.isEmpty ? [blankRowSeeds(of: group)] : Array(seeded.prefix(group.maxRows))
-                rowNumbers[group.key] = Array(1...rows.count)
-                for (index, row) in rows.enumerated() {
+                let item = group.itemMember
+                let count = group.countMember
+                // The rows are matched to the options by the item each row names: the first row naming an item decides its
+                // line (a row naming no item, an id that is not an option or an item already taken is ignored), and its count
+                // seed is recorded even when it is blank (REQ-007).
+                var recorded: [(id: String, seed: AgentFieldSeed)] = []
+                var taken: Set<String> = []
+                for row in seeded {
+                    var itemSeed: AgentFieldSeed?
+                    var countSeed: AgentFieldSeed?
                     for (member, seed) in zip(group.members, row) {
-                        slots[Self.rowKey(group.key, index + 1, member.key)] =
-                            slot(Self.rowSpec(of: member, group: group.key, row: index + 1), seed.value, seed.source)
+                        if member.kind == .pickOne { itemSeed = seed }
+                        if member.kind == .number { countSeed = seed }
                     }
+                    guard let itemSeed, case .option(let id)? = itemSeed.value,
+                          item.options.contains(where: { $0.id == id }), !taken.contains(id) else { continue }
+                    taken.insert(id)
+                    recorded.append((id, countSeed ?? AgentFieldSeed(value: nil, source: .blank)))
+                }
+                // Each recorded seed is built into its slot; a seed whose slot keeps a value counts against the maximum and
+                // is dropped once the maximum values are kept, in the order the rows were stated (REQ-007).
+                let seedsByID = Dictionary(recorded.map { ($0.id, $0.seed) }, uniquingKeysWith: { first, _ in first })
+                var keptIDs: Set<String> = []
+                var kept = 0
+                for row in recorded {
+                    let built = slot(Self.rowSpec(of: count, group: group.key, row: 0), row.seed.value, row.seed.source)
+                    if built.value != nil {
+                        guard kept < group.maxRows else { continue }
+                        kept += 1
+                        keptIDs.insert(row.id)
+                    }
+                }
+                // One slot per option: the item fixed to its option (inferred) and the count from the recorded seed or blank.
+                for (index, option) in item.options.enumerated() {
+                    let number = index + 1
+                    slots[Self.rowKey(group.key, number, item.key)] =
+                        slot(Self.rowSpec(of: item, group: group.key, row: number), .option(option.id), .inferred)
+                    let countKey = Self.rowKey(group.key, number, count.key)
+                    let countSpec = Self.rowSpec(of: count, group: group.key, row: number)
+                    var countSlot = slot(countSpec, nil, .blank)
+                    if let seed = seedsByID[option.id] {
+                        let built = slot(countSpec, seed.value, seed.source)
+                        if built.value == nil || keptIDs.contains(option.id) { countSlot = built }
+                    }
+                    slots[countKey] = countSlot
+                    lineOption[countKey] = (group, option, number)
                 }
                 built.append(.repeating(key: group.key))
             }
@@ -675,7 +794,7 @@ indirect enum AgentFieldRow {
         case (.onOff, .flag?):
             kept = value
         case (.number, .number(let number)?):
-            kept = number >= 0 && String(number).count <= min(spec.limit ?? Self.maxNumberDigits, Self.maxNumberDigits) ? value : nil
+            kept = spec.bounds.contains(number) && String(number).count <= min(spec.limit ?? Self.maxNumberDigits, Self.maxNumberDigits) ? value : nil
         default:
             kept = nil
         }
@@ -694,7 +813,7 @@ indirect enum AgentFieldRow {
                 built.append(editField(key))
                 if slots[key]?.value == .flag(true) { built += fields(for: dependents) }
             case .repeating(let key):
-                built += rowFields(of: key)
+                built += lineFields(of: key)
             }
         }
         return built
@@ -702,12 +821,18 @@ indirect enum AgentFieldRow {
 
     private func editField(_ key: String) -> EditField {
         guard let slot = slots[key] else { return EditField(key: key, kind: .readonly, label: String(), options: [], allowsCustom: false) }
+        // A line of a list group is built before the kind switch: it is a `.title` row the view draws as a menu line, and
+        // its `stepper` stays nil (SPEC-NUMSTEPPER-001's number arm is never reached by it).
+        if let line = menuLineField(key, slot) { return line }
         let spec = slot.spec
         let chosen = chosenText(slot.value)
         switch spec.kind {
         case .text, .number:
-            return EditField(key: key, kind: .title, label: spec.label, options: [], allowsCustom: true,
-                             chosen: chosen.map { $0.trimmingCharacters(in: .whitespaces) }, placeholder: String())
+            var row = EditField(key: key, kind: .title, label: spec.label, options: [], allowsCustom: true,
+                                chosen: chosen.map { $0.trimmingCharacters(in: .whitespaces) }, placeholder: String())
+            // A number row is drawn as a minus/plus stepper; it stays a typed row for the card model's single digit writer.
+            if spec.kind == .number { row.stepper = NumberStepperRule(bounds: spec.bounds, allowsBlank: spec.isOptional) }
+            return row
         case .place:
             guard spec.partnerLookup else {
                 return EditField(key: key, kind: .place, label: spec.label, options: favoriteOptions, allowsCustom: true, chosen: chosen)
@@ -721,7 +846,11 @@ indirect enum AgentFieldRow {
             row.startsOpen = slot.seed != nil
             return row
         case .time:
-            return EditField(key: key, kind: .datetime, label: spec.label, options: [], allowsCustom: false, chosen: chosen, anchored: false)
+            var row = EditField(key: key, kind: .datetime, label: spec.label, options: [], allowsCustom: false, chosen: chosen, anchored: false)
+            if spec.isEndOfFirstTime, let base = endBaseKey {
+                row.endWheel = EndWheelSpec(baseKey: base, capsAt24Hours: true, baseHint: EndWheelSpec.manualEndHint)
+            }
+            return row
         case .pickOne:
             return EditField(key: key, kind: .toggle, label: spec.label,
                              options: spec.options.map { EditField.Option(label: $0.label, value: $0.id) }, allowsCustom: false, chosen: chosen)

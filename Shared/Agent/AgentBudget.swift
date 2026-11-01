@@ -100,6 +100,18 @@ enum AgentBudget {
                 "includes_estimate": standing.includesEstimate, field.key: field.value]
     }
 
+    // MARK: The screen's texts
+
+    /// `$140.00 left` or `$50.00 over`.
+    static func standingWords(_ standing: BudgetStanding) -> String {
+        standing.isWithin ? "\(dollars(cents: standing.leftCents)) left" : "\(dollars(cents: -standing.leftCents)) over"
+    }
+
+    /// `$18.50` for a stated spend, `Estimate $90.00` for an estimate.
+    static func entryText(_ entry: BudgetEntry) -> String {
+        (entry.isEstimate ? "Estimate " : "") + dollars(cents: entry.amountCents)
+    }
+
     // MARK: The partner request hook
 
     /// What the budget partner came to for a confirmed table.
