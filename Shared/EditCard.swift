@@ -531,6 +531,13 @@ enum PlaceLine {
         /// The VoiceOver name of this chip; nil keeps the chip's own text as its name.
         var accessibilityName: String? = nil
     }
+    /// One line of a list group (SPEC-MENULIST-001, card t106): the price text shown under the name, the stepper rule of the
+    /// quantity, and whether the line's round plus may add a quantity (the order holds fewer lines than the group's repeat).
+    struct MenuLine: Equatable {
+        var price: String?
+        var rule: NumberStepperRule
+        var canAdd: Bool
+    }
     let id = UUID()
     /// 툴 인자 이름. 확인 시 이 키로 값이 실린다.
     let key: String
@@ -601,6 +608,9 @@ enum PlaceLine {
     /// Set only for a number row of a partner card (SPEC-NUMSTEPPER-001): the view draws a minus/plus stepper in place of the text
     /// box, and the row stays `Kind.title`. nil for every other row.
     var stepper: NumberStepperRule? = nil
+    /// Set only for a line of a list group (SPEC-MENULIST-001, card t106): the view draws the line's name, price, round plus and
+    /// stepper in place of the text box, and the row stays `Kind.title`. nil for every other row.
+    var menuLine: MenuLine? = nil
 
     var chosenLabel: String? {
         guard let chosen else { return nil }

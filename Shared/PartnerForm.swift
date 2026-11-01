@@ -15,6 +15,9 @@ enum PartnerFieldKind: String, CaseIterable, Equatable {
 struct PartnerOption: Equatable {
     let id: String
     let label: String
+    /// The price of this option in whole cents, read only on the item member of a group (SPEC-MENULIST-001). Defaulted, so an
+    /// option written without it carries no price.
+    var priceCents: Int? = nil
 }
 
 /// One field of the form a partner names for an action. Foundation only: it knows nothing of the app or of any one partner.
@@ -33,6 +36,9 @@ struct PartnerField: Equatable {
     var members: [PartnerField] = []
     /// The partner's maximum number of rows of a `group` field. Defaulted, so a scalar field is written without it.
     var maxRows = 0
+    /// The group's fee in whole cents, read only while the group's options carry prices (SPEC-MENULIST-001). Defaulted, so a
+    /// group written without it carries no fee.
+    var feeCents: Int? = nil
 }
 
 /// One entry of the result-field list a partner announces before the card is drawn: the name and the kind of a result item.
@@ -111,8 +117,10 @@ enum PartnerForm {
         // member is required, so a row with every member blank is never a valid row. `repeat` is the partner's maximum
         // number of rows, a whole number of 1 or more.
         if kind == .group {
-            guard object.count == 5, let listed = object["fields"] as? [Any], !listed.isEmpty,
-                  let maximum = integer(object["repeat"]), maximum > 0 else { return nil }
+            // SPEC-MENULIST-001 skeleton: a `fee_cents` key is read and ignored here (no value rule, nothing stored) until the
+            // real reader of REQ-001 to REQ-003 replaces this branch.
+            guard object.count == 5 || (object.count == 6 && object["fee_cents"] != nil), let listed = object["fields"] as? [Any],
+                  !listed.isEmpty, let maximum = integer(object["repeat"]), maximum > 0 else { return nil }
             var members: [PartnerField] = []
             for element in listed {
                 guard let memberObject = element as? [String: Any], let member = field(from: memberObject),
@@ -154,7 +162,9 @@ enum PartnerForm {
         guard count else { return nil }
         var options: [PartnerOption] = []
         for (index, element) in list.enumerated() {
-            guard let object = element as? [String: Any], object.count == 2,
+            // SPEC-MENULIST-001 skeleton: a `price_cents` key is read and ignored here (no value rule, nothing stored) until the
+            // real reader of REQ-002 replaces this line.
+            guard let object = element as? [String: Any], object.count == 2 || (object.count == 3 && object["price_cents"] != nil),
                   let id = object["id"] as? String, let label = object["label"] as? String,
                   isLabel(label, upTo: maxOptionLabelLength) else { return nil }
             if kind == .onOff {

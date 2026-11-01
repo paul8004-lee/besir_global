@@ -50,6 +50,8 @@ enum AgentFieldValue: Equatable {
 struct AgentFieldOption: Equatable {
     let id: String
     let label: String
+    /// The price of this option in whole cents, carried only by the item member of a list group (SPEC-MENULIST-001).
+    var priceCents: Int? = nil
 }
 
 struct AgentFieldSpec: Equatable {
@@ -121,13 +123,18 @@ struct AgentFieldSeed: Equatable {
 
 /// A repeatable group of rows: the partner's members and maximum number of rows, and the words of the one chip that adds a row
 /// (the symbol it shows and the name VoiceOver reads). The words live in the seed the caller passes; the card model writes none.
+/// SPEC-MENULIST-001 (card t106) adds the fee of a priced list group and the word its total line shows, carried the same way.
 struct AgentFieldGroup: Equatable {
     let key: String
     let label: String
     let members: [AgentFieldSpec]
     let maxRows: Int
-    let addSymbol: String
-    let addName: String
+    var addSymbol: String = ""
+    var addName: String = ""
+    /// The group's fee in whole cents, carried only while its options carry prices (SPEC-MENULIST-001).
+    var feeCents: Int? = nil
+    /// The word the group's total line shows; passed in the seed (as the chip's words were), never written by the model.
+    var totalLabel: String = ""
 }
 
 extension AgentFieldGroup {
@@ -141,6 +148,19 @@ extension AgentFieldGroup {
         }
         self.init(key: field.key, label: field.label, members: members, maxRows: field.maxRows,
                   addSymbol: addSymbol, addName: addName)
+    }
+
+    /// The group a partner named as the card's list builder reads it (SPEC-MENULIST-001): nil unless the field is of kind
+    /// `group` and every member yields a scalar seed. The shape rule and the option prices arrive with the list build.
+    init?(_ field: PartnerField, totalLabel: String) {
+        guard field.kind == .group else { return nil }
+        var members: [AgentFieldSpec] = []
+        for member in field.members {
+            guard let spec = AgentFieldSpec(member) else { return nil }
+            members.append(spec)
+        }
+        self.init(key: field.key, label: field.label, members: members, maxRows: field.maxRows,
+                  feeCents: field.feeCents, totalLabel: totalLabel)
     }
 }
 
