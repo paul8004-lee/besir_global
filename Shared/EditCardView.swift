@@ -141,8 +141,9 @@ struct EditCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             // 줄 이름 옆의 진행 표시 — 화면 소유 상태가 이 줄에서 일하는 중임을 알린다.
             // 장소 검색의 "찾는 중…"과 같은 문법이라 두 진행이 한 카드에서 같게 읽힌다.
-            // A stepper row carries its own label on its line, so it has no header here.
-            if field.stepper == nil {
+            // A stepper row carries its own label on its line, so it has no header here; a line of a menu list carries its
+            // name and price on its line too (SPEC-MENULIST-001).
+            if field.stepper == nil && field.menuLine == nil {
                 HStack(spacing: 6) {
                     Text(field.label)
                     if field.busy {
@@ -175,6 +176,8 @@ struct EditCardView: View {
                 // 장소 줄은 칩 줄이 아니라 검색창 하나와 목록이다(REQ-003) — 값은 목록의 행을
                 // 탭해 정한다. 네 편집 화면이 같은 카드를 쓰므로 AI 채팅 카드도 같은 문법이 된다.
                 placeLine(field)
+            } else if field.menuLine != nil {
+                menuLineRow(field)
             } else if field.stepper != nil {
                 // A number row of a partner card: a minus/plus stepper, no text box and no keyboard. This arm comes before the
                 // title arm because a number row is also a title row.
@@ -422,6 +425,22 @@ struct EditCardView: View {
     private func stepperLine(_ field: EditField) -> some View {
         if let rule = field.stepper {
             NumberStepperRow(label: field.label, value: field.chosen.flatMap { Int($0) }, rule: rule) { new in
+                collapseOtherEditors()
+                actions.setTitleText?(field.id, new.map { String($0) } ?? "")
+            }
+        }
+    }
+
+    // MARK: Menu line (SPEC-MENULIST-001)
+
+    /// One line of a menu list: the name and, when priced, the price on the left, and on the right a round plus while the
+    /// count is blank or the stepper once it holds one. A change closes the other open editors and goes through the same
+    /// `setTitleText` writer every row uses; no value is the empty text.
+    @ViewBuilder
+    private func menuLineRow(_ field: EditField) -> some View {
+        if let menuLine = field.menuLine {
+            MenuListLine(name: field.label, price: menuLine.price, value: field.chosen.flatMap { Int($0) },
+                         rule: menuLine.rule, canAdd: menuLine.canAdd) { new in
                 collapseOtherEditors()
                 actions.setTitleText?(field.id, new.map { String($0) } ?? "")
             }

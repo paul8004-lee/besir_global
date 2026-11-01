@@ -662,7 +662,7 @@ indirect enum AgentFieldRow {
     private func lineFields(of groupKey: String) -> [EditField] {
         guard let group = groups[groupKey] else { return [] }
         var built: [EditField] = []
-        for (index, option) in group.itemMember.options.enumerated() {
+        for index in group.itemMember.options.indices {
             built.append(editField(Self.rowKey(groupKey, index + 1, group.countMember.key)))
         }
         if group.isPriced {
