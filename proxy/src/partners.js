@@ -1,10 +1,12 @@
 // POST /partners: the directory of the simulated partners the app can ask. It has no upstream, no storage and no log line:
 // the answer is a constant, so nothing personal can be kept. A partner is added by adding an entry here and a route in index.js.
 const MAX_BODY_CHARS = 4096;
-const ALL_KEYS = ["op"];
+const ALL_KEYS = ["op", "symbols"];
 
-// Each entry holds exactly id, name, title, summary and route, in this order. The route is `/` and 1 to 32 characters
-// (a lowercase letter first, then lowercase letters, digits or `-`) and never `/partners`.
+// The plain answer holds exactly id, name, title, summary and route per entry, in this order. The route is `/` and 1 to
+// 32 characters (a lowercase letter first, then lowercase letters, digits or `-`) and never `/partners`. The symbol
+// (1 to 40 characters of a-z, 0-9 and `.`, the first a letter or digit) is announced only to the request
+// {"op":"list","symbols":true}, as a sixth key; the plain request never sees it. It may be swapped here alone.
 const PARTNERS = [
   {
     id: "booking",
@@ -12,6 +14,7 @@ const PARTNERS = [
     title: "Reserve a table",
     summary: "Reserves a table at a restaurant.",
     route: "/booking",
+    symbol: "fork.knife",
   },
   {
     id: "delivery",
@@ -19,11 +22,16 @@ const PARTNERS = [
     title: "Order delivery",
     summary: "Delivers food to a place at a set time.",
     route: "/delivery",
+    symbol: "bicycle",
   },
 ];
 
 const directoryAnswer = () => ({
   partners: PARTNERS.map(({ id, name, title, summary, route }) => ({ id, name, title, summary, route })),
+});
+
+const symbolAnswer = () => ({
+  partners: PARTNERS.map(({ id, name, title, summary, route, symbol }) => ({ id, name, title, summary, route, symbol })),
 });
 
 export async function handlePartners(request, { json }) {
@@ -41,5 +49,7 @@ export async function handlePartners(request, { json }) {
   if (Object.keys(value).some((key) => !ALL_KEYS.includes(key))) return json(400, { error: "unknown_field" });
   if (!Object.prototype.hasOwnProperty.call(value, "op")) return json(400, { error: "missing_field" });
   if (value.op !== "list") return json(400, { error: "invalid_field" });
-  return json(200, directoryAnswer());
+  const asked = Object.prototype.hasOwnProperty.call(value, "symbols");
+  if (asked && value.symbols !== true) return json(400, { error: "invalid_field" });
+  return json(200, asked ? symbolAnswer() : directoryAnswer());
 }

@@ -32,10 +32,20 @@ struct FullSirView: View {
     @State private var results: [NearbyPlace] = []
     @State private var searching = false
     @State private var searched = false
-    @State private var status = ""
 
     /// 일정으로 등록하려고 고른 식당.
     @State private var scheduling: NearbyPlace?
+
+    /// The rows that are open, by `NearbyPlace.id`. Held only here; a new result list empties it.
+    @State private var expanded: Set<String> = []
+    /// The toolbox that builds the partners' cards for the hand path; built on first use.
+    @State private var handToolbox: AgentToolbox?
+    /// The partners and their forms; nil until the load ends, empty when it failed.
+    @State private var partnerSpecs: [PartnerSpec]?
+    /// Set before the load starts, so two quick expands start one load. Never reset while the screen lives.
+    @State private var partnersRequested = false
+    @State private var openCard: HandCard?
+    @State private var showingHistory = false
 
     /// Bumps on every base change; an answer that comes back after a bump belongs to an earlier base and is dropped.
     @State private var baseEpoch = 0
@@ -80,9 +90,19 @@ struct FullSirView: View {
                     Button { onBack() } label: { Label("Home", systemImage: "chevron.left") }
                 }
                 // AI는 우하단 besir 로고 버튼(RootView) 하나로 통일됐다(REQ-008) — 툴바에는 두지 않는다.
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showingHistory = true } label: { Image(systemName: "clock.arrow.circlepath") }
+                        .accessibilityLabel("History")
+                }
             }
             .sheet(item: $scheduling) { item in
                 MealScheduleSheet(target: item) { scheduling = nil }
+            }
+            .sheet(item: $openCard) { hand in
+                PartnerCardSheet(card: hand.card)
+            }
+            .sheet(isPresented: $showingHistory) {
+                PartnerHistoryView()
             }
             .onChange(of: baseKey) { baseChanged() }
         }
@@ -226,53 +246,102 @@ struct FullSirView: View {
     }
 
     private func resultRow(_ item: NearbyPlace) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        let open = expanded.contains(item.id)
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.place.name).font(.subheadline).bold()
-                    HStack(spacing: 6) {
-                        if !item.category.isEmpty {
-                            Text(item.category).font(.caption).foregroundStyle(Theme.muted)
+                Button { toggle(item) } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.place.name).font(.subheadline).bold()
+                        HStack(spacing: 6) {
+                            if !item.category.isEmpty {
+                                Text(item.category).font(.caption).foregroundStyle(Theme.muted)
+                            }
+                            if let d = item.distanceText {
+                                Text("· \(d)").font(.caption).foregroundStyle(Theme.muted)
+                            }
                         }
-                        if let d = item.distanceText {
-                            Text("· \(d)").font(.caption).foregroundStyle(Theme.muted)
+                        if !item.place.address.isEmpty {
+                            Text(item.place.address).font(.caption2).foregroundStyle(Theme.faint).lineLimit(open ? nil : 1)
                         }
                     }
-                    if !item.place.address.isEmpty {
-                        Text(item.place.address).font(.caption2).foregroundStyle(Theme.faint).lineLimit(1)
-                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
                 }
-                Spacer()
+                .buttonStyle(.plain)
                 if let urlString = item.url, let url = URL(string: urlString) {
                     Link(destination: url) { Image(systemName: "arrow.up.forward.square") }
                         .buttonStyle(.borderless)
                         .accessibilityLabel("View on Map")
                 }
             }
-            HStack(spacing: 8) {
-                Button {
-                    // 먹은 것으로 바로 남긴다(일정 없이 기록만).
-                    store.addMeal(category: .diningOut, title: item.place.name, place: item.place)
-                    status = "Logged"
-                } label: {
-                    Label("I Ate Here", systemImage: "checkmark.circle")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-                Button {
-                    scheduling = item
-                } label: {
-                    Label("Add Meal Event", systemImage: "calendar.badge.plus")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            }
-            if !status.isEmpty {
-                Text(status).font(.caption2).foregroundStyle(Theme.muted)
+            if open {
+                PlacePhotoStrip(photos: item.photos)
+                handButtons(item)
             }
         }
         .padding(.vertical, 6)
+    }
+
+    /// The icon-only buttons of an open row: the two meal actions, then one for each partner the directory announced.
+    private func handButtons(_ item: NearbyPlace) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                // Logged as eaten at once, with no schedule entry.
+                store.addMeal(category: .diningOut, title: item.place.name, place: item.place)
+            } label: {
+                Image(systemName: "checkmark.circle")
+            }
+            .accessibilityLabel("I ate here")
+
+            Button {
+                scheduling = item
+            } label: {
+                Image(systemName: "calendar.badge.plus")
+            }
+            .accessibilityLabel("Add meal event")
+
+            if store.config.hasProxy {
+                ForEach(partnerSpecs ?? [], id: \.entry.id) { spec in
+                    Button { openPartner(spec, for: item) } label: {
+                        Image(systemName: PartnerHand.buttonSymbol(for: spec.entry))
+                    }
+                    .accessibilityLabel(spec.entry.title)
+                }
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+    }
+
+    /// Opens or closes a row. The first open row of the screen starts the load of the partners.
+    private func toggle(_ item: NearbyPlace) {
+        if expanded.contains(item.id) {
+            expanded.remove(item.id)
+            return
+        }
+        expanded.insert(item.id)
+        guard store.config.hasProxy else { return }
+        guard !partnersRequested else { return }
+        partnersRequested = true
+        Task { partnerSpecs = await toolbox().loadPartners(flow: ConnectionLog.beginFlow(), symbols: true) }
+    }
+
+    /// A partner's card for the tapped place, opened in a sheet. The place's name is the only value it starts with.
+    private func openPartner(_ spec: PartnerSpec, for item: NearbyPlace) {
+        let seeds = PartnerHand.seeds(for: spec, placeName: item.place.name)
+        guard let card = toolbox().partnerCard(spec, seeds: seeds, source: .inferred) else { return }
+        openCard = HandCard(card: card)
+    }
+
+    /// The toolbox of the hand path, built the way the chat's is: the same store, clock, zone and device origin.
+    private func toolbox() -> AgentToolbox {
+        if let handToolbox { return handToolbox }
+        let location = location
+        let built = AgentToolbox(store: store, now: { Date() }, timeZone: { TimeZone.current },
+                                 deviceOrigin: { AgentPlaces.devicePlace(manual: location.manualOrigin, current: location.realFixLocation) },
+                                 searchOrigin: { location.searchOrigin })
+        handToolbox = built
+        return built
     }
 
     /// "카페"를 고르면 카페(CE7), 음식 항목을 고르면 음식점(FD6)으로 좁힌다.
@@ -306,15 +375,16 @@ struct FullSirView: View {
         let epoch = baseEpoch
         searchWaitsForBase = false
         searching = true
-        status = ""
         let found = await store.placeSearch.nearbyPlaces(category: searchCategory,
                                                          keyword: keyword,
                                                          near: center,
                                                          radiusMeters: 1500,
                                                          sort: sort,
-                                                         limit: 10)
+                                                         limit: 10,
+                                                         photos: true)
         guard epoch == baseEpoch else { return }
         results = found
+        expanded = []
         searching = false
         searched = true
     }

@@ -355,4 +355,126 @@ final class GooglePlacesTests: XCTestCase {
         XCTAssertEqual(maskText, GooglePlaces.fieldMask)
         XCTAssertEqual(maskText, mask)
     }
+
+    // MARK: - FULLHAND place photos (SPEC-FULLHAND-001)
+
+    private static let photoName = "places/ChIJTest_123-abc/photos/AUc7tXtest_token-9"
+
+    /// A Google-shaped place at the centre; `photos` is added as given when it is not nil.
+    private func photoPlace(_ name: String, photos: Any?) -> [String: Any] {
+        var place: [String: Any] = [
+            "displayName": ["text": name],
+            "formattedAddress": "\(name) address",
+            "location": ["latitude": Support.center.latitude, "longitude": Support.center.longitude]
+        ]
+        if let photos { place["photos"] = photos }
+        return place
+    }
+
+    private static func photoResponse(status: Int, type: String?, for request: URLRequest) -> URLResponse {
+        let fields = type.map { ["Content-Type": $0] }
+        return HTTPURLResponse(url: request.url ?? URL(fileURLWithPath: "/"), statusCode: status,
+                               httpVersion: "HTTP/1.1", headerFields: fields) ?? URLResponse()
+    }
+
+    func testFULLHAND_T01_TheBeFullSirSearchAsksForPhotosAndEveryOtherSearchKeepsTheSixFieldMask() throws {
+        XCTAssertEqual(GooglePlaces.photoFieldMask, GooglePlaces.fieldMask + ",places.photos")
+        let photos = try XCTUnwrap(GooglePlaces.nearbyRequest(category: .restaurant, keyword: "ramen",
+                                                              near: Support.center, radiusMeters: 1000,
+                                                              config: Support.config, photos: true))
+        let plain = try XCTUnwrap(GooglePlaces.nearbyRequest(category: .restaurant, keyword: "ramen",
+                                                             near: Support.center, radiusMeters: 1000,
+                                                             config: Support.config))
+        let search = try XCTUnwrap(GooglePlaces.searchRequest(query: "ramen", near: Support.center,
+                                                              config: Support.config))
+        XCTAssertEqual(photos.value(forHTTPHeaderField: GooglePlaces.fieldMaskHeader), GooglePlaces.photoFieldMask)
+        XCTAssertEqual(plain.value(forHTTPHeaderField: GooglePlaces.fieldMaskHeader), GooglePlaces.fieldMask)
+        XCTAssertEqual(search.value(forHTTPHeaderField: GooglePlaces.fieldMaskHeader), GooglePlaces.fieldMask)
+        let photosBody = try XCTUnwrap(Support.body(of: photos))
+        let plainBody = try XCTUnwrap(Support.body(of: plain))
+        XCTAssertTrue(photosBody.isEqual(plainBody), "the photo request must not change the body")
+    }
+
+    func testFULLHAND_T02_PhotoReferencesAreReadAtMostThreeInOrderWithTheirAuthors() throws {
+        let photos: [[String: Any]] = [
+            ["name": "places/x/photos/a",
+             "authorAttributions": [["displayName": "Ann\u{200B}a", "uri": "https://maps.example.invalid/ann"]]],
+            ["name": "places/x/photos/a/b",
+             "authorAttributions": [["displayName": "Bad Name", "uri": "https://maps.example.invalid/bad"]]],
+            ["name": "places/x/photos/c",
+             "authorAttributions": [["displayName": "Cy", "uri": "http://maps.example.invalid/cy"]]],
+            ["name": "places/x/photos/d"],
+            ["name": "places/x/photos/e",
+             "authorAttributions": [["displayName": "Eve", "uri": "https://maps.example.invalid/eve"]]]
+        ]
+        let places = [
+            photoPlace("First Place", photos: photos),
+            photoPlace("Second Place", photos: [["name": "places/y/photos/z", "authorAttributions": "not an array"]]),
+            photoPlace("Third Place", photos: "not an array"),
+            photoPlace("Fourth Place", photos: nil)
+        ]
+        let body = try JSONSerialization.data(withJSONObject: ["places": places])
+        let results = GooglePlaces.nearbyResults(from: body, near: Support.center, radiusMeters: 1000,
+                                                 sort: .accuracy, limit: 20)
+        XCTAssertEqual(results.count, 4)
+        guard results.count == 4 else { return }
+        let first = results[0].photos
+        XCTAssertEqual(first.count, 3)
+        guard first.count == 3 else { return }
+        XCTAssertEqual(first.map(\.name), ["places/x/photos/a", "places/x/photos/c", "places/x/photos/d"])
+        XCTAssertEqual(first.map(\.author), ["Anna", "Cy", ""])
+        XCTAssertEqual(first[0].authorURL, URL(string: "https://maps.example.invalid/ann"))
+        XCTAssertNil(first[1].authorURL)
+        XCTAssertNil(first[2].authorURL)
+        XCTAssertEqual(results[1].photos.map(\.name), ["places/y/photos/z"])
+        XCTAssertEqual(results[1].photos.map(\.author), [""])
+        XCTAssertEqual(results[2].photos.count, 0)
+        XCTAssertEqual(results[3].photos.count, 0)
+    }
+
+    func testFULLHAND_T03_APhotoIsAskedFromTheWorkerRouteWithTheAppTokenOnlyAndOnlyAnImageAnswerIsKept() async throws {
+        let request = try XCTUnwrap(PlacePhotos.request(name: Self.photoName, config: Support.config))
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/place-photo")
+        XCTAssertEqual(request.url?.host, Support.host)
+        let body = try XCTUnwrap(Support.body(of: request))
+        XCTAssertTrue(body.isEqual(["name": Self.photoName, "max_width": 800]))
+        XCTAssertEqual(PlacePhotos.maxWidth, 800)
+        let carrying = (request.allHTTPHeaderFields ?? [:]).filter { $0.value == Support.token }
+            .map { $0.key.lowercased() }
+        XCTAssertEqual(carrying, ["x-besir-token"])
+        let names = (request.allHTTPHeaderFields ?? [:]).keys.map { $0.lowercased() }
+        XCTAssertFalse(names.contains("x-goog-api-key"))
+        XCTAssertFalse(names.contains("authorization"))
+        XCTAssertFalse(String(decoding: request.httpBody ?? Data(), as: UTF8.self).contains("key"))
+        XCTAssertNil(PlacePhotos.request(name: Self.photoName, config: AppConfig(kakaoJsKey: "")))
+
+        let image = Data([0xFF, 0xD8, 0xFF, 0xE0, 0x01])
+        let kept = await PlacePhotos.fetch(request) { req in
+            (image, Self.photoResponse(status: 200, type: "image/jpeg", for: req))
+        }
+        XCTAssertEqual(kept, image)
+        let json = await PlacePhotos.fetch(request) { req in
+            (image, Self.photoResponse(status: 200, type: "application/json", for: req))
+        }
+        XCTAssertNil(json)
+        let missing = await PlacePhotos.fetch(request) { req in
+            (image, Self.photoResponse(status: 404, type: "image/jpeg", for: req))
+        }
+        XCTAssertNil(missing)
+        let thrown = await PlacePhotos.fetch(request) { _ in throw URLError(.notConnectedToInternet) }
+        XCTAssertNil(thrown)
+        let empty = await PlacePhotos.fetch(request) { req in
+            (Data(), Self.photoResponse(status: 200, type: "image/jpeg", for: req))
+        }
+        XCTAssertNil(empty)
+        let tooBig = await PlacePhotos.fetch(request) { req in
+            (Data(count: 5_000_001), Self.photoResponse(status: 200, type: "image/jpeg", for: req))
+        }
+        XCTAssertNil(tooBig)
+        let atLimit = await PlacePhotos.fetch(request) { req in
+            (Data(count: 5_000_000), Self.photoResponse(status: 200, type: "image/png", for: req))
+        }
+        XCTAssertEqual(atLimit?.count, 5_000_000)
+    }
 }

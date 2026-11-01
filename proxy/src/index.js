@@ -9,12 +9,14 @@
 //   POST /booking/cancel -> cancels a simulated table booking (no upstream, no storage)
 //   POST /budget  -> simulated budget partner (no upstream, no storage)
 //   POST /delivery -> simulated food-delivery partner (an upstream for lookup only, one Places Text Search; no storage)
+//   POST /place-photo -> one Google place photo by its resource name (an upstream per request, no storage)
 import { handleVision } from "./vision.js";
 import { handleSnap } from "./snap.js";
 import { handleBooking, handleBookingCancel } from "./booking.js";
 import { handlePartners } from "./partners.js";
 import { handleBudget } from "./budget.js";
 import { handleDelivery } from "./delivery.js";
+import { handlePlacePhoto } from "./placephoto.js";
 
 const META_RESPONSES_URL = "https://api.meta.ai/v1/responses";
 const PLACES_URL = "https://places.googleapis.com/v1/places:searchText";
@@ -24,6 +26,7 @@ const ROUTES_URL = "https://routes.googleapis.com/directions/v2:computeRoutes";
 const ALLOWED_MODELS = new Set(["muse-spark-1.3"]);
 const DEFAULT_MODEL = "muse-spark-1.3";
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+const MAX_PHOTO_BYTES = 5_000_000;
 
 const json = (status, body) =>
   new Response(JSON.stringify(body), {
@@ -119,6 +122,29 @@ function placesLookup(env) {
   };
 }
 
+// The one upstream call behind /place-photo, handed to the route. It uses the Worker's own key in the documented
+// `key=` query form, follows Google's redirect itself and sends no header the client sent. It says only what happened:
+// no key, failed (any other status or content type, a declared length over the cap, a thrown fetch), or ok with the
+// upstream response (a 200 image).
+function placePhoto(env) {
+  return async ({ name, width }) => {
+    if (!env.GOOGLE_MAPS_KEY) return { outcome: "no_key" };
+    try {
+      const upstream = await fetch(
+        `https://places.googleapis.com/v1/${name}/media?maxWidthPx=${width}&key=${encodeURIComponent(env.GOOGLE_MAPS_KEY)}`,
+        { method: "GET", redirect: "follow" },
+      );
+      if (upstream.status !== 200) return { outcome: "failed" };
+      if (!(upstream.headers.get("content-type") ?? "").startsWith("image/")) return { outcome: "failed" };
+      const declared = upstream.headers.get("content-length");
+      if (declared !== null && !(/^[0-9]+$/.test(declared) && Number(declared) <= MAX_PHOTO_BYTES)) return { outcome: "failed" };
+      return { outcome: "ok", response: upstream };
+    } catch {
+      return { outcome: "failed" };
+    }
+  };
+}
+
 export default {
   async fetch(request, env) {
     const { pathname } = new URL(request.url);
@@ -145,6 +171,7 @@ export default {
       case "/booking/cancel": return handleBookingCancel(request, { json });
       case "/budget": return handleBudget(request, { json });
       case "/delivery": return handleDelivery(request, { json, lookup: placesLookup(env) });
+      case "/place-photo": return handlePlacePhoto(request, { json, photo: placePhoto(env) });
       default:
         return json(404, { error: "not_found" });
     }

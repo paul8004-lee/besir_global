@@ -64,6 +64,16 @@ final class BudgetLedger: @unchecked Sendable {
         return entries.first { $0.requestID == requestID }
     }
 
+    /// Posted (object: this ledger) once after an add that appended and once after a remove that removed.
+    static let didChange = Notification.Name("besir.budgetLedgerDidChange")
+
+    /// The entries of one week in insertion order.
+    func weekEntries(weekStart: String) -> [BudgetEntry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries.filter { $0.weekStart == weekStart }
+    }
+
     // MARK: Write
 
     /// Removes the entry a request id made. True when one was removed. The file is written as `add` writes it, and a failed
@@ -75,6 +85,7 @@ final class BudgetLedger: @unchecked Sendable {
         guard let index = entries.firstIndex(where: { $0.requestID == requestID }) else { return false }
         entries.remove(at: index)
         if let data = try? JSONEncoder().encode(entries) { try? write(data, fileURL) }
+        NotificationCenter.default.post(name: Self.didChange, object: self)
         return true
     }
 
@@ -88,6 +99,7 @@ final class BudgetLedger: @unchecked Sendable {
         entries.append(entry)
         if entries.count > limit { entries.removeFirst(entries.count - limit) }
         if let data = try? JSONEncoder().encode(entries) { try? write(data, fileURL) }
+        NotificationCenter.default.post(name: Self.didChange, object: self)
         return true
     }
 

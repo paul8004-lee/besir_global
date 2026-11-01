@@ -680,7 +680,7 @@ final class DayPlanSessionTests: XCTestCase {
         XCTAssertEqual(booking.lines.count, 10, label)
         XCTAssertEqual(Array(booking.lines[0...2]), ["Reserve a table", "Restaurant: Example Cafe", "Party size: 2"], "\(label): booking card")
         XCTAssertTrue(booking.lines[3].hasPrefix("Time: "), label)
-        XCTAssertEqual(Array(booking.lines[4...]), ["Name: Sam", "Note:", "Add to schedule: Add", "Length (min): 60", "Travel: Don't Add", "Example Tables - Simulated"], "\(label): booking card")
+        XCTAssertEqual(Array(booking.lines[4...]), ["Name: Sam", "Note:", "Add to schedule: Add", "End: " + BesirTime.when(TestClock.date(BookingFixture.start).addingTimeInterval(3600)), "Travel: Don't Add", "Example Tables - Simulated"], "\(label): booking card")
         XCTAssertFalse(booking.showsGoogleMark, label)
         XCTAssertEqual(rig.partner.requests.count, 2, "\(label): building the card sends nothing")
         let booked = await booking.resolve(.confirm)

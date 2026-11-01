@@ -520,11 +520,11 @@ final class AgentSession: ObservableObject {
         declaredToolNames.contains(name) ? name.replacingOccurrences(of: "_", with: " ") : "Unknown tool"
     }
 
-    /// `ok` and `applied` are `ok`, `declined` is `declined`, `no_route` is `noRoute` (a normal answer), anything else
+    /// `ok`, `applied` and `cancelled` are `ok`, `declined` is `declined`, `no_route` is `noRoute` (a normal answer), anything else
     /// (`rejected`, `not_found`, `stale`, `unavailable`, an unknown word) is `failed`.
     static func toolCallStatus(_ status: String) -> ConnectionStatus {
         switch status {
-        case "ok", "applied": return .ok
+        case "ok", "applied", "cancelled": return .ok
         case "declined": return .declined
         case "no_route": return .noRoute
         default: return .failed

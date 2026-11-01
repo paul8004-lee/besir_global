@@ -779,6 +779,33 @@ final class LocationPermissionTests: XCTestCase {
         XCTAssertEqual(rig.lm.realFixLocation?.longitude, sf.coordinate.longitude)
     }
 
+    func testTRAVELLEGS_T06_TheSearchOriginIsTheManualOriginElseTheApproximateOrRealPositionElseNothing() {
+        let rig = makeRig(.notDetermined)
+        XCTAssertNil(rig.lm.searchOrigin, "nothing held, nothing to bias with")
+
+        // The approximate guess is a search origin and still not a real fix.
+        holdSeoul(rig)
+        XCTAssertNil(rig.lm.realFixLocation)
+        let guess = rig.lm.searchOrigin
+        XCTAssertEqual(guess?.name, "Current location")
+        XCTAssertEqual(guess?.address, "")
+        XCTAssertEqual(guess?.latitude ?? 0, seoul.latitude, accuracy: 1e-9)
+        XCTAssertEqual(guess?.longitude ?? 0, seoul.longitude, accuracy: 1e-9)
+
+        // A manual origin wins as it is.
+        let manual = Place(name: "Team HQ", address: "1 Main St", latitude: 37.78, longitude: -122.40)
+        rig.lm.manualOrigin = manual
+        XCTAssertEqual(rig.lm.searchOrigin, manual)
+
+        // With the manual origin cleared, a real fix replaces the guess and both views follow it.
+        rig.lm.manualOrigin = nil
+        rig.lm.applyFix(sf)
+        XCTAssertEqual(rig.lm.searchOrigin?.latitude ?? 0, sf.coordinate.latitude, accuracy: 1e-9)
+        XCTAssertEqual(rig.lm.searchOrigin?.longitude ?? 0, sf.coordinate.longitude, accuracy: 1e-9)
+        XCTAssertEqual(rig.lm.realFixLocation?.latitude, sf.coordinate.latitude)
+        XCTAssertEqual(rig.lm.realFixLocation?.longitude, sf.coordinate.longitude)
+    }
+
     func testLOCPERM_AvailablePlaceIgnoresApproximate() {
         let rig = makeRig(.notDetermined)
         holdSeoul(rig)
