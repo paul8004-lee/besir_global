@@ -18,9 +18,9 @@ final class PartnerShelfTests: XCTestCase {
     private final class ScriptedLoad {
         private(set) var calls = 0
         private var script: [PartnerLoad]
-        private var waiting: CheckedContinuation<Void, Never>?
+        private var waiting: [CheckedContinuation<Void, Never>] = []
         var holds = false
-        var isWaiting: Bool { waiting != nil }
+        var isWaiting: Bool { !waiting.isEmpty }
 
         init(_ script: [PartnerLoad]) { self.script = script }
 
@@ -28,14 +28,16 @@ final class PartnerShelfTests: XCTestCase {
         func load() async -> PartnerLoad {
             calls += 1
             let next = script.isEmpty ? PartnerShelfTests.load(.failed) : script.removeFirst()
-            if holds { await withCheckedContinuation { waiting = $0 } }
+            if holds { await withCheckedContinuation { waiting.append($0) } }
             return next
         }
 
+        /// Lets every held load go on, so a second load started by a broken shelf cannot leave the test waiting for ever.
         func open() {
             holds = false
-            waiting?.resume()
-            waiting = nil
+            let held = waiting
+            waiting = []
+            for continuation in held { continuation.resume() }
         }
     }
 
