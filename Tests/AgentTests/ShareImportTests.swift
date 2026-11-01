@@ -350,4 +350,111 @@ final class ShareImportTests: XCTestCase {
         XCTAssertEqual(free.session.userTexts, ["The line"])
         XCTAssertEqual(free.session.history.first, .user("the message"))
     }
+
+    // MARK: - SPEC-SHAREHAND-001: the chat hand-off RootView passes is one named function
+
+    func testAC_SHAREHAND_001_theHandOffGivesTheMessageToTheModelAndTheLineToTheChat() async {
+        let rig = SessionRig([.turn(Turns.text("Noted.")), .turn(Turns.text("Noted again."))])
+        let holder = AgentChatHolder()
+        holder.session = rig.session
+        var opened = 0
+        let hand = SharedImport.chatHandOff(holder: holder, openChat: { opened += 1 })
+        XCTAssertEqual(opened, 0, "building the hand-off opens nothing")
+
+        XCTAssertTrue(hand("the message", "The line"))
+        await rig.session.settle()
+        XCTAssertEqual(opened, 1)
+        XCTAssertEqual(rig.session.userTexts, ["The line"])
+        XCTAssertEqual(rig.session.history.first, .user("the message"))
+        XCTAssertFalse(rig.session.history.contains(.user("The line")))
+        XCTAssertEqual(rig.fake.requests.count, 1)
+        XCTAssertEqual(rig.fake.requests.first?.last, .user("the message"))
+        XCTAssertEqual(rig.fake.requests.first?.contains(.user("The line")), false)
+
+        XCTAssertTrue(hand("second message", "Second line"))
+        await rig.session.settle()
+        XCTAssertEqual(opened, 2)
+        XCTAssertEqual(rig.session.userTexts, ["The line", "Second line"])
+        XCTAssertEqual(rig.fake.requests.count, 2)
+        XCTAssertEqual(rig.fake.requests.last?.last, .user("second message"))
+        XCTAssertFalse(rig.session.history.contains(.user("Second line")))
+
+        let other = SessionRig([.turn(Turns.text("Noted."))])
+        let otherHolder = AgentChatHolder()
+        otherHolder.session = other.session
+        let swapped = SharedImport.chatHandOff(holder: otherHolder, openChat: {})
+        XCTAssertTrue(swapped("The line", "the message"))
+        await other.session.settle()
+        XCTAssertEqual(other.session.userTexts, ["the message"], "positive control: the check sees which string is drawn")
+    }
+
+    func testAC_SHAREHAND_002_theChatOpensBeforeTheSessionIsRead() async {
+        let rig = SessionRig([.turn(Turns.text("Noted."))])
+        let holder = AgentChatHolder()
+        XCTAssertNil(holder.session)
+        var opened = 0
+        let hand = SharedImport.chatHandOff(holder: holder, openChat: {
+            opened += 1
+            if holder.session == nil { holder.session = rig.session }
+        })
+        XCTAssertEqual(opened, 0, "building the hand-off opens nothing")
+        XCTAssertNil(holder.session)
+
+        XCTAssertTrue(hand("the message", "The line"))
+        await rig.session.settle()
+        XCTAssertEqual(opened, 1)
+        XCTAssertEqual(rig.session.userTexts, ["The line"])
+        XCTAssertEqual(rig.session.history.first, .user("the message"))
+        XCTAssertFalse(SharedImport.give(message: "m", shown: "s", to: AgentChatHolder().session),
+                       "positive control: an empty holder is refused")
+    }
+
+    func testAC_SHAREHAND_003_aRefusedHandOffSendsNothingButStillOpensTheChat() async {
+        var opened = 0
+        let empty = AgentChatHolder()
+        let refused = SharedImport.chatHandOff(holder: empty, openChat: { opened += 1 })
+        XCTAssertEqual(opened, 0, "building the hand-off opens nothing")
+        XCTAssertFalse(refused("the message", "The line"))
+        XCTAssertEqual(opened, 1)
+        XCTAssertNil(empty.session)
+
+        let busy = SessionRig([.hold])
+        busy.session.send("What is on?")
+        let reached = await busy.fake.waitForRequests(1)
+        XCTAssertTrue(reached)
+        XCTAssertFalse(busy.session.canSend, "positive control: the session cannot take a message")
+        let holder = AgentChatHolder()
+        holder.session = busy.session
+        var openedBusy = 0
+        let hand = SharedImport.chatHandOff(holder: holder, openChat: { openedBusy += 1 })
+        XCTAssertEqual(openedBusy, 0, "building the hand-off opens nothing")
+        let before = busy.session.entries.count
+        XCTAssertFalse(hand("the message", "The line"))
+        XCTAssertEqual(openedBusy, 1)
+        XCTAssertEqual(busy.session.entries.count, before)
+        XCTAssertEqual(busy.fake.requests.count, 1)
+        await busy.session.newChat()
+    }
+
+    func testAC_SHAREHAND_001_aShareThroughThePassReachesTheChatThroughTheHandOff() async throws {
+        let rig = try makeRig()
+        enqueue(rig, image: imageBase64)
+        let session = AgentSession(toolbox: ToolHarness.make().tools, transport: FakeTransport([.turn(Turns.text("Noted."))]))
+        let holder = AgentChatHolder()
+        var opened = 0
+        let hand = SharedImport.chatHandOff(holder: holder, openChat: {
+            opened += 1
+            if holder.session == nil { holder.session = session }
+        })
+        XCTAssertEqual(opened, 0, "building the hand-off opens nothing")
+        XCTAssertNil(holder.session)
+
+        await rig.importer.pass(vision: rig.reader, canHand: { holder.session?.canSend ?? true }, holdForPlan: true, hand: hand)
+        await session.settle()
+        XCTAssertEqual(opened, 1)
+        XCTAssertEqual(session.userTexts, ["I shared an image. Read with 90% confidence."])
+        XCTAssertEqual(session.history.first, .user(composed(readFields, text: nil)))
+        XCTAssertEqual(rig.reader.calls, 1)
+        XCTAssertTrue(rig.inbox.pending().isEmpty)
+    }
 }
