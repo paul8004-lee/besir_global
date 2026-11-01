@@ -8,6 +8,9 @@ final class PartnerClient {
 
     private static let timeout: TimeInterval = 20
 
+    /// An answer the reader accepted, with the bytes it accepted.
+    typealias Accepted<Value> = (value: Value, data: Data)
+
     private let config: AppConfig
     private let send: Send
     private let connections: ConnectionLog
@@ -24,6 +27,11 @@ final class PartnerClient {
     /// `"symbols": true` to the request and reads the answer that may carry each partner's symbol; off, the request and the reader
     /// are the plain ones. Neither the symbols nor the answer reach the log.
     func directory(flow: UUID, symbols: Bool = false) async -> Result<[PartnerEntry], PartnerFailure> {
+        await directoryAnswer(flow: flow, symbols: symbols).map { $0.value }
+    }
+
+    /// `directory` together with the bytes the reader accepted, for the caller that keeps them (card t110).
+    func directoryAnswer(flow: UUID, symbols: Bool = false) async -> Result<Accepted<[PartnerEntry]>, PartnerFailure> {
         let body: [String: Any] = symbols ? ["op": "list", "symbols": true] : ["op": "list"]
         return await call(path: PartnerEntry.directoryPath, body: body, flow: flow, read: { PartnerEntry.list(from: $0, symbols: symbols) },
                           words: { _ in ("Partners requested", "Partners received", .ok) })
@@ -31,6 +39,11 @@ final class PartnerClient {
 
     /// Asks an entry's route for its form. Records `<name>: Fields requested` and `<name>: Fields received`.
     func form(of entry: PartnerEntry, flow: UUID) async -> Result<PartnerSpec, PartnerFailure> {
+        await formAnswer(of: entry, flow: flow).map { $0.value }
+    }
+
+    /// `form` together with the bytes the reader accepted, for the caller that keeps them (card t110).
+    func formAnswer(of entry: PartnerEntry, flow: UUID) async -> Result<Accepted<PartnerSpec>, PartnerFailure> {
         await call(path: entry.route, body: ["op": "fields"], flow: flow, read: { PartnerSpec.form(from: $0, entry: entry) },
                    words: { _ in ("\(entry.name): Fields requested", "\(entry.name): Fields received", .ok) })
     }
@@ -45,7 +58,7 @@ final class PartnerClient {
                               case .confirmed: return ("\(name): Request sent", "\(name): Request confirmed", .ok)
                               case .declined: return ("\(name): Request sent", "\(name): Request declined", .declined)
                               }
-                          })
+                          }).map { $0.value }
     }
 
     /// Asks an entry's route for the places it finds for the text typed in one of its own lookup fields. Sends nothing (and fails
@@ -58,7 +71,7 @@ final class PartnerClient {
         let name = spec.entry.name
         return await call(path: spec.entry.route, body: PartnerCandidates.body(field: field, text: lookupText, near: near), flow: flow,
                           read: { PartnerCandidates.list(from: $0, spec: spec, field: field) },
-                          words: { _ in ("\(name): Candidates requested", "\(name): Candidates received", .ok) })
+                          words: { _ in ("\(name): Candidates requested", "\(name): Candidates received", .ok) }).map { $0.value }
     }
 
     /// Asks the partner to cancel one of its earlier requests: posts `op` `cancel` and the request id to the partner's route
@@ -74,14 +87,14 @@ final class PartnerClient {
                               case .cancelled: return ("\(name): Cancellation requested", "\(name): Request cancelled", .ok)
                               case .declined: return ("\(name): Cancellation requested", "\(name): Cancellation declined", .declined)
                               }
-                          })
+                          }).map { $0.value }
     }
 
     // MARK: The exchange
 
     /// One request, one checked answer and the packets of the exchange under `flow`. Recording never changes the result.
     private func call<Value>(path: String, body: [String: Any], flow: UUID, read: (Data) -> Value?,
-                             words: (Value) -> (sent: String, received: String, status: ConnectionStatus)) async -> Result<Value, PartnerFailure> {
+                             words: (Value) -> (sent: String, received: String, status: ConnectionStatus)) async -> Result<Accepted<Value>, PartnerFailure> {
         guard config.hasProxy else { return .failure(.notSetUp) }
         guard !Task.isCancelled,
               let data = try? JSONSerialization.data(withJSONObject: body, options: [.sortedKeys, .withoutEscapingSlashes]),
@@ -90,8 +103,8 @@ final class PartnerClient {
         // A cancelled task records nothing: the outcome is not known.
         guard !Task.isCancelled else { return .failure(.other) }
         switch result {
-        case .success(let value):
-            let summaries = words(value)
+        case .success(let accepted):
+            let summaries = words(accepted.value)
             connections.record(from: .besir, to: .partner, kind: .partner, summary: summaries.sent, status: .ok, flowID: flow)
             connections.record(from: .partner, to: .besir, kind: .partner, summary: summaries.received, status: summaries.status, flowID: flow)
         case .failure(let failure):
@@ -104,7 +117,7 @@ final class PartnerClient {
     }
 
     /// The one place that sends, reads the status and handles a rejected token, for all three calls.
-    private func exchange<Value>(_ urlRequest: URLRequest, read: (Data) -> Value?) async -> Result<Value, PartnerFailure> {
+    private func exchange<Value>(_ urlRequest: URLRequest, read: (Data) -> Value?) async -> Result<Accepted<Value>, PartnerFailure> {
         let data: Data
         let response: URLResponse
         do {
@@ -115,7 +128,7 @@ final class PartnerClient {
         guard let http = response as? HTTPURLResponse else { return .failure(.other) }
         switch http.statusCode {
         case 200:
-            return read(data).map { .success($0) } ?? .failure(.other)
+            return read(data).map { .success((value: $0, data: data)) } ?? .failure(.other)
         case 401:
             return .failure(Self.isUnauthorizedBody(data) ? .tokenRejected : .other)
         default:

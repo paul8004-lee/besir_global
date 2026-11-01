@@ -984,20 +984,37 @@ final class AgentToolbox {
     /// The directory and one form for each entry; the partners whose form is good, in the directory's order. `symbols` asks the
     /// directory for the partners' symbols: only the hand path passes true, the model path passes false.
     func loadPartners(flow: UUID, symbols: Bool) async -> [PartnerSpec] {
-        let client = partnerClient()
-        var good: [PartnerSpec] = []
-        if case .success(let entries) = await client.directory(flow: flow, symbols: symbols) {
-            for entry in entries {
-                if case .success(let spec) = await client.form(of: entry, flow: flow) { good.append(spec) }
-            }
-        }
-        return good
+        await loadPartnerDirectory(flow: flow, symbols: symbols).specs
     }
 
-    /// The same load as `loadPartners`, with what the hand path needs besides the partners: how the load ended and the answer
-    /// bytes the readers accepted.
+    /// The one load: the directory, then one form for each entry. Besides the good partners it tells how the load ended and hands
+    /// back the answer bytes the readers accepted. Successful: the directory answered, no request failed offline and at least one
+    /// form is good. Offline: any request failed with the offline transport error, even after some forms were good. Failed: every
+    /// other load. A form that fails for another reason drops only its partner.
     func loadPartnerDirectory(flow: UUID, symbols: Bool) async -> PartnerLoad {
-        PartnerLoad(outcome: .failed, specs: [], raw: PartnerRaw(directory: Data(), forms: [:]))
+        let client = partnerClient()
+        var good: [PartnerSpec] = []
+        var raw = PartnerRaw(directory: Data(), forms: [:])
+        var offline = false
+        var listed = false
+        switch await client.directoryAnswer(flow: flow, symbols: symbols) {
+        case .success(let answer):
+            listed = true
+            raw.directory = answer.data
+            for entry in answer.value {
+                switch await client.formAnswer(of: entry, flow: flow) {
+                case .success(let form):
+                    good.append(form.value)
+                    raw.forms[entry.id] = form.data
+                case .failure(let failure):
+                    if failure == .offline { offline = true }
+                }
+            }
+        case .failure(let failure):
+            offline = failure == .offline
+        }
+        let outcome: PartnerLoad.Outcome = offline ? .offline : (listed && !good.isEmpty ? .loaded : .failed)
+        return PartnerLoad(outcome: outcome, specs: good, raw: raw)
     }
 
     /// `get_partners`: the directory and one form for each entry, run as the request in flight. It writes nothing; the partners
