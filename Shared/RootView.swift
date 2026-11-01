@@ -9,19 +9,21 @@ import SwiftUI
 /// 보는(`EventDetailView`) 식의 연계는 그대로 된다.
 struct RootView: View {
     enum Service: String, Identifiable, CaseIterable {
-        case onTime, full
+        case onTime, full, rich
         var id: String { rawValue }
 
         var title: String {
             switch self {
             case .onTime: return "be on-time sir"
             case .full: return "be full sir"
+            case .rich: return "be rich sir"
             }
         }
         var systemImage: String {
             switch self {
             case .onTime: return "clock.badge.checkmark"
             case .full: return "fork.knife"
+            case .rich: return "dollarsign.circle"
             }
         }
         /// 색은 서비스 구분에만 쓴다 — 이동=세이지, 식사=브라스.
@@ -29,6 +31,7 @@ struct RootView: View {
             switch self {
             case .onTime: return Theme.travel
             case .full: return Theme.activity
+            case .rich: return Theme.ink
             }
         }
     }
@@ -64,6 +67,8 @@ struct RootView: View {
                 ContentView(onBack: { service = nil })
             case .full:
                 FullSirView(onBack: { service = nil })
+            case .rich:
+                BeRichSirView(onBack: { service = nil })
             }
         }
         .sheet(isPresented: $showingChat, onDismiss: { Task { await chatHolder.session?.sheetDismissed() } }) {
