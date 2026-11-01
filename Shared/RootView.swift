@@ -34,6 +34,14 @@ struct RootView: View {
             case .rich: return Theme.ink
             }
         }
+        /// The colour of a row's key lines under its first one: the service's own ink, the deep tone of its tint.
+        var detailInk: Color {
+            switch self {
+            case .onTime: return Theme.travelInk
+            case .full: return Theme.activityInk
+            case .rich: return Theme.muted
+            }
+        }
     }
 
     @EnvironmentObject var store: Store
@@ -240,15 +248,21 @@ struct RootView: View {
             .padding(.top, 52)
             .padding(.bottom, 34)
 
-            VStack(spacing: 0) {
-                Divider().overlay(Theme.line)
-                ForEach(Service.allCases) { s in
-                    serviceCard(s)
-                    Divider().overlay(Theme.line)
+            // The clock is read here and nowhere else: the closure builds the rows from today's store each minute.
+            TimelineView(.everyMinute) { _ in
+                let rows = LobbyRows.rows(store: store, records: PartnerRecords.shared, ledger: BudgetLedger.shared,
+                                          now: Date(), calendar: Calendar.current)
+                ScrollView {
+                    // One block as wide as its widest row, centred; the last row stops above the besir AI circle.
+                    LobbyColumn {
+                        ForEach(rows) { row in
+                            if let s = Service(rawValue: row.id) { serviceCard(s, row) }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, FloatingCircle.diameter + 2 * FloatingCircle.inset)
                 }
             }
-
-            Spacer()
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -261,27 +275,59 @@ struct RootView: View {
         #endif
     }
 
-    private func serviceCard(_ s: Service) -> some View {
+    /// One lobby row: the icon beside the first line, the name, then the key lines. No line is cut off.
+    private func serviceCard(_ s: Service, _ row: LobbyRow) -> some View {
         Button {
             service = s
         } label: {
-            HStack(spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Image(systemName: s.systemImage)
                     .font(.system(size: 17))
                     .foregroundStyle(s.tint)
                     .frame(width: 24)
-                Text(s.title)
-                    .font(.title3)
-                    .foregroundStyle(Theme.ink)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(Theme.faint)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(row.title)
+                        .font(.title3)
+                        .foregroundStyle(Theme.ink)
+                    ForEach(Array(row.lines.enumerated()), id: \.offset) { index, line in
+                        Text(line)
+                            .font(index == 0 ? .subheadline.weight(.semibold) : .subheadline)
+                            .foregroundStyle(index == 0 ? Theme.ink : s.detailInk)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
             .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+    }
+}
+
+/// The lobby rows as one block: as wide as its widest row, at most the width offered, every row
+/// stacked on the same left edge and given the block's width (so a divider spans the block).
+private struct LobbyColumn: Layout {
+    private func width(_ proposal: ProposedViewSize, _ subviews: Subviews) -> CGFloat {
+        let widest = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+        return min(widest, proposal.width ?? widest)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let w = width(proposal, subviews)
+        let h = subviews.reduce(CGFloat(0)) { $0 + $1.sizeThatFits(ProposedViewSize(width: w, height: nil)).height }
+        return CGSize(width: w, height: h)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            subview.place(at: CGPoint(x: bounds.minX, y: y), anchor: .topLeading,
+                          proposal: ProposedViewSize(width: bounds.width, height: size.height))
+            y += size.height
+        }
     }
 }
 
