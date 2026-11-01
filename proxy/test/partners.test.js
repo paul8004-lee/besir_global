@@ -209,3 +209,57 @@ test("AC-PARTNERS-001 N03: the plumbing of the directory route", async () => {
   assert.equal(code.split("Example Tables").length - 1, 1);
   assert.equal(code.split("Example Delivery").length - 1, 1);
 });
+
+const SYMBOL_RULE = /^[a-z0-9][a-z0-9.]{0,39}$/;
+
+test("AC-FULLHAND-023 Y01: the symbols request answers each entry with a sixth key and keeps its own fault order", async () => {
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return new Response("{}");
+  };
+  try {
+    const first = await call({ op: "list", symbols: true });
+    assert.equal(first.status, 200);
+    assert.match(first.headers.get("content-type"), /application\/json/);
+    const text = await first.text();
+    const answer = JSON.parse(text);
+    assert.equal(Object.keys(answer).join(), "partners");
+    assert.ok(answer.partners.length >= 1);
+    for (const entry of answer.partners) {
+      assert.equal(Object.keys(entry).join(), "id,name,title,summary,route,symbol");
+      assert.equal(typeof entry.symbol, "string");
+      assert.match(entry.symbol, SYMBOL_RULE);
+    }
+    assert.equal(await (await call({ op: "list", symbols: true })).text(), text);
+
+    // The value of symbols: only the JSON true.
+    for (const value of [false, 1, "true", null]) {
+      await expectError(await call({ op: "list", symbols: value }), 400, "invalid_field");
+    }
+    await expectError(await call({ symbols: true }), 400, "missing_field");
+    await expectError(await call({ op: "list", symbols: true, x: 1 }), 400, "unknown_field");
+    await expectError(await call({ op: "fields", symbols: true }), 400, "invalid_field");
+
+    // The order: a key outside op and symbols, then no op, then the op value, then the symbols value.
+    await expectError(await call({ symbols: false }), 400, "missing_field");
+    await expectError(await call({ op: "list", symbols: false, x: 1 }), 400, "unknown_field");
+    await expectError(await call({ op: "fields", symbols: false }), 400, "invalid_field");
+    assert.equal(calls, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("AC-FULLHAND-023 Y02: the plain answer is unchanged and the symbols answer is the same list", async () => {
+  const plainText = await (await call({ op: "list" })).text();
+  const plain = JSON.parse(plainText);
+  for (const entry of plain.partners) {
+    assert.equal(Object.keys(entry).join(), "id,name,title,summary,route");
+  }
+  assert.equal(plainText.includes('"symbol"'), false);
+  const withSymbols = await (await call({ op: "list", symbols: true })).json();
+  for (const entry of withSymbols.partners) delete entry.symbol;
+  assert.deepEqual(withSymbols, plain);
+  assert.equal(JSON.stringify(withSymbols), plainText);
+});
