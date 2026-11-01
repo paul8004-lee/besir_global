@@ -16,6 +16,6 @@ final class PathReachability: NetworkReachability, @unchecked Sendable {
 
     /// The rule: only `unsatisfied` is offline. Not reported yet (nil) and every other status are not.
     static func isOffline(_ status: NWPath.Status?) -> Bool {
-        false
+        status == .unsatisfied
     }
 }

@@ -44,12 +44,20 @@ struct PartnerKeep {
     /// The keep the app uses. Under tests `AppConfig.supportDirectory` is a throw-away folder.
     static let shared = PartnerKeep(fileURL: PartnerKeep.defaultURL)
 
-    /// The kept partners, or nil for "never loaded".
+    /// The kept partners, or nil for "never loaded": no file, a file that does not decode, a directory the reader refuses, or no
+    /// partner left. A partner whose stored form no longer passes the reader is left out. Only the two readers describe a partner.
     func read() -> [PartnerSpec]? {
-        nil
+        guard let data = try? Data(contentsOf: fileURL), let raw = try? JSONDecoder().decode(PartnerRaw.self, from: data),
+              let entries = PartnerEntry.list(from: raw.directory, symbols: true) else { return nil }
+        let specs = entries.compactMap { entry in raw.forms[entry.id].flatMap { PartnerSpec.form(from: $0, entry: entry) } }
+        return specs.isEmpty ? nil : specs
     }
 
-    /// Replaces the file with `raw`.
+    /// Replaces the file with `raw`. A failed write leaves the file as it was and is not reported.
     func save(_ raw: PartnerRaw) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        guard let data = try? encoder.encode(raw) else { return }
+        try? write(data, fileURL)
     }
 }
