@@ -22,9 +22,9 @@ struct NumberBounds: Equatable {
     }
 
     /// The highest number a stepper can reach: the field's own end, never above the ceiling.
-    var top: Int { 0 }
+    var top: Int { min(highest ?? Self.writableCeiling, Self.writableCeiling) }
 
-    func contains(_ number: Int) -> Bool { false }
+    func contains(_ number: Int) -> Bool { number >= lowest && number <= top }
 }
 
 struct NumberStepperRule: Equatable {
@@ -38,27 +38,45 @@ struct NumberStepperRule: Equatable {
     }
 
     /// The value when it lies inside the bounds, else nil: a value outside the bounds reads as blank in every decision below.
-    func normalized(_ value: Int?) -> Int? { value }
+    func normalized(_ value: Int?) -> Int? {
+        guard let value, bounds.contains(value) else { return nil }
+        return value
+    }
 
-    func canIncrease(from value: Int?) -> Bool { false }
+    func canIncrease(from value: Int?) -> Bool {
+        guard let number = normalized(value) else { return true }
+        return number < bounds.top
+    }
 
-    func canDecrease(from value: Int?) -> Bool { false }
+    func canDecrease(from value: Int?) -> Bool {
+        guard let number = normalized(value) else { return false }
+        return number > bounds.lowest || allowsBlank
+    }
 
-    func increased(from value: Int?) -> Int? { value }
+    func increased(from value: Int?) -> Int? {
+        guard let number = normalized(value) else { return bounds.lowest }
+        // The comparison comes before the addition, so nothing overflows and no number past the top is produced.
+        return number < bounds.top ? number + 1 : number
+    }
 
-    func decreased(from value: Int?) -> Int? { value }
+    func decreased(from value: Int?) -> Int? {
+        guard let number = normalized(value) else { return nil }
+        if number > bounds.lowest { return number - 1 }
+        return allowsBlank ? nil : bounds.lowest
+    }
 }
 
 /// The words of the stepper. The view writes none of its own.
 enum NumberStepperText {
-    static let blank = String()
-    static let blankSpoken = String()
+    /// An en dash stands for no value.
+    static let blank = "\u{2013}"
+    static let blankSpoken = "No value"
 
-    static func decrease(_ label: String) -> String { String() }
+    static func decrease(_ label: String) -> String { "Decrease \(label)" }
 
-    static func increase(_ label: String) -> String { String() }
+    static func increase(_ label: String) -> String { "Increase \(label)" }
 
-    static func shown(_ value: Int?) -> String { String() }
+    static func shown(_ value: Int?) -> String { value.map { String($0) } ?? blank }
 
-    static func spoken(_ value: Int?) -> String { String() }
+    static func spoken(_ value: Int?) -> String { value.map { String($0) } ?? blankSpoken }
 }

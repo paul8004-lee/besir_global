@@ -11,19 +11,19 @@ enum AgentPartner {
     static let cardSwitchLabel = "Add to schedule"
     static let cardOnWord = "Add"
     static let cardOffWord = "Don't Add"
-    static let cardLengthKey = "schedule-length"
-    /// The unit is part of the label; the label names the row and its unit and nothing else.
-    static let cardLengthLabel = "Length (min)"
+    /// The default length of an entry in minutes: the seed of the `End` row, and the length when the form has no time field.
     static let lengthInitial = 60
-    static let lengthRange = 5...720
-    static let lengthDigits = 3
     /// The `End` row of the schedule choice replaces the length row (SPEC-NUMSTEPPER-001). Hyphenated, like the other keys.
     static let cardEndKey = "schedule-end"
     static let cardEndLabel = "End"
 
     /// The length of the entry in minutes, from the first time field to `End`: nil unless both are present and the span is 1 to
     /// 1440 minutes (the 24 hours the end wheel covers).
-    static func lengthMinutes(start: Date?, end: Date?) -> Int? { nil }
+    static func lengthMinutes(start: Date?, end: Date?) -> Int? {
+        guard let start, let end else { return nil }
+        let minutes = Int((end.timeIntervalSince(start) / 60).rounded())
+        return (1...1440).contains(minutes) ? minutes : nil
+    }
     /// The travel group nested in the schedule choice: a switch that starts off, and while it is on the place the user leaves from
     /// and the mode. The entry's own place is the leg's destination, so there is no row for it. Hyphenated keys, like the others.
     static let cardTravelKey = "schedule-travel"
@@ -68,11 +68,11 @@ enum AgentPartner {
     /// `<name> - Simulated`, the last line of the card.
     static func partnerLine(_ name: String) -> String { "\(name) - Simulated" }
 
-    /// The rows of the app's own schedule choice: the switch (on, inferred) and, while it is on, the length of the entry and the
-    /// travel switch (off, inferred). While travel is on its rows are `Leave from` (the device position `origin` as the first
+    /// The rows of the app's own schedule choice: the switch (on, inferred) and, while it is on, the `End` of the entry (a time row
+    /// the card model seeds from the form's first time field) and the travel switch (off, inferred). While travel is on its rows are `Leave from` (the device position `origin` as the first
     /// value, blank without one) and `Travel mode` (blank: the app does not guess a mode).
     static func scheduleRow(origin: Place?) -> AgentFieldRow {
-        let length = AgentFieldSpec(key: cardLengthKey, kind: .number, label: cardLengthLabel, limit: lengthDigits, range: lengthRange)
+        let end = AgentFieldSpec(key: cardEndKey, kind: .time, label: cardEndLabel, isEndOfFirstTime: true)
         let choice = AgentFieldSpec.onOff(key: cardSwitchKey, label: cardSwitchLabel, on: cardOnWord, off: cardOffWord)
         let from = AgentFieldSpec(key: cardFromKey, kind: .place, label: cardFromLabel)
         let mode = AgentFieldSpec(key: cardModeKey, kind: .pickOne, label: cardModeLabel,
@@ -82,7 +82,7 @@ enum AgentPartner {
             .field(from, value: origin.map { .place($0) }, source: .inferred),
             .field(mode, value: nil, source: .blank)])
         return .switchField(choice, value: .flag(true), source: .inferred,
-                            dependents: [.field(length, value: .number(lengthInitial), source: .inferred), travelRow])
+                            dependents: [.field(end, value: nil, source: .blank), travelRow])
     }
 
     /// The result items for the model, each `{name, kind, value}` in the partner's order: a time as its text, money in dollars
