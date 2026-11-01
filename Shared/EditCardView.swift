@@ -120,6 +120,7 @@ struct EditCardView: View {
             for f in card.fields where f.kind == .place && f.startsOpen {
                 placeOpen.insert(f.id)
                 if let seed = f.searchSeed { draft[f.id] = seed }
+                if let seed = PlaceLine.searchOnAppear(f) { actions.searchPlaces(f.id, seed) }
             }
         }
     }
@@ -140,17 +141,20 @@ struct EditCardView: View {
         VStack(alignment: .leading, spacing: 6) {
             // 줄 이름 옆의 진행 표시 — 화면 소유 상태가 이 줄에서 일하는 중임을 알린다.
             // 장소 검색의 "찾는 중…"과 같은 문법이라 두 진행이 한 카드에서 같게 읽힌다.
-            HStack(spacing: 6) {
-                Text(field.label)
-                if field.busy {
-                    // 이름 없는 스피너는 VoiceOver에서 소리만 나고 무엇이 진행 중인지 안 들린다 —
-                    // 줄 컨테이너(.contain)가 줄 이름 뒤에 이 문구를 이어 읽는다.
-                    ProgressView().controlSize(.small)
-                        .accessibilityLabel("In progress")
+            // A stepper row carries its own label on its line, so it has no header here.
+            if field.stepper == nil {
+                HStack(spacing: 6) {
+                    Text(field.label)
+                    if field.busy {
+                        // 이름 없는 스피너는 VoiceOver에서 소리만 나고 무엇이 진행 중인지 안 들린다 —
+                        // 줄 컨테이너(.contain)가 줄 이름 뒤에 이 문구를 이어 읽는다.
+                        ProgressView().controlSize(.small)
+                            .accessibilityLabel("In progress")
+                    }
                 }
+                .font(.caption)
+                .foregroundStyle(Theme.faint)
             }
-            .font(.caption)
-            .foregroundStyle(Theme.faint)
 
             // 값이 차 있는데 앱이 풀지 못해 뜬 줄에만 붙는다. 줄 이름만 있으면 "말한 적 없는 값"을
             // 묻는 줄과 구분되지 않아, 방금 "회사"라고 말한 사용자가 왜 또 묻는지 알 수 없다(결함 O).
@@ -171,6 +175,10 @@ struct EditCardView: View {
                 // 장소 줄은 칩 줄이 아니라 검색창 하나와 목록이다(REQ-003) — 값은 목록의 행을
                 // 탭해 정한다. 네 편집 화면이 같은 카드를 쓰므로 AI 채팅 카드도 같은 문법이 된다.
                 placeLine(field)
+            } else if field.stepper != nil {
+                // A number row of a partner card: a minus/plus stepper, no text box and no keyboard. This arm comes before the
+                // title arm because a number row is also a title row.
+                stepperLine(field)
             } else if field.kind == .title {
                 // 제목 줄은 칩도 확인 단추도 없는 칸 하나다(REQ-001) — 확정 동작을 거치지 않고
                 // 매 입력이 값이 된다.
@@ -404,6 +412,20 @@ struct EditCardView: View {
     @ViewBuilder
     private func named<Chip: View>(_ chip: Chip, _ name: String?) -> some View {
         if let name { chip.accessibilityLabel(name) } else { chip }
+    }
+
+    // MARK: Stepper line (SPEC-NUMSTEPPER-001)
+
+    /// The stepper of a number row. A change closes the other open editors, as a tap on a chip does, and goes through the same
+    /// `setTitleText` writer a typed row uses; no value is the empty text.
+    @ViewBuilder
+    private func stepperLine(_ field: EditField) -> some View {
+        if let rule = field.stepper {
+            NumberStepperRow(label: field.label, value: field.chosen.flatMap { Int($0) }, rule: rule) { new in
+                collapseOtherEditors()
+                actions.setTitleText?(field.id, new.map { String($0) } ?? "")
+            }
+        }
     }
 
     // MARK: 제목 줄 — 입력칸 하나(REQ-001, S1)

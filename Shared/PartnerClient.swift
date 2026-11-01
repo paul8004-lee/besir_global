@@ -20,10 +20,13 @@ final class PartnerClient {
 
     var isConfigured: Bool { config.hasProxy }
 
-    /// Asks the directory route which partners there are. Records `Partners requested` and `Partners received`.
-    func directory(flow: UUID) async -> Result<[PartnerEntry], PartnerFailure> {
-        await call(path: PartnerEntry.directoryPath, body: ["op": "list"], flow: flow, read: { PartnerEntry.list(from: $0) },
-                   words: { _ in ("Partners requested", "Partners received", .ok) })
+    /// Asks the directory route which partners there are. Records `Partners requested` and `Partners received`. `symbols` adds
+    /// `"symbols": true` to the request and reads the answer that may carry each partner's symbol; off, the request and the reader
+    /// are the plain ones. Neither the symbols nor the answer reach the log.
+    func directory(flow: UUID, symbols: Bool = false) async -> Result<[PartnerEntry], PartnerFailure> {
+        let body: [String: Any] = symbols ? ["op": "list", "symbols": true] : ["op": "list"]
+        return await call(path: PartnerEntry.directoryPath, body: body, flow: flow, read: { PartnerEntry.list(from: $0, symbols: symbols) },
+                          words: { _ in ("Partners requested", "Partners received", .ok) })
     }
 
     /// Asks an entry's route for its form. Records `<name>: Fields requested` and `<name>: Fields received`.

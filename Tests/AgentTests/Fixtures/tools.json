@@ -226,5 +226,21 @@
       "required": ["partner"],
       "additionalProperties": false
     }
+  },
+  {
+    "type": "function",
+    "name": "cancel_booking",
+    "description": "Cancel the simulated partner request, such as a table booking, that made an existing schedule item, and remove that item from the schedule when the partner cancels it. Call it only after the user chose in the chat to cancel it. The user confirms on a card before anything is sent. The partner is simulated: always call it simulated.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Event id returned by list_activities."
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    }
   }
 ]

@@ -392,6 +392,13 @@ enum PlaceLine {
         return seed
     }
 
+    /// The seed a partner row searches the moment its card appears: a row that starts open and is the partner's, by the same rule as
+    /// `seedToSearchOnOpen`; else nil.
+    static func searchOnAppear(_ field: EditField) -> String? {
+        guard field.startsOpen, field.partnerLookup else { return nil }
+        return seedToSearchOnOpen(seed: field.searchSeed, lookup: field.lookup)
+    }
+
     /// The note a partner row shows for its lookup: the no-match words for an empty answer, the failed words for a failed one,
     /// nil for any other state and for a row that is not the partner's.
     static func partnerNote(partnerLookup: Bool, lookup: EditField.Lookup) -> String? {
@@ -591,6 +598,9 @@ enum PlaceLine {
     var placeholder: String? = nil
     /// The repeatable row group this field belongs to; nil for every field that is not a member of one.
     var rowID: UUID? = nil
+    /// Set only for a number row of a partner card (SPEC-NUMSTEPPER-001): the view draws a minus/plus stepper in place of the text
+    /// box, and the row stays `Kind.title`. nil for every other row.
+    var stepper: NumberStepperRule? = nil
 
     var chosenLabel: String? {
         guard let chosen else { return nil }

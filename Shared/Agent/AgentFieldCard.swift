@@ -68,9 +68,11 @@ struct AgentFieldSpec: Equatable {
     /// Place only: true when the partner resolves the field itself, so the card lists the partner's candidates (never besir's own
     /// place search) and the value is the candidate the user taps.
     var partnerLookup = false
+    /// Time only: true for the app's own `End` row of the schedule choice, which follows the card's first time field.
+    var isEndOfFirstTime = false
 
     init(key: String, kind: AgentFieldKind, label: String, options: [AgentFieldOption] = [], limit: Int? = nil,
-         isOptional: Bool = false, range: ClosedRange<Int>? = nil, partnerLookup: Bool = false) {
+         isOptional: Bool = false, range: ClosedRange<Int>? = nil, partnerLookup: Bool = false, isEndOfFirstTime: Bool = false) {
         self.key = key
         self.kind = kind
         self.label = label
@@ -79,7 +81,14 @@ struct AgentFieldSpec: Equatable {
         self.isOptional = isOptional
         self.range = range
         self.partnerLookup = partnerLookup
+        self.isEndOfFirstTime = isEndOfFirstTime
     }
+
+    /// What a number field with no range of its own may hold: from 1, with no highest value.
+    static let defaultNumberBounds = NumberBounds(lowest: 1)
+
+    /// The bounds of a number field: its own range, else the default.
+    var bounds: NumberBounds { range.map { NumberBounds($0) } ?? Self.defaultNumberBounds }
 
     /// The seed of a field the partner named; nil when its chips do not fit its kind.
     init?(_ field: PartnerField) {
@@ -245,6 +254,9 @@ indirect enum AgentFieldRow {
     private let partnerCandidates: (@MainActor (String, String) async -> PlaceLookup)?
     private let now: () -> Date
     private var debouncer = PlaceSearchDebouncer()
+    /// The app's own `End` row and the partner's first time field it follows; both nil when the card has no `End` row.
+    private var endKey: String?
+    private var endBaseKey: String?
 
     /// `search` answers a place query (the caller decides the provider and the search centre); `now` is the clock the dial
     /// reads when its owner passes none. `candidates` answers the lookup of a place row the partner resolves itself, given the
@@ -259,20 +271,21 @@ indirect enum AgentFieldRow {
         card = EditCard(fields: [])
         var lineCount = 0
         layout = nodes(for: rows, lines: &lineCount)
+        resolveEnd()
         card = EditCard(fields: fields(for: layout))
     }
 
     // MARK: Reading
 
-    /// Every row on the card is chosen except the optional ones, and no number lies outside its range. A row that is off the card
-    /// (the dependents of a switch that is off) is not looked at. A number outside its range is never ready, optional or not.
+    /// Every row on the card is chosen except the optional ones, and no number lies outside its bounds. A row that is off the card
+    /// (the dependents of a switch that is off) is not looked at. A number outside its bounds is never ready, optional or not.
     var isReady: Bool {
         let controls = controlKeys
         return card.fields.allSatisfy { field in
             // A control row holds no value; it is a chip the user taps, never a field that blocks the card.
             if controls.contains(field.key) { return true }
             guard let slot = slots[field.key] else { return field.chosen != nil }
-            if case .number(let number)? = slot.value, let range = slot.spec.range, !range.contains(number) { return false }
+            if case .number(let number)? = slot.value, !slot.spec.bounds.contains(number) { return false }
             return slot.spec.isOptional || field.chosen != nil
         }
     }
@@ -422,12 +435,76 @@ indirect enum AgentFieldRow {
     @discardableResult
     func chooseTime(_ key: String, _ date: Date) -> Bool {
         guard !isFrozen, let index = index(of: key), var slot = slots[key], slot.spec.kind == .time else { return false }
+        // The `End` row takes only a time after its base and within the wheel's 24 hours; anything else changes nothing.
+        if slot.spec.isEndOfFirstTime {
+            guard let wheel = card.fields[index].endWheel, let base = card.endWheelBase(for: card.fields[index]),
+                  wheel.accepts(end: date, base: base) else {
+                card.fields[index].note = EndWheelSpec.notAfterBaseMessage
+                return false
+            }
+        }
+        let before = slot.value
         slot.value = .time(date)
         slot.source = .entered
         slots[key] = slot
         card.fields[index].chosen = BesirTime.isoFormatter.string(from: date)
         card.fields[index].note = nil
+        if key == endBaseKey { moveEnd(from: before, to: date) }
         return true
+    }
+
+    /// The `End` row follows its base: it keeps its span, or takes the base plus the default length while it holds no value. It is
+    /// written on its slot whether or not its row is on the card (the schedule switch off removes the row), so turning the switch
+    /// on again never shows an `End` before its base.
+    private func moveEnd(from before: AgentFieldValue?, to newBase: Date) {
+        guard let endKey, var end = slots[endKey] else { return }
+        let moved: Date
+        if case .time(let oldEnd)? = end.value, case .time(let oldBase)? = before {
+            moved = EndWheelSpec.followingEnd(oldStart: oldBase, oldEnd: oldEnd, newStart: newBase)
+        } else {
+            moved = newBase.addingTimeInterval(TimeInterval(AgentPartner.lengthInitial * 60))
+            end.source = .inferred
+        }
+        end.value = .time(moved)
+        slots[endKey] = end
+        if let at = index(of: endKey) {
+            card.fields[at].chosen = BesirTime.isoFormatter.string(from: moved)
+            card.fields[at].note = nil
+        }
+    }
+
+    /// Finds the `End` row, if the card has one, and the first time field of the partner's own order it follows. A card with no
+    /// time field loses the row; otherwise the row is seeded from the base's value, and stays blank while the base is blank.
+    private func resolveEnd() {
+        guard let end = layoutKeys.first(where: { slots[$0]?.spec.isEndOfFirstTime == true }) else { return }
+        let base = layout.compactMap { node -> String? in
+            guard case .field(let key) = node, let spec = slots[key]?.spec, spec.kind == .time, !spec.isEndOfFirstTime else { return nil }
+            return key
+        }.first
+        guard let base else {
+            layout = removing(end, from: layout)
+            slots.removeValue(forKey: end)
+            return
+        }
+        endKey = end
+        endBaseKey = base
+        if case .time(let start)? = slots[base]?.value, var row = slots[end] {
+            row.value = .time(start.addingTimeInterval(TimeInterval(AgentPartner.lengthInitial * 60)))
+            row.source = .inferred
+            slots[end] = row
+        }
+    }
+
+    private var layoutKeys: [String] { Array(keys(in: layout)) }
+
+    private func removing(_ key: String, from nodes: [Node]) -> [Node] {
+        nodes.compactMap { node in
+            switch node {
+            case .field(let found) where found == key: return nil
+            case .group(let groupKey, let dependents): return .group(key: groupKey, dependents: removing(key, from: dependents))
+            default: return node
+            }
+        }
     }
 
     /// Closing (or opening) a time wheel: a row with a value keeps it; a row with none takes the seed the wheel shows, which
@@ -440,8 +517,10 @@ indirect enum AgentFieldRow {
             return true
         }
         let field = card.fields[index]
-        guard let seed = card.dialSeed(for: field, base: nil, now: at ?? now()) else { return false }
-        return chooseTime(key, card.dialCommitCandidate(pick: seed, field: field, base: nil))
+        // An `End` row reads its base from the card; every other time row has none.
+        let base = card.endWheelBase(for: field)
+        guard let seed = card.dialSeed(for: field, base: base, now: at ?? now()) else { return false }
+        return chooseTime(key, card.dialCommitCandidate(pick: seed, field: field, base: base))
     }
 
     /// A query typed in a place row: the debouncer decides whether, when and with what text the search closure is called.
@@ -675,7 +754,7 @@ indirect enum AgentFieldRow {
         case (.onOff, .flag?):
             kept = value
         case (.number, .number(let number)?):
-            kept = number >= 0 && String(number).count <= min(spec.limit ?? Self.maxNumberDigits, Self.maxNumberDigits) ? value : nil
+            kept = spec.bounds.contains(number) && String(number).count <= min(spec.limit ?? Self.maxNumberDigits, Self.maxNumberDigits) ? value : nil
         default:
             kept = nil
         }
@@ -706,8 +785,11 @@ indirect enum AgentFieldRow {
         let chosen = chosenText(slot.value)
         switch spec.kind {
         case .text, .number:
-            return EditField(key: key, kind: .title, label: spec.label, options: [], allowsCustom: true,
-                             chosen: chosen.map { $0.trimmingCharacters(in: .whitespaces) }, placeholder: String())
+            var row = EditField(key: key, kind: .title, label: spec.label, options: [], allowsCustom: true,
+                                chosen: chosen.map { $0.trimmingCharacters(in: .whitespaces) }, placeholder: String())
+            // A number row is drawn as a minus/plus stepper; it stays a typed row for the card model's single digit writer.
+            if spec.kind == .number { row.stepper = NumberStepperRule(bounds: spec.bounds, allowsBlank: spec.isOptional) }
+            return row
         case .place:
             guard spec.partnerLookup else {
                 return EditField(key: key, kind: .place, label: spec.label, options: favoriteOptions, allowsCustom: true, chosen: chosen)
@@ -717,9 +799,15 @@ indirect enum AgentFieldRow {
             if case .place(let place)? = slot.value { row.chosen = Self.chosenText(of: place) }
             row.partnerLookup = true
             row.searchSeed = slot.seed
+            // A seeded row starts open, so the card shows which place it is for and the view searches the seed as the card appears.
+            row.startsOpen = slot.seed != nil
             return row
         case .time:
-            return EditField(key: key, kind: .datetime, label: spec.label, options: [], allowsCustom: false, chosen: chosen, anchored: false)
+            var row = EditField(key: key, kind: .datetime, label: spec.label, options: [], allowsCustom: false, chosen: chosen, anchored: false)
+            if spec.isEndOfFirstTime, let base = endBaseKey {
+                row.endWheel = EndWheelSpec(baseKey: base, capsAt24Hours: true, baseHint: EndWheelSpec.manualEndHint)
+            }
+            return row
         case .pickOne:
             return EditField(key: key, kind: .toggle, label: spec.label,
                              options: spec.options.map { EditField.Option(label: $0.label, value: $0.id) }, allowsCustom: false, chosen: chosen)
