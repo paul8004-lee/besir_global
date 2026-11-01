@@ -131,10 +131,7 @@ struct RootView: View {
     private func runShareImport() async {
         let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
         await shareImport.pass(vision: client, canHand: { SnapEntry.shareMayHand(canSend: chatHolder.session?.canSend ?? true, coverOpen: showingSnap) },
-                              holdForPlan: true, hand: { text, shown in
-            openChat()
-            return SharedImport.give(message: text, shown: shown, to: chatHolder.session)
-        })
+                              holdForPlan: true, hand: SharedImport.chatHandOff(holder: chatHolder, openChat: openChat))
     }
 
     /// The Plan my day button: with a session that cannot take a message the tap only opens the chat (SPEC-PLANDAY-001).
