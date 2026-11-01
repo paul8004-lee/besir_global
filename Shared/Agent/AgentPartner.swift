@@ -33,9 +33,9 @@ enum AgentPartner {
     static let cardModeKey = "schedule-mode"
     static let cardModeLabel = "Travel mode"
 
-    /// The one chip that adds a row to a repeatable group: the symbol it shows and the name VoiceOver reads.
-    static let groupAddSymbol = "+"
-    static let groupAddName = "Add another"
+    /// The word the total line of a priced list group shows (SPEC-MENULIST-001): the wire carries no word for it, so it is
+    /// besir's own, passed in the group's seed as the chip's words were.
+    static let menuTotalLabel = "Total"
 
     static let maxTitle = 80
     static let simulatedSuffix = " (Simulated)"

@@ -22,7 +22,8 @@ const VALUE_KEYS = ["restaurant", "items", "arrive_at", "address", "card_id"];
 const ROW_KEYS = ["item", "quantity"];
 const OPEN_MINUTE = 600;
 const CLOSE_MINUTE = 1320;
-// The partner's fixed tables: the one place the menu, the cards and the fee exist. The menu prices never reach the wire.
+// The partner's fixed tables: the one place the menu, the cards and the fee exist. The fields answer and the total are both
+// built from these tables, so the wired prices and the partner's own total cannot diverge (SPEC-MENULIST-001).
 const MENU = [
   { id: "ramen", name: "Ramen", price_cents: 1400 },
   { id: "gyoza", name: "Gyoza", price_cents: 700 },
@@ -37,7 +38,8 @@ const CARDS = [
 ];
 const FEE_CENTS = 500;
 // The form, in the order the app draws it. Only `address` is marked for lookup (the marker is written last), and the
-// options of the item and card fields are built from the tables the submit check reads, so they cannot diverge.
+// options of the item and card fields and the group's fee are built from the tables the submit check reads, so they cannot
+// diverge (SPEC-MENULIST-001: an item option is `id`, `label`, `price_cents`; the group carries `fee_cents` after `repeat`).
 const DELIVERY_FIELDS = [
   { key: "restaurant", kind: "text", label: "Restaurant" },
   {
@@ -45,10 +47,11 @@ const DELIVERY_FIELDS = [
     kind: "group",
     label: "Items",
     fields: [
-      { key: "item", kind: "pick_one", label: "Item", options: MENU.map(({ id, name }) => ({ id, label: name })) },
+      { key: "item", kind: "pick_one", label: "Item", options: MENU.map(({ id, name, price_cents }) => ({ id, label: name, price_cents })) },
       { key: "quantity", kind: "number", label: "Quantity" },
     ],
     repeat: 6,
+    fee_cents: FEE_CENTS,
   },
   { key: "arrive_at", kind: "time", label: "Arrival" },
   { key: "address", kind: "place", label: "Delivery place", lookup: true },

@@ -851,23 +851,30 @@ final class AgentFieldCardTests: XCTestCase {
             PartnerField(key: "s", kind: .onOff, label: "Switch", options: [PartnerOption(id: "y", label: "Yes"), PartnerOption(id: "n", label: "No")]),
             PartnerField(key: "n", kind: .number, label: "Count", options: [])]
         var rows: [AgentFieldRow] = try partnerFields.map { .field(try XCTUnwrap(AgentFieldSpec($0)), value: nil, source: .blank) }
-        rows.append(.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil), rowSeeds(item: nil, quantity: nil, note: nil)]))
+        let items = AgentFieldGroup(key: "items", label: "Items",
+                                    members: [AgentFieldSpec(key: "item", kind: .pickOne, label: "Item",
+                                                             options: [AgentFieldOption(id: "ramen", label: "Ramen"),
+                                                                       AgentFieldOption(id: "gyoza", label: "Gyoza")]),
+                                              AgentFieldSpec(key: "quantity", kind: .number, label: "Quantity")],
+                                    maxRows: 3)
+        rows.append(.repeating(items, rows: [
+            [seed(.option("ramen"), .stated), seed(.number(2), .stated)],
+            [seed(nil, .blank), seed(nil, .blank)]]))
         rows.append(AgentPartner.scheduleRow(origin: nil))
         let model = make(rows)
         XCTAssertGreaterThan(model.card.fields.count, 10, "positive: the card was built")
-        let numberKeys: Set<String> = ["n", "items.1.quantity", "items.2.quantity"]
+        let numberKeys: Set<String> = ["n"]
         for field in model.card.fields {
             XCTAssertEqual(field.stepper != nil, numberKeys.contains(field.key), field.key)
         }
         XCTAssertNotNil(model.field("n")?.stepper, "positive: the scalar number row has a stepper")
-        XCTAssertNotNil(model.field("items.2.quantity")?.stepper, "positive: a group's number member has one in every row")
+        // A line of a list group is not a stepper row: it is drawn as a menu line (SPEC-MENULIST-001, spec.md 1.5).
+        for key in ["items.1.quantity", "items.2.quantity"] {
+            XCTAssertNotNil(model.field(key)?.menuLine, key)
+            XCTAssertNil(model.field(key)?.stepper, key)
+        }
         XCTAssertNotNil(model.field(AgentPartner.cardEndKey), "premise: the End row is on the card")
         XCTAssertNil(model.field(AgentPartner.cardEndKey)?.stepper)
-        // A row added by the control chip starts blank and has a stepper.
-        XCTAssertTrue(model.chooseOption(AgentFieldCard.controlKey("items"), "add"))
-        let added = try XCTUnwrap(model.field("items.3.quantity"))
-        XCTAssertNotNil(added.stepper)
-        XCTAssertNil(added.chosen)
     }
 
     func testNUMSTEP_T08_TheStepperStartsAtTheValueThatWasGiven() throws {
@@ -1577,256 +1584,199 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(model.field("venue")).options.isEmpty)
     }
 
-    // MARK: GROUP the repeatable row group (card t102, SPEC-GROUPFIELD-001)
-
-    /// The chip member of the `items` group: six options, so a card that builds only some of them is caught.
-    private var groupItem: AgentFieldSpec {
-        AgentFieldSpec(key: "item", kind: .pickOne, label: "Item",
-                       options: [AgentFieldOption(id: "ramen", label: "Ramen"), AgentFieldOption(id: "gyoza", label: "Gyoza"),
-                                 AgentFieldOption(id: "curry", label: "Curry rice"), AgentFieldOption(id: "pizza", label: "Cheese pizza"),
-                                 AgentFieldOption(id: "salad", label: "Garden salad"), AgentFieldOption(id: "lemonade", label: "Lemonade")])
-    }
-    private var groupQuantity: AgentFieldSpec { AgentFieldSpec(key: "quantity", kind: .number, label: "Quantity") }
-    private var groupNote: AgentFieldSpec { AgentFieldSpec(key: "note", kind: .text, label: "Row note", isOptional: true) }
-
-    /// The `items` group of the GROUP tests with the test's own chip words, so a model that wrote its own words cannot pass.
-    private func itemsGroup(maxRows: Int = 3, key: String = "items", label: String = "Items") -> AgentFieldGroup {
-        AgentFieldGroup(key: key, label: label, members: [groupItem, groupQuantity, groupNote],
-                        maxRows: maxRows, addSymbol: "P", addName: "More rows")
-    }
+    // MARK: Seeds of the number stepper and menu list tests (cards t107, t106)
 
     private func seed(_ value: AgentFieldValue?, _ source: AgentFieldSource) -> AgentFieldSeed {
         AgentFieldSeed(value: value, source: source)
     }
 
-    /// One row of seeds in member order: item, quantity, note.
-    private func rowSeeds(item: String?, quantity: Int?, note: String?) -> [AgentFieldSeed] {
-        [seed(item.map { AgentFieldValue.option($0) }, item == nil ? .blank : .stated),
-         seed(quantity.map { AgentFieldValue.number($0) }, quantity == nil ? .blank : .stated),
-         seed(note.map { AgentFieldValue.text($0) }, note == nil ? .blank : .stated)]
+    // MARK: MENU LIST the list group (card t106, SPEC-MENULIST-001)
+
+    /// The list group of the tests: key `items`, label `Items`, total label `Sum`, an item member of four options (Ramen
+    /// 1400, Gyoza 700, Curry rice 1300, Cheese pizza 2500) and a count member, so a card that wrote its own key, member key
+    /// or word cannot pass.
+    private func menuGroup(maxRows: Int = 4, fee: Int? = 500, priced: Bool = true) -> AgentFieldGroup {
+        let options = [("ramen", "Ramen", 1400), ("gyoza", "Gyoza", 700), ("curry", "Curry rice", 1300), ("pizza", "Cheese pizza", 2500)]
+            .map { AgentFieldOption(id: $0.0, label: $0.1, priceCents: priced ? $0.2 : nil) }
+        return AgentFieldGroup(key: "items", label: "Items",
+                               members: [AgentFieldSpec(key: "item", kind: .pickOne, label: "Item", options: options),
+                                         AgentFieldSpec(key: "count", kind: .number, label: "How many")],
+                               maxRows: maxRows, feeCents: fee, totalLabel: "Sum")
     }
 
-    /// The keys of the given rows of the `items` group, each row's three members in member order, without the control row.
-    private func itemsKeys(_ rows: [Int], group: String = "items") -> [String] {
-        rows.flatMap { row in
-            [AgentFieldCard.rowKey(group, row, "item"), AgentFieldCard.rowKey(group, row, "quantity"), AgentFieldCard.rowKey(group, row, "note")]
+    /// One stated row per pair, in the member order of the group the rows are for.
+    private func menuSeeds(_ pairs: [(item: String?, quantity: Int?)], countFirst: Bool = false) -> [[AgentFieldSeed]] {
+        pairs.map { pair in
+            let item = seed(pair.item.map { AgentFieldValue.option($0) }, pair.item == nil ? .blank : .stated)
+            let count = seed(pair.quantity.map { AgentFieldValue.number($0) }, pair.quantity == nil ? .blank : .stated)
+            return countFirst ? [count, item] : [item, count]
         }
     }
 
-    private func itemsKeys(_ count: Int, group: String = "items") -> [String] { itemsKeys(Array(1...count), group: group) }
-
-    /// The rowID of one row of the `items` group, read the way the view reads it: from a field of the row.
-    private func rowID(_ row: Int, of model: AgentFieldCard, group: String = "items") -> UUID? {
-        model.field(AgentFieldCard.rowKey(group, row, "item"))?.rowID
-    }
-
-    func testGROUP_GM1_TheGroupBuildsRowKeysKindsTheControlRowAndEveryChipOption() throws {
-        let model = make([.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil),
-                                                          rowSeeds(item: "gyoza", quantity: 1, note: "no onions")])])
-        let expectedKeys = itemsKeys(2) + [AgentFieldCard.controlKey("items")]
+    func testMENULIST_T06_TheListHasALineForEachOptionInOrderWithItsPriceAndTheTotalLine() throws {
+        let model = make([.repeating(menuGroup(), rows: [])])
+        let expectedKeys = ["items.1.count", "items.2.count", "items.3.count", "items.4.count", "items.total"]
         XCTAssertEqual(keys(model), expectedKeys)
-        // Stop here on a card that built nothing, so the red of this test is exactly the keys failure.
+        // Stop here on a card that built another shape, so the red of this test is exactly the keys failure.
         guard keys(model) == expectedKeys else { return }
-        XCTAssertEqual(model.card.fields.map(\.kind), [.toggle, .title, .title, .toggle, .title, .title, .toggle])
-        XCTAssertEqual(model.card.fields.map(\.label), ["Item", "Quantity", "Row note", "Item", "Quantity", "Row note", "Items"])
-        XCTAssertEqual(model.values.option(AgentFieldCard.rowKey("items", 1, "item")), "ramen")
-        XCTAssertEqual(model.values.int(AgentFieldCard.rowKey("items", 2, "quantity")), 1)
-
-        // Five seed rows against a maximum of 3 build three rows, and at the maximum there is no control row; no seed row
-        // builds one blank row.
-        let clamped = make([.repeating(itemsGroup(maxRows: 3), rows: (1...5).map { rowSeeds(item: "ramen", quantity: $0, note: nil) })])
-        XCTAssertEqual(keys(clamped), itemsKeys(3))
-        let blank = make([.repeating(itemsGroup(), rows: [])])
-        XCTAssertEqual(keys(blank), itemsKeys(1) + [AgentFieldCard.controlKey("items")])
-
-        // The control row: a toggle with the group's label, nothing chosen, one option of the seed's own symbol and name.
-        let control = try XCTUnwrap(model.field(AgentFieldCard.controlKey("items")))
-        XCTAssertEqual(control.kind, .toggle)
-        XCTAssertEqual(control.label, "Items")
-        XCTAssertNil(control.chosen)
-        XCTAssertEqual(control.options.count, 1)
-        XCTAssertEqual(control.options.first?.value, "add")
-        XCTAssertEqual(control.options.first?.label, "P")
-        XCTAssertEqual(control.options.first?.accessibilityName, "More rows")
-
-        // No control row at the maximum, and none ever for a maximum of 1.
-        XCTAssertNil(make([.repeating(itemsGroup(maxRows: 3), rows: (1...3).map { rowSeeds(item: "ramen", quantity: $0, note: nil) })])
-            .field(AgentFieldCard.controlKey("items")))
-        XCTAssertNil(make([.repeating(itemsGroup(maxRows: 1), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil)])])
-            .field(AgentFieldCard.controlKey("items")))
-
-        // A chip field of any size builds every option in the partner's order, at the top level and inside a row.
-        for count in [6, 40, 500] {
-            let ids = (0..<count).map { "opt\($0)" }
-            let big = AgentFieldSpec(key: "pick_\(count)", kind: .pickOne, label: "Pick",
-                                     options: ids.map { AgentFieldOption(id: $0, label: "Option \($0)") })
-            XCTAssertEqual(make([.field(big, value: nil, source: .blank)]).field("pick_\(count)")?.options.map(\.value), ids, "\(count)")
+        XCTAssertEqual(model.card.fields.map(\.kind), [.title, .title, .title, .title, .readonly])
+        XCTAssertEqual(model.card.fields.map(\.label), ["Ramen", "Gyoza", "Curry rice", "Cheese pizza", "Sum"])
+        XCTAssertTrue(model.card.fields.prefix(4).allSatisfy { $0.chosen == nil }, "every line starts blank")
+        XCTAssertEqual(model.card.fields.prefix(4).compactMap(\.menuLine).map(\.price), ["$14.00", "$7.00", "$13.00", "$25.00"])
+        for field in model.card.fields.prefix(4) {
+            XCTAssertEqual(field.menuLine?.rule, NumberStepperRule(bounds: NumberBounds(lowest: 1), allowsBlank: true), field.key)
+            XCTAssertEqual(field.menuLine?.canAdd, true, field.key)
+            XCTAssertNil(field.stepper, "a line is not the number row of SPEC-NUMSTEPPER-001")
         }
-        XCTAssertEqual(model.field(AgentFieldCard.rowKey("items", 2, "item"))?.options.map(\.value), groupItem.options.map(\.id))
+        XCTAssertEqual(model.field("items.total")?.chosen, "$0.00")
+        XCTAssertFalse(keys(model).contains { $0.contains("controls") }, "no control row")
+        XCTAssertEqual(model.source(of: "items.2.item"), .inferred, "the item slot of a line exists")
+        XCTAssertEqual(model.values.rows(of: "items"), [])
+        XCTAssertFalse(model.isReady, "nothing is ordered")
 
-        // Each member prints as `label: value` (`label:` while blank); the control row prints no line.
-        XCTAssertEqual(model.lines, ["Order delivery", "Item: Ramen", "Quantity: 2", "Row note:",
-                                     "Item: Gyoza", "Quantity: 1", "Row note: no onions"])
+        // A second group of other keys and words, its count member declared first, builds its own lines in its own option
+        // order; rows seeded in that member order (count first, then item) start the line of the item each row names.
+        let dishes = AgentFieldGroup(key: "dishes", label: "Dishes",
+                                     members: [AgentFieldSpec(key: "n", kind: .number, label: "How many"),
+                                               AgentFieldSpec(key: "dish", kind: .pickOne, label: "Dish", options: [
+                                                AgentFieldOption(id: "sushi", label: "Sushi"),
+                                                AgentFieldOption(id: "pad", label: "Pad thai"),
+                                                AgentFieldOption(id: "bibim", label: "Bibimbap")])],
+                                     maxRows: 3, feeCents: nil, totalLabel: "Bill")
+        let second = make([.repeating(dishes, rows: menuSeeds([(item: "pad", quantity: 2), (item: "sushi", quantity: 5),
+                                                               (item: "pad", quantity: 1)], countFirst: true))])
+        XCTAssertEqual(keys(second), ["dishes.1.n", "dishes.2.n", "dishes.3.n"])
+        XCTAssertEqual(second.card.fields.map(\.label), ["Sushi", "Pad thai", "Bibimbap"], "the partner's option order")
+        XCTAssertEqual(second.values.int("dishes.1.n"), 5, "the first row naming an item decides its line")
+        XCTAssertEqual(second.values.int("dishes.2.n"), 2)
+        XCTAssertNil(second.values.int("dishes.3.n"), "the second pad row is ignored")
     }
 
-    func testGROUP_GM2_TheChipAddsRowsToTheMaximumAndTheFreezeRemovesTheControlRow() throws {
-        let control = AgentFieldCard.controlKey("items")
-        let model = make([.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil)])])
-        let firstIDs = itemsKeys(1).map { model.field($0)?.id }
-        let added = model.chooseOption(control, "add")
-        XCTAssertTrue(added, "the chip adds a second row")
-        // Stop here on a card that built nothing, so the red of this test is exactly the first add.
-        guard added else { return }
-        XCTAssertTrue(model.chooseOption(control, "add"), "the second add reaches the maximum")
-        XCTAssertEqual(keys(model), itemsKeys(3), "three rows numbered 1, 2 and 3, and the control row is gone at the maximum")
-        XCTAssertNil(model.field(control))
-        XCTAssertEqual(itemsKeys(1).map { model.field($0)?.id }, firstIDs, "the earlier rows keep their EditField ids")
-        XCTAssertFalse(model.chooseOption(control, "add"), "a third add changes nothing")
-        XCTAssertEqual(keys(model), itemsKeys(3))
+    func testMENULIST_T07_TheModelsRowsStartTheLinesOfTheirItemsAndEveryMisfitIsLeftBlank() throws {
+        let model = make([.repeating(menuGroup(), rows: menuSeeds([(item: "ramen", quantity: 2), (item: "curry", quantity: 1),
+                                                                    (item: "ramen", quantity: 5), (item: nil, quantity: 3),
+                                                                    (item: "gyoza", quantity: nil), (item: "gyoza", quantity: 2),
+                                                                    (item: "sushi", quantity: 4), (item: "pizza", quantity: 0)]))])
+        XCTAssertEqual(model.values.int("items.1.count"), 2, "the first ramen row decides")
+        XCTAssertEqual(model.source(of: "items.1.count"), .stated)
+        XCTAssertEqual(model.values.int("items.3.count"), 1)
+        XCTAssertEqual(model.source(of: "items.3.count"), .stated)
+        XCTAssertNil(model.values.int("items.2.count"), "the first row naming gyoza decides even without a quantity")
+        XCTAssertNil(model.values.int("items.4.count"), "0 reads as blank")
+        XCTAssertEqual(model.values.rows(of: "items").count, 2, "eight rows over four options change nothing else")
 
-        // A row added after a delete is numbered one more than the highest row left.
-        let numbered = make([.repeating(itemsGroup(), rows: (1...3).map { rowSeeds(item: "ramen", quantity: $0, note: nil) })])
-        XCTAssertTrue(numbered.deleteRow(rowID(2, of: numbered) ?? UUID()))
-        XCTAssertNotNil(numbered.field(control), "a delete below the maximum brings the control row back")
-        XCTAssertTrue(numbered.chooseOption(control, "add"))
-        XCTAssertEqual(keys(numbered), itemsKeys([1, 3, 4]), "rows 1 and 3 stay and the added row is number 4")
+        // The upper bound alone: 1,000,000,000 reads as blank, 999,999,999 is kept.
+        XCTAssertNil(make([.repeating(menuGroup(), rows: menuSeeds([(item: "pizza", quantity: 1_000_000_000)]))])
+            .values.int("items.4.count"))
+        XCTAssertEqual(make([.repeating(menuGroup(), rows: menuSeeds([(item: "pizza", quantity: 999_999_999)]))])
+            .values.int("items.4.count"), 999_999_999)
 
-        // On a frozen card the chip changes nothing, and the freeze itself removes the control row.
-        let frozen = make([.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil)])])
-        let valuesBefore = frozen.values
-        frozen.freeze()
-        XCTAssertFalse(frozen.chooseOption(control, "add"))
-        XCTAssertNil(frozen.field(control), "freeze() removes the control row from the card")
-        XCTAssertEqual(keys(frozen), itemsKeys(1), "every row member stays")
-        XCTAssertEqual(frozen.values, valuesBefore)
+        // The cut is by kept values, not by a row prefix: at `maxRows` 2 the first two rows stay; the first row, not the
+        // first option, decides at `maxRows` 1.
+        let clamped = make([.repeating(menuGroup(maxRows: 2), rows: menuSeeds([(item: "ramen", quantity: 1), (item: "gyoza", quantity: 2),
+                                                                               (item: "curry", quantity: 3), (item: "pizza", quantity: 4)]))])
+        XCTAssertEqual(clamped.values.int("items.1.count"), 1)
+        XCTAssertEqual(clamped.values.int("items.2.count"), 2)
+        XCTAssertNil(clamped.values.int("items.3.count"))
+        XCTAssertNil(clamped.values.int("items.4.count"))
+        let firstRow = make([.repeating(menuGroup(maxRows: 1), rows: menuSeeds([(item: "pizza", quantity: 1), (item: "ramen", quantity: 2)]))])
+        XCTAssertEqual(firstRow.values.int("items.4.count"), 1, "the first row keeps its line")
+        XCTAssertNil(firstRow.values.int("items.1.count"))
     }
 
-    func testGROUP_GM3_ReadinessCoversEveryRowAndTheSnapshotGroupsRowsByNumber() throws {
-        let model = make([.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil),
-                                                          rowSeeds(item: "gyoza", quantity: 1, note: "no onions")])])
-        XCTAssertEqual(model.values.rows(of: "items").count, 2)
-        let rows = model.values.rows(of: "items")
-        // Stop here on a card that built nothing, so the red of this test is exactly the empty rows.
-        guard rows.count == 2 else { return }
-        let row1 = try XCTUnwrap(rows.first)
-        let row2 = try XCTUnwrap(rows.last)
-        XCTAssertEqual(row1.count, 3, "one entry per member, blanks included")
-        XCTAssertEqual(row1.keys.sorted(), ["item", "note", "quantity"], "keyed by member key")
-        XCTAssertEqual(row1["item"], AgentFieldCard.Snapshot.Entry(key: AgentFieldCard.rowKey("items", 1, "item"),
-                                                                   value: .option("ramen"), source: .stated))
-        XCTAssertEqual(row2["quantity"], AgentFieldCard.Snapshot.Entry(key: AgentFieldCard.rowKey("items", 2, "quantity"),
-                                                                       value: .number(1), source: .stated))
-        XCTAssertTrue(model.setText(AgentFieldCard.rowKey("items", 1, "note"), "spicy"))
-        XCTAssertEqual(model.values.rows(of: "items").first?["note"]?.source, .entered, "an edit made on the card is seen")
-
-        // Two groups whose keys share a prefix do not mix into each other's rows.
-        let two = make([.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil)]),
-                        .repeating(itemsGroup(key: "items_x", label: "Extras"), rows: [rowSeeds(item: "gyoza", quantity: 1, note: nil)])])
-        XCTAssertEqual(two.values.rows(of: "items").count, 1)
-        XCTAssertEqual(two.values.rows(of: "items").first?.keys.sorted(), ["item", "note", "quantity"])
-        XCTAssertEqual(two.values.rows(of: "items_x").count, 1)
-        XCTAssertEqual(two.values.rows(of: "items").first?["item"]?.value, .option("ramen"), "items_x does not replace a value of items")
-        XCTAssertEqual(two.values.rows(of: "items_x").first?["item"]?.value, .option("gyoza"))
-
-        // Ready only while every required member of every row is chosen; the control row never blocks.
-        XCTAssertTrue(model.isReady, "every required member of both rows is chosen")
-        XCTAssertTrue(model.chooseOption(AgentFieldCard.controlKey("items"), "add"))
-        XCTAssertFalse(model.isReady, "a new blank row blocks")
-        XCTAssertTrue(model.chooseOption(AgentFieldCard.rowKey("items", 3, "item"), "curry"))
-        XCTAssertFalse(model.isReady, "the blank quantity of the new row still blocks")
-        XCTAssertTrue(model.setText(AgentFieldCard.rowKey("items", 3, "quantity"), "3"))
-        XCTAssertTrue(model.isReady, "a blank optional member does not block")
-        XCTAssertTrue(model.setText(AgentFieldCard.rowKey("items", 3, "quantity"), ""))
-        XCTAssertFalse(model.isReady, "a cleared quantity blocks")
-
-        // A blank member prints its label alone, and the control row prints no line.
-        XCTAssertTrue(model.lines.contains("Row note:"))
-        XCTAssertFalse(model.lines.contains { $0.hasPrefix("Items") })
+    func testMENULIST_T08_AQuantityWrittenOrClearedMovesTheTotalAndAZeroOrAFrozenCardChangesNothing() throws {
+        let model = make([.repeating(menuGroup(), rows: menuSeeds([(item: "ramen", quantity: 2)]))])
+        func total(_ of: AgentFieldCard) -> String? { of.field("items.total")?.chosen }
+        XCTAssertTrue(model.setText("items.1.count", "3"))
+        XCTAssertEqual(model.values.int("items.1.count"), 3)
+        XCTAssertEqual(model.field("items.1.count")?.chosen, "3")
+        XCTAssertEqual(total(model), "$47.00")
+        XCTAssertTrue(model.setText("items.2.count", "1"))
+        XCTAssertEqual(total(model), "$54.00")
+        XCTAssertTrue(model.setText("items.1.count", ""))
+        XCTAssertEqual(total(model), "$12.00")
+        XCTAssertTrue(model.setText("items.2.count", ""))
+        XCTAssertEqual(total(model), "$0.00")
+        XCTAssertTrue(model.setText("items.2.count", "0"), "the write happens; the value reads as blank")
+        XCTAssertNil(model.values.int("items.2.count"))
+        XCTAssertEqual(total(model), "$0.00")
+        XCTAssertTrue(model.setText("items.1.count", "SENT-7"))
+        XCTAssertEqual(model.values.int("items.1.count"), 7)
+        XCTAssertEqual(total(model), "$103.00")
+        let line3 = try XCTUnwrap(model.field("items.3.count"))
+        model.actions.setTitleText?(line3.id, "2")
+        XCTAssertEqual(model.values.int("items.3.count"), 2)
+        XCTAssertEqual(total(model), "$129.00")
+        XCTAssertTrue(model.setText("items.2.count", "999999999"), "the largest number the card holds")
+        XCTAssertEqual(total(model), "$7,000,000,122.00")
+        let before = total(model)
+        model.freeze()
+        XCTAssertFalse(model.setText("items.1.count", "1"))
+        XCTAssertEqual(total(model), before)
     }
 
-    func testGROUP_GM4_DeletingARowKeepsTheOtherRowsAndRefusesAtOneRowFrozenOrUnknown() throws {
-        func threeRows() -> AgentFieldCard {
-            make([.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: "one"),
-                                                  rowSeeds(item: "gyoza", quantity: 1, note: "two"),
-                                                  rowSeeds(item: "curry", quantity: 3, note: "three")])])
-        }
+    func testMENULIST_T09_TheOrderNeverHoldsMoreLinesThanTheGroupsMaximum() throws {
+        let model = make([.repeating(menuGroup(maxRows: 2), rows: [])])
+        func canAdd(_ line: Int, _ of: AgentFieldCard = model) -> Bool { of.field("items.\(line).count")?.menuLine?.canAdd ?? false }
+        XCTAssertTrue(model.setText("items.1.count", "1"))
+        XCTAssertTrue(canAdd(3) && canAdd(4), "before the second quantity every blank line may add")
+        XCTAssertTrue(model.setText("items.2.count", "1"))
+        XCTAssertFalse(model.setText("items.3.count", "1"), "a write at the limit changes nothing and says so")
+        XCTAssertNil(model.values.int("items.3.count"))
+        XCTAssertFalse(canAdd(3) && canAdd(4), "at the limit every blank line's plus is dimmed")
+        XCTAssertTrue(model.setText("items.2.count", "5"), "an ordered line may change at the limit")
+        XCTAssertTrue(model.setText("items.1.count", ""))
+        XCTAssertTrue(canAdd(3) && canAdd(4), "a clear takes the plus buttons back")
+        XCTAssertTrue(model.setText("items.3.count", "2"))
+        XCTAssertFalse(canAdd(4), "the limit is reached again")
 
-        // The first row: the group is at its maximum, so the control row is gone until the delete brings it back.
-        let model = threeRows()
-        XCTAssertTrue(model.isReady, "premise: every row is complete")
-        XCTAssertNil(model.field(AgentFieldCard.controlKey("items")), "premise: the group is at its maximum")
-        let idsOf23 = itemsKeys([2, 3]).map { model.field($0)?.id }
-        let deleted = model.deleteRow(rowID(1, of: model) ?? UUID())
-        XCTAssertTrue(deleted, "the first row is deleted")
-        // Stop here on a card that built nothing, so the red of this test is exactly the first delete.
-        guard deleted else { return }
-        XCTAssertEqual(keys(model), itemsKeys([2, 3]) + [AgentFieldCard.controlKey("items")],
-                       "rows 2 and 3 keep their keys, no row is renumbered, and the control row is back")
-        XCTAssertEqual(itemsKeys([2, 3]).map { model.field($0)?.id }, idsOf23, "rows 2 and 3 keep their EditField ids")
-        XCTAssertEqual(model.values.option(AgentFieldCard.rowKey("items", 2, "item")), "gyoza")
-        XCTAssertEqual(model.values.text(AgentFieldCard.rowKey("items", 3, "note")), "three")
-        XCTAssertNil(model.values.entry(AgentFieldCard.rowKey("items", 1, "item")), "the deleted row's slots are gone")
-        XCTAssertNil(model.field(AgentFieldCard.rowKey("items", 1, "quantity")))
-        XCTAssertTrue(model.isReady, "readiness is recomputed over the remaining rows")
-        XCTAssertTrue(model.setText(AgentFieldCard.rowKey("items", 2, "quantity"), ""))
+        let single = make([.repeating(menuGroup(maxRows: 1), rows: [])])
+        XCTAssertTrue(single.setText("items.2.count", "1"))
+        XCTAssertFalse(single.setText("items.3.count", "1"), "a maximum of 1 refuses a second line")
+
+        let wide = make([.repeating(menuGroup(maxRows: 6), rows: [])])
+        for line in 1...4 { XCTAssertTrue(wide.setText("items.\(line).count", "1"), "a maximum above the options never refuses") }
+    }
+
+    func testMENULIST_T10_ReadinessNeedsOneQuantityAndTheSnapshotAndLinesHoldOnlyTheOrderedLines() throws {
+        let model = make([.repeating(menuGroup(), rows: []), .field(noteSpec, value: nil, source: .blank)])
         XCTAssertFalse(model.isReady)
+        XCTAssertEqual(model.values.rows(of: "items"), [])
+        XCTAssertEqual(model.lines, ["Order delivery", "Sum: $0.00", "Note:"])
 
-        // The middle row and the last row: the same holds whichever row goes.
-        for (gone, kept) in [(2, itemsKeys([1, 3])), (3, itemsKeys([1, 2]))] {
-            let run = threeRows()
-            let idsBefore = kept.map { run.field($0)?.id }
-            XCTAssertTrue(run.deleteRow(rowID(gone, of: run) ?? UUID()))
-            XCTAssertEqual(keys(run), kept + [AgentFieldCard.controlKey("items")])
-            XCTAssertEqual(kept.map { run.field($0)?.id }, idsBefore)
-            XCTAssertNil(run.values.entry(AgentFieldCard.rowKey("items", gone, "item")))
+        // The tap order is the opposite of the menu order: the snapshot and the lines stay in the partner's option order.
+        XCTAssertTrue(model.setText("items.4.count", "1"))
+        XCTAssertTrue(model.setText("items.1.count", "2"))
+        XCTAssertFalse(model.isReady, "the blank required text field still blocks")
+        XCTAssertTrue(model.setText("note", "hello"))
+        XCTAssertTrue(model.isReady)
+        let rows = model.values.rows(of: "items")
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(rows.map { $0["item"]?.value }, [AgentFieldValue.option("ramen"), .option("pizza")])
+        XCTAssertEqual(rows.map { $0["item"]?.source }, [.inferred, .inferred])
+        XCTAssertEqual(rows.map { $0["count"]?.value }, [AgentFieldValue.number(2), .number(1)])
+        XCTAssertEqual(rows.map { $0["count"]?.source }, [.entered, .entered])
+        XCTAssertNil(model.values.entry("items.2.count"), "a blank line holds no entry")
+        XCTAssertEqual(model.lines, ["Order delivery", "Ramen: 2", "Cheese pizza: 1", "Sum: $58.00", "Note: hello"])
+
+        let frozen = model.values
+        let lines = model.lines
+        model.freeze()
+        XCTAssertEqual(model.values, frozen)
+        XCTAssertEqual(model.lines, lines)
+    }
+
+    func testMENULIST_T11_AListWithoutPricesHasNoPriceAndNoTotalLine() throws {
+        for group in [menuGroup(fee: nil, priced: false), menuGroup(fee: 500, priced: false)] {
+            let model = make([.repeating(group, rows: [])])
+            XCTAssertEqual(keys(model), ["items.1.count", "items.2.count", "items.3.count", "items.4.count"],
+                           "no total key, priced or not")
+            XCTAssertTrue(model.card.fields.allSatisfy { $0.menuLine?.price == nil }, "no price on a line")
         }
-
-        // A delete that leaves one row clears rowID on the remaining row's fields.
-        let pair = make([.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil),
-                                                         rowSeeds(item: "gyoza", quantity: 1, note: nil)])])
-        XCTAssertTrue(pair.deleteRow(rowID(2, of: pair) ?? UUID()))
-        for key in itemsKeys(1) { XCTAssertNil(pair.field(key)?.rowID, key) }
-        XCTAssertNotNil(pair.field(AgentFieldCard.controlKey("items")))
-
-        // Refusals: one row, a stale rowID read while two rows existed, a frozen card, an id no field carries.
-        let single = make([.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil)])])
-        XCTAssertFalse(single.deleteRow(UUID()), "the minimum is one row")
-        XCTAssertEqual(keys(single), itemsKeys(1) + [AgentFieldCard.controlKey("items")])
-        let stale = make([.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil),
-                                                          rowSeeds(item: "gyoza", quantity: 1, note: nil)])])
-        let staleID = try XCTUnwrap(rowID(2, of: stale))
-        XCTAssertTrue(stale.deleteRow(staleID))
-        XCTAssertFalse(stale.deleteRow(staleID), "a stale rowID changes nothing once one row is left")
-        let frozen = threeRows()
-        frozen.freeze()
-        XCTAssertFalse(frozen.deleteRow(rowID(2, of: frozen) ?? UUID()), "a frozen card ignores a delete")
-        XCTAssertEqual(keys(frozen), itemsKeys(3))
-        XCTAssertFalse(threeRows().deleteRow(UUID()), "an id no field carries is ignored")
-
-        // While a group holds two or more rows, one row's fields share one non-nil rowID, different rows differ, and no other
-        // field of the card carries one.
-        let mixed = make([.line("A read-only row"), .field(noteSpec, value: nil, source: .blank),
-                          .repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil),
-                                                          rowSeeds(item: "gyoza", quantity: 1, note: nil)])])
-        let firstRow = try XCTUnwrap(rowID(1, of: mixed))
-        let secondRow = try XCTUnwrap(rowID(2, of: mixed))
-        XCTAssertNotEqual(firstRow, secondRow)
-        for member in ["item", "quantity", "note"] {
-            XCTAssertEqual(mixed.field(AgentFieldCard.rowKey("items", 1, member))?.rowID, firstRow, member)
-            XCTAssertEqual(mixed.field(AgentFieldCard.rowKey("items", 2, member))?.rowID, secondRow, member)
-        }
-        XCTAssertNil(mixed.field(AgentFieldCard.controlKey("items"))?.rowID, "the control row is not a deletable row")
-        for field in mixed.card.fields where !field.key.hasPrefix("items.") {
-            XCTAssertNil(field.rowID, field.key)
-        }
-
-        // The same delete through the closure the view calls.
-        let viaActions = threeRows()
-        let actionID = try XCTUnwrap(rowID(3, of: viaActions))
-        XCTAssertNotNil(viaActions.actions.deleteRow)
-        viaActions.actions.deleteRow?(actionID)
-        XCTAssertNil(viaActions.field(AgentFieldCard.rowKey("items", 3, "item")))
-        XCTAssertEqual(keys(viaActions), itemsKeys([1, 2]) + [AgentFieldCard.controlKey("items")])
+        let model = make([.repeating(menuGroup(fee: nil, priced: false), rows: menuSeeds([(item: "ramen", quantity: 2)]))])
+        XCTAssertTrue(model.isReady)
+        XCTAssertEqual(model.lines, ["Order delivery", "Ramen: 2"])
+        XCTAssertFalse(model.lines.contains { $0.contains("$") }, "no dollar anywhere")
     }
 }
 
