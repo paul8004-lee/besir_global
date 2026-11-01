@@ -113,7 +113,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     /// The place that may bias the agent's place search: the manual origin, else the current location, the approximate guess
     /// included. It is never a trip origin; that stays `realFixLocation` (SPEC-TRAVELLEGS-001).
-    var searchOrigin: Place? { nil }
+    var searchOrigin: Place? { AgentPlaces.devicePlace(manual: manualOrigin, current: currentLocation) }
 
     /// Metres a fix has to differ from the last delivered one before CoreLocation reports it again.
     static let updateDistanceFilter: CLLocationDistance = 100

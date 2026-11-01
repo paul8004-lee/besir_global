@@ -792,7 +792,7 @@ final class AgentToolbox {
     private func search(_ values: [String: String], flow: UUID?) throws -> AgentToolOutcome {
         guard let query = values["query"], query.count >= AgentPlaces.queryMin else { throw Rejection(Say.queryMissing) }
         if query.count > AgentPlaces.queryMax { throw Rejection(Say.queryLong) }
-        let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+        let center = searchOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         if dayPlan != nil { searchesThisPlan += 1 }
         return .lookup(AgentLookup { [self] in
             let service = placeSearchProvider?() ?? store.placeSearch
@@ -800,7 +800,7 @@ final class AgentToolbox {
             // A cancelled lookup writes nothing: its answer is dropped by the session anyway.
             if Task.isCancelled { return AgentPlaces.searchOutput([], registry: &registry) }
             switch found {
-            case .found(let places): return AgentPlaces.searchOutput(places, registry: &registry)
+            case .found(let places): return AgentPlaces.searchOutput(places, registry: &registry, biased: center != nil)
             case .failed: return AgentPlaces.searchFailure()
             }
         })
@@ -1053,10 +1053,10 @@ final class AgentToolbox {
         rows.append(.line(AgentPartner.partnerLine(spec.entry.name)))
 
         // The card's place search goes through the provider `search_places` uses. The device position is read when the card is
-        // built, for a card with a schedule choice (it is the first value of `Leave from`), and again when a search fires, where it
-        // reaches the Google Places request only.
+        // built, for a card with a schedule choice (it is the first value of `Leave from`). When a search fires the search origin
+        // is read instead (it may be the approximate position too), and it reaches the Google Places request only.
         let fieldCard = AgentFieldCard(header: spec.entry.title, rows: rows, favorites: store.favorites, search: { [self] query in
-            let center = deviceOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+            let center = searchOrigin().map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
             return await (placeSearchProvider?() ?? store.placeSearch).search(query, near: center)
         }, now: { [self] in now() }, candidates: { [self] key, text in
             // A place row the partner resolves asks the partner's own route, never Google. The device position is read when the

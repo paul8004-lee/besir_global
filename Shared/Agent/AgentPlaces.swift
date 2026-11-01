@@ -46,6 +46,8 @@ enum AgentPlaces {
     private static let travelUnavailable = AgentToolbox.encode([
         "status": "unavailable",
         "message": "The travel time could not be looked up. Tell the user it is unavailable; do not estimate it."])
+    /// Added to an `ok` search that went out with no bias at all (no position of any kind was known): the places may be far away.
+    private static let unbiasedSearch = "The user's position is not known, so these places may be far from the user. Check each place's name and address against what the user named, and ask the user for the area when they differ."
     // The user's line at the step limit (SPEC-STEPFAIL-001), not the model's: one fixed English sentence each.
     private static let searchFailedLine = "Places couldn't be searched right now."
     private static let noPlacesLine = "No places were found for that search."
@@ -107,8 +109,9 @@ enum AgentPlaces {
         let list: [[String: Any]] = zip(handles, kept).map { handle, place in
             ["place_id": handle, "name": displayName(place.name), "address": displayAddress(place.address)]
         }
-        let result = AgentToolbox.encode(["status": "ok", "count": list.count, "places": list])
-        return AgentLookupOutput(result: result, showsGoogleData: true)
+        var object: [String: Any] = ["status": "ok", "count": list.count, "places": list]
+        if !biased { object["message"] = unbiasedSearch }
+        return AgentLookupOutput(result: AgentToolbox.encode(object), showsGoogleData: true)
     }
 
     /// The `search_places` answer for a search that failed: the places-unavailable text, no place, no Google data.
