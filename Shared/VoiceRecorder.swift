@@ -42,6 +42,9 @@ final class VoiceRecorder: NSObject, VoiceRecording, AVAudioRecorderDelegate {
         }
     }
 
+    // @MX:WARN: [AUTO] global state mutation: sets the category of the shared `AVAudioSession` and makes it active.
+    // @MX:REASON: the session is process-wide; every exit after `setActive(true)` (a failed start, `finish()`,
+    // `cancel()`) must reach `deactivate()`, or the session stays active and other audio is not told it may resume.
     func start(onEnd: @escaping @MainActor (VoiceRecordingEnd) -> Void) -> Bool {
         if recorder != nil { cancel() }
         let session = AVAudioSession.sharedInstance()
@@ -88,6 +91,10 @@ final class VoiceRecorder: NSObject, VoiceRecording, AVAudioRecorderDelegate {
         return VoiceClip(url: url, seconds: Double(samples) / Double(VoiceRecordingFormat.bytesPerSecond))
     }
 
+    // @MX:ANCHOR: [AUTO] fan_in 3 - `start`, `finished` and `interrupted` call it, and `VoiceInput` calls it through
+    // `VoiceRecording`.
+    // @MX:REASON: the contract of `VoiceRecording`: idempotent, deletes this recorder's own file, and clears `onEnd`
+    // before `stop()` so the delegate's finish after a cancel fires nothing.
     func cancel() {
         onEnd = nil
         removeObservers()
@@ -101,6 +108,10 @@ final class VoiceRecorder: NSObject, VoiceRecording, AVAudioRecorderDelegate {
 
     // MARK: AVAudioRecorderDelegate
 
+    // @MX:WARN: [AUTO] the delegate is called off the main actor and hops back in an unstored `Task`, so the call can
+    // arrive after `finish()`, `cancel()` or a newer `start`.
+    // @MX:REASON: `finished` acts only for the current recorder (by `ObjectIdentifier`) while `onEnd` is set; without
+    // that filter a stale callback ends the next recording.
     nonisolated func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
         let identity = ObjectIdentifier(recorder)
         Task { @MainActor in self.finished(identity, successfully: flag) }
@@ -156,6 +167,8 @@ final class VoiceRecorder: NSObject, VoiceRecording, AVAudioRecorderDelegate {
         fileURL = nil
     }
 
+    // @MX:ANCHOR: [AUTO] fan_in 3 - `start` (two failure exits), `finish` and `cancel` call it.
+    // @MX:REASON: the one place the shared audio session is given back, with `.notifyOthersOnDeactivation`.
     private func deactivate() {
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }

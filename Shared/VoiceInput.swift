@@ -192,6 +192,9 @@ final class VoiceInput: ObservableObject {
 
     // MARK: Steps
 
+    // @MX:WARN: [AUTO] `askingAccess` is set before the permission await and the operation identity is checked after it.
+    // @MX:REASON: a cancel or a newer tap during the system alert must win; without the check a late grant starts a
+    // recording that no control can stop (T09, T10 (c)).
     private func begin(deliver: @escaping @MainActor (String) -> Void, fail: @escaping @MainActor (String) -> Void) async {
         operation = UUID()
         let identity = operation
@@ -210,6 +213,10 @@ final class VoiceInput: ObservableObject {
         phase = .recording
     }
 
+    // @MX:WARN: [AUTO] the upload runs in an unstructured `Task` (kept in `upload` so `cancel()` can stop it), and the
+    // `.limit` end reaches here through a second unstored `Task`; either can finish after `cancel()` or a newer tap.
+    // @MX:REASON: the answer is dropped unless `identity == operation`; removing that check delivers the text of a
+    // cancelled or older clip (T10 (b), (d)).
     private func stop(_ identity: UUID) async {
         guard phase == .recording, identity == operation else { return }
         phase = .transcribing
@@ -251,6 +258,9 @@ final class VoiceInput: ObservableObject {
         }
     }
 
+    // @MX:ANCHOR: [AUTO] fan_in 3 - `begin`, `stop` and `recorderEnded` finish every operation here.
+    // @MX:REASON: the one exit of an operation: the phase returns to idle first, the closures are cleared, and the line or
+    // the text reaches the chat at most once.
     /// Returns to idle, then shows the line or delivers the text, once.
     private func end(line: String? = nil, text: String? = nil) {
         phase = .idle

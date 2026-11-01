@@ -41,6 +41,9 @@ final class VoiceClient: VoiceTranscribing {
 
     var isConfigured: Bool { config.hasProxy }
 
+    // @MX:ANCHOR: [AUTO] external system integration point: the app's only call to the Worker's `POST /voice`.
+    // @MX:REASON: the request is exactly `{"audio": base64}` through `proxyPOSTRequest`, and only the exact body
+    // `{"error":"unauthorized"}` of a 401 means a rejected token (T01, T03).
     func transcribe(wav: Data) async -> Result<String, VoiceFailure> {
         guard config.hasProxy else { return .failure(.notSetUp) }
         guard wav.count <= Self.maxBytes else { return .failure(.other) }
