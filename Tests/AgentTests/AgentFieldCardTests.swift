@@ -625,7 +625,7 @@ final class AgentFieldCardTests: XCTestCase {
             XCTAssertEqual(try XCTUnwrap(model.field("schedule-length")).chosen, typed, typed)
             XCTAssertEqual(model.isReady, ready, typed)
         }
-        // A seed made from a partner's field has no range, and a number of any size is ready.
+        // A seed made from a partner's field has no range and no highest value, so a number of any size from 1 is ready.
         let fromPartner = try XCTUnwrap(AgentFieldSpec(PartnerField(key: "count", kind: .number, label: "Count", options: [])))
         XCTAssertEqual(fromPartner.kind, .number)
         XCTAssertNil(fromPartner.range)
@@ -635,6 +635,8 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertTrue(partnerModel.setText("count", "999999999"))
         XCTAssertTrue(partnerModel.isReady)
         XCTAssertTrue(partnerModel.setText("count", "0"))
+        XCTAssertFalse(partnerModel.isReady, "0 lies below the lowest value 1")
+        XCTAssertTrue(partnerModel.setText("count", "1"))
         XCTAssertTrue(partnerModel.isReady)
         // A seed value that does not fit its limit reads as blank.
         let tooLong = make([.field(lengthSpec, value: .number(1234), source: .inferred), .field(sizeSpec, value: .number(-3), source: .inferred)])
@@ -821,6 +823,270 @@ final class AgentFieldCardTests: XCTestCase {
         off.removeOwnRows()
         off.removeOwnRows()
         XCTAssertEqual(keys(off), ["note"])
+    }
+
+    // MARK: NUMSTEP number fields as a stepper and the schedule length as an End row (card t107, SPEC-NUMSTEPPER-001)
+
+    private var bookingStart: AgentFieldSpec { AgentFieldSpec(key: "start", kind: .time, label: "Time") }
+    private var plain19: Date { TestClock.date("2026-10-28T19:00") }
+
+    /// The rows of a booking-like card: one time field of the partner, then the app's own schedule choice.
+    private func scheduleRows(start: Date?) -> [AgentFieldRow] {
+        [.field(bookingStart, value: start.map { AgentFieldValue.time($0) }, source: start == nil ? .blank : .stated),
+         AgentPartner.scheduleRow(origin: nil)]
+    }
+
+    /// Writes a number the way the view does: through the card's own `setTitleText` action.
+    private func write(_ model: AgentFieldCard, _ key: String, _ number: Int?) throws {
+        let id = try XCTUnwrap(model.field(key)).id
+        model.actions.setTitleText?(id, number.map { String($0) } ?? "")
+    }
+
+    func testNUMSTEP_T07_EveryNumberRowIsAStepperAndNoOtherKindIs() throws {
+        let partnerFields = [
+            PartnerField(key: "t", kind: .text, label: "Text", options: []),
+            PartnerField(key: "p", kind: .place, label: "Place", options: []),
+            PartnerField(key: "w", kind: .time, label: "When", options: []),
+            PartnerField(key: "o", kind: .pickOne, label: "Pick", options: [PartnerOption(id: "a", label: "A")]),
+            PartnerField(key: "s", kind: .onOff, label: "Switch", options: [PartnerOption(id: "y", label: "Yes"), PartnerOption(id: "n", label: "No")]),
+            PartnerField(key: "n", kind: .number, label: "Count", options: [])]
+        var rows: [AgentFieldRow] = try partnerFields.map { .field(try XCTUnwrap(AgentFieldSpec($0)), value: nil, source: .blank) }
+        rows.append(.repeating(itemsGroup(), rows: [rowSeeds(item: "ramen", quantity: 2, note: nil), rowSeeds(item: nil, quantity: nil, note: nil)]))
+        rows.append(AgentPartner.scheduleRow(origin: nil))
+        let model = make(rows)
+        XCTAssertGreaterThan(model.card.fields.count, 10, "positive: the card was built")
+        let numberKeys: Set<String> = ["n", "items.1.quantity", "items.2.quantity"]
+        for field in model.card.fields {
+            XCTAssertEqual(field.stepper != nil, numberKeys.contains(field.key), field.key)
+        }
+        XCTAssertNotNil(model.field("n")?.stepper, "positive: the scalar number row has a stepper")
+        XCTAssertNotNil(model.field("items.2.quantity")?.stepper, "positive: a group's number member has one in every row")
+        XCTAssertNotNil(model.field(AgentPartner.cardEndKey), "premise: the End row is on the card")
+        XCTAssertNil(model.field(AgentPartner.cardEndKey)?.stepper)
+        // A row added by the control chip starts blank and has a stepper.
+        XCTAssertTrue(model.chooseOption(AgentFieldCard.controlKey("items"), "add"))
+        let added = try XCTUnwrap(model.field("items.3.quantity"))
+        XCTAssertNotNil(added.stepper)
+        XCTAssertNil(added.chosen)
+    }
+
+    func testNUMSTEP_T08_TheStepperStartsAtTheValueThatWasGiven() throws {
+        for given in [4, 12, 1] {
+            let model = make([.field(sizeSpec, value: .number(given), source: .stated)])
+            let field = try XCTUnwrap(model.field("party_size"))
+            XCTAssertEqual(field.chosen, String(given))
+            XCTAssertEqual(model.values.int("party_size"), given)
+            XCTAssertEqual(model.source(of: "party_size"), .stated)
+            let rule = try XCTUnwrap(field.stepper)
+            XCTAssertTrue(rule.canIncrease(from: given), "the plus is enabled at \(given)")
+            XCTAssertEqual(rule.canDecrease(from: given), given > 1, "the minus is dimmed only at the lowest value")
+        }
+    }
+
+    func testNUMSTEP_T09_TheDefaultBoundsHaveNoTopAndAFieldsOwnRangeWins() throws {
+        XCTAssertEqual(AgentFieldSpec.defaultNumberBounds, NumberBounds(lowest: 1))
+        let fromPartner = try XCTUnwrap(AgentFieldSpec(PartnerField(key: "count", kind: .number, label: "Count", options: [])))
+        XCTAssertNil(fromPartner.range)
+        XCTAssertEqual(fromPartner.bounds, NumberBounds(lowest: 1))
+        XCTAssertNil(fromPartner.bounds.highest)
+        let ranged = AgentFieldSpec(key: "pct", kind: .number, label: "Percent", range: 1...100)
+        XCTAssertEqual(ranged.bounds, NumberBounds(1...100))
+        let model = make([.field(fromPartner, value: nil, source: .blank), .field(ranged, value: nil, source: .blank),
+                          .field(noteSpec, value: nil, source: .blank)])
+        XCTAssertEqual(model.field("count")?.stepper?.bounds, fromPartner.bounds)
+        XCTAssertEqual(model.field("pct")?.stepper?.bounds.lowest, 1)
+        XCTAssertEqual(model.field("pct")?.stepper?.bounds.highest, 100)
+        XCTAssertNil(model.field("note")?.stepper)
+    }
+
+    func testNUMSTEP_T10_ANumberOutsideTheBoundsIsNeverAValue() throws {
+        let ranged = AgentFieldSpec(key: "pct", kind: .number, label: "Percent", range: 1...100)
+        for misfit in [0, -3, 1_000_000_000] {
+            let model = make([.field(sizeSpec, value: .number(misfit), source: .stated)])
+            XCTAssertNil(model.values.int("party_size"), "\(misfit)")
+            XCTAssertEqual(model.source(of: "party_size"), .blank, "\(misfit)")
+            XCTAssertNil(model.field("party_size")?.chosen, "\(misfit)")
+        }
+        for fits in [1, 13, 20, 999_999_999] {
+            let model = make([.field(sizeSpec, value: .number(fits), source: .stated)])
+            XCTAssertEqual(model.values.int("party_size"), fits, "\(fits)")
+        }
+        XCTAssertNil(make([.field(ranged, value: .number(101), source: .stated)]).values.int("pct"))
+        XCTAssertEqual(make([.field(ranged, value: .number(100), source: .stated)]).values.int("pct"), 100)
+        for optional in [false, true] {
+            let spec = AgentFieldSpec(key: "n", kind: .number, label: "N", isOptional: optional)
+            let model = make([.field(spec, value: nil, source: .blank)])
+            XCTAssertTrue(model.setText("n", "0"))
+            XCTAssertFalse(model.isReady, "0 lies below the lowest value (optional: \(optional))")
+            XCTAssertTrue(model.setText("n", "13"))
+            XCTAssertTrue(model.isReady, "13 (optional: \(optional))")
+            XCTAssertTrue(model.setText("n", "999999999"))
+            XCTAssertTrue(model.isReady, "999999999 (optional: \(optional))")
+        }
+        let rangedModel = make([.field(ranged, value: nil, source: .blank)])
+        XCTAssertTrue(rangedModel.setText("pct", "101"))
+        XCTAssertFalse(rangedModel.isReady)
+        XCTAssertTrue(rangedModel.setText("pct", "100"))
+        XCTAssertTrue(rangedModel.isReady)
+    }
+
+    func testNUMSTEP_T11_ABlankRequiredStepperBlocksUntilTheFirstPlus() throws {
+        let model = make([.field(sizeSpec, value: nil, source: .blank)])
+        let field = try XCTUnwrap(model.field("party_size"))
+        let rule = try XCTUnwrap(field.stepper)
+        XCTAssertNil(field.chosen)
+        XCTAssertFalse(model.isReady)
+        XCTAssertFalse(rule.canDecrease(from: nil))
+        XCTAssertEqual(rule.increased(from: nil), 1)
+        try write(model, "party_size", rule.increased(from: nil))
+        XCTAssertEqual(model.values.int("party_size"), 1)
+        XCTAssertEqual(model.source(of: "party_size"), .entered)
+        XCTAssertTrue(model.isReady)
+    }
+
+    func testNUMSTEP_T12_AnOptionalStepperReturnsToBlankThroughMinus() throws {
+        let optionalSpec = AgentFieldSpec(key: "n", kind: .number, label: "N", isOptional: true)
+        let model = make([.field(optionalSpec, value: nil, source: .blank), .field(sizeSpec, value: nil, source: .blank)])
+        let rule = try XCTUnwrap(model.field("n")?.stepper)
+        XCTAssertTrue(rule.allowsBlank)
+        XCTAssertFalse(try XCTUnwrap(model.field("party_size")?.stepper).allowsBlank)
+        try write(model, "party_size", 2)
+        XCTAssertTrue(model.isReady, "an optional blank leaves the card ready")
+        try write(model, "n", 1)
+        XCTAssertEqual(model.values.int("n"), 1)
+        try write(model, "n", rule.decreased(from: 1))
+        XCTAssertNil(model.values.int("n"))
+        XCTAssertEqual(model.source(of: "n"), .blank)
+        XCTAssertTrue(model.isReady)
+    }
+
+    func testNUMSTEP_T13_TheActionsWriteTheSteppedNumberAndRefuseAfterTheFreeze() throws {
+        let model = make([.field(sizeSpec, value: .number(5), source: .stated)])
+        let rule = try XCTUnwrap(model.field("party_size")?.stepper)
+        var number: Int? = 5
+        for expected in [6, 7] {
+            number = rule.increased(from: number)
+            try write(model, "party_size", number)
+            XCTAssertEqual(model.values.int("party_size"), expected)
+            XCTAssertEqual(model.field("party_size")?.chosen, String(expected))
+        }
+        while rule.canDecrease(from: number) {
+            number = rule.decreased(from: number)
+            try write(model, "party_size", number)
+        }
+        XCTAssertEqual(model.values.int("party_size"), 1)
+        number = rule.decreased(from: number)
+        try write(model, "party_size", number)
+        XCTAssertEqual(model.values.int("party_size"), 1, "minus at the lowest value leaves it")
+        model.freeze()
+        try write(model, "party_size", 5)
+        XCTAssertEqual(model.values.int("party_size"), 1, "a write of a different number after the freeze changes nothing")
+        XCTAssertEqual(model.field("party_size")?.chosen, "1")
+    }
+
+    func testNUMSTEP_T14_TheScheduleChoiceHoldsAnEndRowAndNoLengthRow() throws {
+        let model = make(scheduleRows(start: plain19))
+        let present = keys(model)
+        XCTAssertTrue(present.contains(AgentPartner.cardEndKey), "\(present)")
+        XCTAssertFalse(present.contains("schedule-length"), "\(present)")
+        let end = try XCTUnwrap(model.field(AgentPartner.cardEndKey))
+        XCTAssertEqual(end.kind, .datetime)
+        XCTAssertEqual(end.label, "End")
+        XCTAssertEqual(end.endWheel?.baseKey, "start")
+        XCTAssertEqual(end.endWheel?.capsAt24Hours, true)
+        XCTAssertEqual(end.endWheel?.baseHint, "Pick the start first")
+        XCTAssertNil(end.stepper)
+        XCTAssertEqual(model.values.date(AgentPartner.cardEndKey), plain19.addingTimeInterval(3600))
+        XCTAssertEqual(model.source(of: AgentPartner.cardEndKey), .inferred)
+        XCTAssertTrue(model.isReady)
+
+        // A start with no value leaves the End blank, and the card is not ready.
+        let blank = make(scheduleRows(start: nil))
+        XCTAssertNotNil(blank.field(AgentPartner.cardEndKey), "positive: the row is on the card")
+        XCTAssertNil(blank.field(AgentPartner.cardEndKey)?.chosen)
+        XCTAssertNil(blank.values.date(AgentPartner.cardEndKey))
+        XCTAssertFalse(blank.isReady)
+
+        // A card with no time field has neither an End row nor a length row.
+        let none = make([.field(noteSpec, value: .text("x"), source: .stated), AgentPartner.scheduleRow(origin: nil)])
+        XCTAssertNotNil(none.field(AgentPartner.cardSwitchKey), "positive: the schedule choice is there")
+        XCTAssertNil(none.field(AgentPartner.cardEndKey))
+        XCTAssertNil(none.field("schedule-length"))
+        XCTAssertNil(none.values.entry(AgentPartner.cardEndKey))
+    }
+
+    func testNUMSTEP_T15_TheEndMovesWithTheStartKeepingItsSpan() throws {
+        let hour: TimeInterval = 3600
+        // The seed follows the start.
+        let model = make(scheduleRows(start: plain19))
+        XCTAssertTrue(model.chooseTime("start", plain19.addingTimeInterval(2 * hour)))
+        XCTAssertEqual(model.values.date(AgentPartner.cardEndKey), plain19.addingTimeInterval(3 * hour))
+        // An End the user set keeps its 90-minute span and stays entered.
+        let kept = make(scheduleRows(start: plain19))
+        XCTAssertTrue(kept.chooseTime(AgentPartner.cardEndKey, plain19.addingTimeInterval(1.5 * hour)))
+        XCTAssertEqual(kept.source(of: AgentPartner.cardEndKey), .entered)
+        XCTAssertTrue(kept.chooseTime("start", plain19.addingTimeInterval(hour)))
+        XCTAssertEqual(kept.values.date(AgentPartner.cardEndKey), plain19.addingTimeInterval(2.5 * hour))
+        XCTAssertEqual(kept.source(of: AgentPartner.cardEndKey), .entered)
+        XCTAssertEqual(kept.field(AgentPartner.cardEndKey)?.chosen, BesirTime.isoFormatter.string(from: plain19.addingTimeInterval(2.5 * hour)))
+        // A start blank at build and chosen later seeds the End at the start plus 60 minutes.
+        let later = make(scheduleRows(start: nil))
+        XCTAssertTrue(later.chooseTime("start", plain19))
+        XCTAssertEqual(later.values.date(AgentPartner.cardEndKey), plain19.addingTimeInterval(hour))
+        XCTAssertEqual(later.source(of: AgentPartner.cardEndKey), .inferred)
+        XCTAssertEqual(later.field(AgentPartner.cardEndKey)?.chosen, BesirTime.isoFormatter.string(from: plain19.addingTimeInterval(hour)))
+
+        // The switch off takes the End row off the card; the End still follows the start on its slot.
+        for (shift, label) in [(2 * hour, "later"), (-hour, "earlier")] {
+            let off = make(scheduleRows(start: plain19))
+            XCTAssertTrue(off.chooseOption(AgentPartner.cardSwitchKey, "false"))
+            XCTAssertNil(off.field(AgentPartner.cardEndKey), "premise: the row left the card (\(label))")
+            XCTAssertTrue(off.chooseTime("start", plain19.addingTimeInterval(shift)))
+            XCTAssertTrue(off.chooseOption(AgentPartner.cardSwitchKey, "true"))
+            let newStart = plain19.addingTimeInterval(shift)
+            XCTAssertEqual(off.values.date(AgentPartner.cardEndKey), newStart.addingTimeInterval(hour), "the End keeps its span from the start moved \(label)")
+            XCTAssertEqual(off.field(AgentPartner.cardEndKey)?.chosen, BesirTime.isoFormatter.string(from: newStart.addingTimeInterval(hour)))
+        }
+        // A start chosen while the switch is off seeds a blank End.
+        let blankOff = make(scheduleRows(start: nil))
+        XCTAssertTrue(blankOff.chooseOption(AgentPartner.cardSwitchKey, "false"))
+        XCTAssertTrue(blankOff.chooseTime("start", plain19))
+        XCTAssertTrue(blankOff.chooseOption(AgentPartner.cardSwitchKey, "true"))
+        XCTAssertEqual(blankOff.values.date(AgentPartner.cardEndKey), plain19.addingTimeInterval(hour))
+    }
+
+    func testNUMSTEP_T16_TheEndIsAfterTheStartAndTheLengthIsTheSpan() throws {
+        let model = make(scheduleRows(start: plain19))
+        let seed = plain19.addingTimeInterval(3600)
+        for refused in [plain19, plain19.addingTimeInterval(-1), plain19.addingTimeInterval(24 * 3600 + 60)] {
+            XCTAssertFalse(model.chooseTime(AgentPartner.cardEndKey, refused))
+            XCTAssertEqual(model.values.date(AgentPartner.cardEndKey), seed, "a refused End changes nothing")
+            XCTAssertEqual(model.field(AgentPartner.cardEndKey)?.note, EndWheelSpec.notAfterBaseMessage)
+        }
+        XCTAssertTrue(model.chooseTime(AgentPartner.cardEndKey, plain19.addingTimeInterval(24 * 3600)), "exactly 24 hours is accepted")
+        XCTAssertNil(model.field(AgentPartner.cardEndKey)?.note, "an accepted End clears the note")
+
+        // Midnight: a wheel pick earlier in the day than the start falls on the next day.
+        let calendar = Calendar.current
+        let late = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 28, hour: 23, minute: 0)))
+        let pick = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 28, hour: 0, minute: 30)))
+        let night = make(scheduleRows(start: late))
+        let endField = try XCTUnwrap(night.field(AgentPartner.cardEndKey))
+        let base = night.card.endWheelBase(for: endField)
+        XCTAssertEqual(base, late)
+        let candidate = night.card.dialCommitCandidate(pick: pick, field: endField, base: base)
+        XCTAssertTrue(night.chooseTime(AgentPartner.cardEndKey, candidate))
+        let end = try XCTUnwrap(night.values.date(AgentPartner.cardEndKey))
+        XCTAssertEqual(end.timeIntervalSince(late), 90 * 60)
+        XCTAssertEqual(AgentPartner.lengthMinutes(start: late, end: end), 90)
+
+        XCTAssertEqual(AgentPartner.lengthMinutes(start: plain19, end: seed), 60)
+        XCTAssertEqual(AgentPartner.lengthMinutes(start: plain19, end: plain19.addingTimeInterval(24 * 3600)), 1440)
+        XCTAssertNil(AgentPartner.lengthMinutes(start: plain19, end: plain19))
+        XCTAssertNil(AgentPartner.lengthMinutes(start: plain19, end: plain19.addingTimeInterval(-60)))
+        XCTAssertNil(AgentPartner.lengthMinutes(start: plain19, end: plain19.addingTimeInterval(24 * 3600 + 60)))
+        XCTAssertNil(AgentPartner.lengthMinutes(start: nil, end: seed))
+        XCTAssertNil(AgentPartner.lengthMinutes(start: plain19, end: nil))
     }
 
     // MARK: PLACE the partner resolves a place row itself (card t98, SPEC-PARTNERPLACE-001)

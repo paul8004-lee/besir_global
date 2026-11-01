@@ -17,6 +17,13 @@ enum AgentPartner {
     static let lengthInitial = 60
     static let lengthRange = 5...720
     static let lengthDigits = 3
+    /// The `End` row of the schedule choice replaces the length row (SPEC-NUMSTEPPER-001). Hyphenated, like the other keys.
+    static let cardEndKey = "schedule-end"
+    static let cardEndLabel = "End"
+
+    /// The length of the entry in minutes, from the first time field to `End`: nil unless both are present and the span is 1 to
+    /// 1440 minutes (the 24 hours the end wheel covers).
+    static func lengthMinutes(start: Date?, end: Date?) -> Int? { nil }
     /// The travel group nested in the schedule choice: a switch that starts off, and while it is on the place the user leaves from
     /// and the mode. The entry's own place is the leg's destination, so there is no row for it. Hyphenated keys, like the others.
     static let cardTravelKey = "schedule-travel"

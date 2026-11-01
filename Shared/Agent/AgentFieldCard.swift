@@ -68,9 +68,11 @@ struct AgentFieldSpec: Equatable {
     /// Place only: true when the partner resolves the field itself, so the card lists the partner's candidates (never besir's own
     /// place search) and the value is the candidate the user taps.
     var partnerLookup = false
+    /// Time only: true for the app's own `End` row of the schedule choice, which follows the card's first time field.
+    var isEndOfFirstTime = false
 
     init(key: String, kind: AgentFieldKind, label: String, options: [AgentFieldOption] = [], limit: Int? = nil,
-         isOptional: Bool = false, range: ClosedRange<Int>? = nil, partnerLookup: Bool = false) {
+         isOptional: Bool = false, range: ClosedRange<Int>? = nil, partnerLookup: Bool = false, isEndOfFirstTime: Bool = false) {
         self.key = key
         self.kind = kind
         self.label = label
@@ -79,7 +81,14 @@ struct AgentFieldSpec: Equatable {
         self.isOptional = isOptional
         self.range = range
         self.partnerLookup = partnerLookup
+        self.isEndOfFirstTime = isEndOfFirstTime
     }
+
+    /// What a number field with no range of its own may hold: from 1, with no highest value.
+    static let defaultNumberBounds = NumberBounds(lowest: 0)
+
+    /// The bounds of a number field: its own range, else the default.
+    var bounds: NumberBounds { NumberBounds(lowest: 0) }
 
     /// The seed of a field the partner named; nil when its chips do not fit its kind.
     init?(_ field: PartnerField) {
