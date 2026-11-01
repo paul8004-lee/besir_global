@@ -929,6 +929,25 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertEqual(alone.source(of: "venue"), .entered)
     }
 
+    func testFULLHAND_R1_ASeededPartnerRowOpensWithItsSeedAndSearchesItWhenTheCardAppears() throws {
+        let seeded = makeLookupCard([.field(venueSpec, value: .text("Domo"), source: .inferred)], lookups: LookupGate())
+        let row = try XCTUnwrap(seeded.field("venue"))
+        XCTAssertEqual(row.searchSeed, "Domo", "positive: the row carries the seed")
+        XCTAssertTrue(row.startsOpen, "a seeded partner row starts open")
+        XCTAssertEqual(PlaceLine.searchOnAppear(row), "Domo", "the view searches the seed when the card appears")
+
+        let blank = try XCTUnwrap(makeLookupCard([.field(venueSpec, value: nil, source: .blank)], lookups: LookupGate()).field("venue"))
+        XCTAssertFalse(blank.startsOpen, "a row with no seed stays closed")
+        XCTAssertNil(PlaceLine.searchOnAppear(blank))
+
+        var searched = row
+        searched.lookup = .searching
+        XCTAssertNil(PlaceLine.searchOnAppear(searched), "a row already searching is not searched again")
+        var plain = row
+        plain.partnerLookup = false
+        XCTAssertNil(PlaceLine.searchOnAppear(plain), "a row the partner does not resolve is not searched here")
+    }
+
     func testPLACE_M03_AStatedTextIsOnlyTheSeedAndNeverTheValue() async throws {
         let searches = Searches()
         let lookups = LookupGate()

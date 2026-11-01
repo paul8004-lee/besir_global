@@ -120,6 +120,7 @@ struct EditCardView: View {
             for f in card.fields where f.kind == .place && f.startsOpen {
                 placeOpen.insert(f.id)
                 if let seed = f.searchSeed { draft[f.id] = seed }
+                if let seed = PlaceLine.searchOnAppear(f) { actions.searchPlaces(f.id, seed) }
             }
         }
     }
