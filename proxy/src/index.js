@@ -8,7 +8,7 @@
 //   POST /booking -> simulated table-booking partner (an upstream for lookup only, one Places Text Search; no storage)
 //   POST /booking/cancel -> cancels a simulated table booking (no upstream, no storage)
 //   POST /budget  -> simulated budget partner (no upstream, no storage)
-//   POST /delivery -> simulated food-delivery partner (no upstream, no storage)
+//   POST /delivery -> simulated food-delivery partner (an upstream for lookup only, one Places Text Search; no storage)
 import { handleVision } from "./vision.js";
 import { handleSnap } from "./snap.js";
 import { handleBooking, handleBookingCancel } from "./booking.js";
@@ -93,8 +93,9 @@ async function handleGoogle(request, env, url) {
   return forward(url, { "x-goog-api-key": env.GOOGLE_MAPS_KEY, "x-goog-fieldmask": fieldMask }, value);
 }
 
-// The one Places call behind {"op":"lookup"} of /booking, handed to booking.js. It uses the Worker's own key and a fixed
-// field mask, never a client header, and says only what happened: the JSON of a 200, no key, or failed.
+// The one Places call behind {"op":"lookup"} of /booking and /delivery, handed to the partner routes. It uses the
+// Worker's own key and a fixed field mask, never a client header, and says only what happened: the JSON of a 200,
+// no key, or failed.
 function placesLookup(env) {
   return async ({ text, near }) => {
     if (!env.GOOGLE_MAPS_KEY) return { outcome: "no_key" };
@@ -143,7 +144,7 @@ export default {
       case "/booking": return handleBooking(request, { json, lookup: placesLookup(env) });
       case "/booking/cancel": return handleBookingCancel(request, { json });
       case "/budget": return handleBudget(request, { json });
-      case "/delivery": return handleDelivery(request, { json });
+      case "/delivery": return handleDelivery(request, { json, lookup: placesLookup(env) });
       default:
         return json(404, { error: "not_found" });
     }

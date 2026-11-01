@@ -17,7 +17,7 @@ final class AgentFieldCardCardTests: XCTestCase {
 
     private let library = Place(name: "Library", address: "9 Library Road", latitude: 37.5, longitude: -122.4)
 
-    /// A model with the place blank and the card chosen, as `order_delivery` builds it for a call that names no place.
+    /// A model with the place blank and the card chosen, as a food order card starts when the call names no place.
     private func model() -> AgentFieldCard {
         AgentFieldCard(header: "Order delivery",
                        rows: [.line("Pasta Palace"),
@@ -139,44 +139,57 @@ final class AgentFieldCardCardTests: XCTestCase {
         XCTAssertNil(twice)
         XCTAssertEqual(ran.count, 1)
         XCTAssertEqual(plain.mark, .confirmed)
+        // The session path — one user sentence, the two common tool calls, the pending card, Confirm — is K06.
+    }
 
-        // In a session, once `order_delivery` returns the card: it waits as the pending card, Confirm resolves it and the model
-        // is asked again.
-        let rig = DeliveryToolRig(injectBudget: true)
+    // MARK: SPEC-DELIVERYCARD-001 (card t91) the session path
+
+    func testDELIVERY_K06_AChatSentenceOpensTheFoodOrderCardThroughTheCommonToolsAndConfirmResolvesItAndTheModelIsAskedAgain() async throws {
+        let stub = StubPartner()
+        stub.shapes = [.delivery()]
+        let budget = BudgetToolPartner()
+        let rig = PartnerRig(partner: stub, budget: budget)
         let folder = rig.folder
         addTeardownBlock { try? FileManager.default.removeItem(at: folder) }
-        rig.seedDinner()
-        let order = try JSONSerialization.data(withJSONObject: DeliveryToolRig.arguments(), options: [.sortedKeys])
-        let fake = FakeTransport([.turn(Turns.turn(Turns.call("get_delivery_options", "{}", id: "c1"))),
-                                  .turn(Turns.turn(Turns.call("order_delivery", String(decoding: order, as: UTF8.self), id: "c2"))),
+        let entries = [["key": "restaurant", "value": "Test Cafe", "quote": "from Test Cafe"],
+                       ["key": "items.1.item", "value": "ramen", "quote": "Ramen 2"],
+                       ["key": "items.1.quantity", "value": "2", "quote": "Ramen 2"],
+                       ["key": "items.2.item", "value": "gyoza", "quote": "gyoza 1"],
+                       ["key": "items.2.quantity", "value": "1", "quote": "gyoza 1"],
+                       ["key": "arrive_at", "value": BookingFixture.start, "quote": "2026-10-28 at 19:00"]]
+        let order = try JSONSerialization.data(withJSONObject: ["partner": "delivery", "fields": PartnerRig.fieldsText(entries)],
+                                               options: [.sortedKeys])
+        let fake = FakeTransport([.turn(Turns.turn(Turns.call("get_partners", "{}", id: "c1"))),
+                                  .turn(Turns.turn(Turns.call("request_partner", String(decoding: order, as: UTF8.self), id: "c2"))),
                                   .turn(Turns.text("Ordered."))])
         let session = AgentSession(toolbox: rig.tools, transport: fake, connections: rig.log)
         XCTAssertTrue(session.canSend)
-        session.send("Order two ramen and a gyoza")
+        session.send("Ramen 2, gyoza 1, from Test Cafe, on 2026-10-28 at 19:00")
         await session.settle()
         XCTAssertEqual(fake.requests.count, 2, "the card waits: the model is not asked a third time")
-        let pending = try XCTUnwrap(session.pendingCard, "order_delivery returned a card")
-        XCTAssertNotNil(pending.fieldCard, "the card carries the field-card model")
+        let pending = try XCTUnwrap(session.pendingCard, "request_partner returned a card")
+        let fields = try XCTUnwrap(pending.fieldCard)
         XCTAssertEqual(pending.lines.first, "Order delivery")
-        XCTAssertEqual(session.entries.filter { entry in
-            if case .card = entry.kind { return true }
-            return false
-        }.count, 1, "one card entry")
         XCTAssertFalse(session.canSend)
         #if DEBUG
         XCTAssertTrue(session.transcript().components(separatedBy: "\n").contains("CARD Order delivery Pending"))
         #endif
-        XCTAssertEqual(rig.partner.requests.count, 1, "only the options request while the card waits")
+        // The user checks the card: tap the address candidate and choose a card on the pending card's model.
+        fields.search("address", "Pasta")
+        try await Task.sleep(nanoseconds: 800_000_000)
+        XCTAssertTrue(fields.choosePlace("address", PartnerPlaceFixture.branches[1]))
+        XCTAssertTrue(fields.chooseOption("card_id", "debit-4242"))
         await session.confirmCard()
         await session.settle()
         XCTAssertNil(session.pendingCard)
-        XCTAssertEqual(rig.partner.requests.count, 2, "Confirm sent the one order request")
+        XCTAssertEqual(rig.partner.bodies(op: "submit").count, 1, "Confirm sent the one submit")
         XCTAssertEqual(fake.requests.count, 3, "the next model request was made")
-        XCTAssertEqual(session.assistantTexts, ["Ordered."])
+        XCTAssertEqual(session.assistantTexts, ["Ordered."], "the reply was told")
         XCTAssertTrue(session.canSend)
         #if DEBUG
         XCTAssertTrue(session.transcript().components(separatedBy: "\n").contains("CARD Order delivery Confirmed"))
         #endif
+        XCTAssertEqual(budget.requests.count, 1, "the budget stub saw one spend")
     }
 
     // MARK: K03

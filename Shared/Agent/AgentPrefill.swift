@@ -184,7 +184,7 @@ enum AgentPrefill {
 
     /// Cleaned as the card cleans typing, then trimmed; nil when nothing is left.
     private static func cleaned(_ text: String, limit: Int) -> String? {
-        let result = AgentDelivery.cleanedTyped(text, limit: limit).trimmingCharacters(in: .whitespacesAndNewlines)
+        let result = AgentFieldText.cleanedTyped(text, limit: limit).trimmingCharacters(in: .whitespacesAndNewlines)
         return result.isEmpty ? nil : result
     }
 

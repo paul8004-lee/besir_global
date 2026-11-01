@@ -94,7 +94,7 @@ final class AgentClientTests: XCTestCase {
         let request = try XCTUnwrap(makeClient().makeRequest(history: [.user("What do I have tomorrow?")]))
         let body = try json(try XCTUnwrap(request.httpBody))
         // SPEC-AGENTPLACE-001 and SPEC-BOOKING-001: seven declarations travel with every request.
-        XCTAssertEqual((body["tools"] as? [Any])?.count, 14, "the fourteen declarations must travel with the request")
+        XCTAssertEqual((body["tools"] as? [Any])?.count, 12, "the twelve declarations must travel with the request")
         XCTAssertEqual(body["parallel_tool_calls"] as? Bool, false)
         XCTAssertNil(body["stream"], "no streaming")
         XCTAssertNil(body["tool_choice"], "no forced tool choice")
@@ -271,7 +271,7 @@ final class AgentClientTests: XCTestCase {
 
         // The tools are the recorded declarations (SPEC-AGENTPLACE-001: the amended fixture holds seven with SPEC-BOOKING-001).
         let tools = try JSONSerialization.jsonObject(with: Fixture.data("tools", "json"))
-        XCTAssertEqual((tools as? [Any])?.count, 14)
+        XCTAssertEqual((tools as? [Any])?.count, 12)
         XCTAssertTrue((body["tools"] as AnyObject).isEqual(tools), "tools differ from Fixtures/tools.json")
     }
 

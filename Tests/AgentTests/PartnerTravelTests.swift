@@ -174,7 +174,7 @@ final class PartnerTravelTests: XCTestCase {
                         "schedule-from", "schedule-mode", "0"])
         XCTAssertFalse(fields.card.fields.map(\.key).contains("schedule-place"), "there is no Place row")
         XCTAssertEqual(fields.field("schedule-from")?.label, "Leave from")
-        XCTAssertEqual(fields.values.entry("schedule-from")?.value, .place(DeliveryToolFixture.device))
+        XCTAssertEqual(fields.values.entry("schedule-from")?.value, .place(ToolFixture.device))
         XCTAssertEqual(fields.source(of: "schedule-from"), .inferred)
         XCTAssertEqual(fields.field("schedule-mode")?.label, "Travel mode")
         XCTAssertEqual(fields.field("schedule-mode")?.options.map(\.label), ["Car", "Transit", "Walk", "Bicycle"])
@@ -191,15 +191,15 @@ final class PartnerTravelTests: XCTestCase {
         try await typeAndPause(fields, "schedule-from", "Library")
         XCTAssertEqual(places.requests.count, 1)
         let first = try XCTUnwrap(PlaceBody.biasCenter(PlaceBody.json(places.requests.last)))
-        XCTAssertEqual(first.latitude, DeliveryToolFixture.device.latitude, accuracy: 1e-9)
-        XCTAssertEqual(first.longitude, DeliveryToolFixture.device.longitude, accuracy: 1e-9)
-        XCTAssertTrue(fields.choosePlace("schedule-from", DeliveryToolFixture.library))
-        XCTAssertNotEqual(DeliveryToolFixture.library.latitude, DeliveryToolFixture.device.latitude)
+        XCTAssertEqual(first.latitude, ToolFixture.device.latitude, accuracy: 1e-9)
+        XCTAssertEqual(first.longitude, ToolFixture.device.longitude, accuracy: 1e-9)
+        XCTAssertTrue(fields.choosePlace("schedule-from", ToolFixture.library))
+        XCTAssertNotEqual(ToolFixture.library.latitude, ToolFixture.device.latitude)
         try await typeAndPause(fields, "schedule-from", "Museum")
         XCTAssertEqual(places.requests.count, 2)
         let second = try XCTUnwrap(PlaceBody.biasCenter(PlaceBody.json(places.requests.last)))
-        XCTAssertEqual(second.latitude, DeliveryToolFixture.device.latitude, accuracy: 1e-9)
-        XCTAssertEqual(second.longitude, DeliveryToolFixture.device.longitude, accuracy: 1e-9)
+        XCTAssertEqual(second.latitude, ToolFixture.device.latitude, accuracy: 1e-9)
+        XCTAssertEqual(second.longitude, ToolFixture.device.longitude, accuracy: 1e-9)
 
         // Off removes the rows and the mark is the base's again.
         XCTAssertTrue(fields.chooseOption("schedule-travel", "false"))
@@ -239,7 +239,7 @@ final class PartnerTravelTests: XCTestCase {
         XCTAssertEqual(fields.source(of: "schedule-from"), .blank)
         XCTAssertTrue(fields.chooseOption("schedule-mode", "car"))
         XCTAssertFalse(fields.isReady, "Leave from is required while shown")
-        XCTAssertTrue(fields.choosePlace("schedule-from", DeliveryToolFixture.library))
+        XCTAssertTrue(fields.choosePlace("schedule-from", ToolFixture.library))
         XCTAssertTrue(fields.isReady)
     }
 
@@ -256,7 +256,7 @@ final class PartnerTravelTests: XCTestCase {
         let rig = makeRig(shapes: [.placeTables(candidates: { _, _ in branches })], routes: PlaceStubs.routesSequence([900]))
         let (card, fields) = try await tappedCard(rig, mode: .transit)
         XCTAssertTrue(card.canConfirm)
-        XCTAssertEqual(fields.values.entry("schedule-from")?.value, .place(DeliveryToolFixture.device))
+        XCTAssertEqual(fields.values.entry("schedule-from")?.value, .place(ToolFixture.device))
         let resolution = try await confirm(card)
 
         XCTAssertEqual(resolution.status, "applied")
@@ -266,8 +266,8 @@ final class PartnerTravelTests: XCTestCase {
         let routeRequest = rig.routes.requests.first
         XCTAssertEqual(PlaceBody.json(routeRequest)?["travelMode"] as? String, "TRANSIT")
         let origin = try XCTUnwrap(waypoint(routeRequest, "origin"))
-        XCTAssertEqual(origin.latitude, DeliveryToolFixture.device.latitude, accuracy: 1e-9)
-        XCTAssertEqual(origin.longitude, DeliveryToolFixture.device.longitude, accuracy: 1e-9)
+        XCTAssertEqual(origin.latitude, ToolFixture.device.latitude, accuracy: 1e-9)
+        XCTAssertEqual(origin.longitude, ToolFixture.device.longitude, accuracy: 1e-9)
         let destination = try XCTUnwrap(waypoint(routeRequest, "destination"))
         XCTAssertEqual(destination.latitude, branches[1].latitude, accuracy: 1e-9)
         XCTAssertEqual(destination.longitude, branches[1].longitude, accuracy: 1e-9)
@@ -280,7 +280,7 @@ final class PartnerTravelTests: XCTestCase {
         XCTAssertEqual(legs.count, 1)
         XCTAssertEqual(rig.store.events.count, 1)
         let leg = try XCTUnwrap(legs.first)
-        XCTAssertEqual(leg.origin, DeliveryToolFixture.device)
+        XCTAssertEqual(leg.origin, ToolFixture.device)
         XCTAssertEqual(leg.destination, branches[1])
         XCTAssertEqual(leg.mode, .transit)
         XCTAssertEqual(leg.bufferMinutes, 0)
@@ -297,7 +297,7 @@ final class PartnerTravelTests: XCTestCase {
         let values = try XCTUnwrap(sent["values"] as? [String: Any])
         XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
         XCTAssertEqual(values["restaurant"] as? String, branches[1].address)
-        XCTAssertFalse(String(decoding: try XCTUnwrap(rig.partner.requests.last?.httpBody), as: UTF8.self).contains(DeliveryToolFixture.device.address))
+        XCTAssertFalse(String(decoding: try XCTUnwrap(rig.partner.requests.last?.httpBody), as: UTF8.self).contains(ToolFixture.device.address))
 
         // The booking's flow: the one route packet, then the partner's two. The Restaurant lookup has a flow of its own.
         let packets = await rig.packets()
@@ -315,7 +315,7 @@ final class PartnerTravelTests: XCTestCase {
         XCTAssertEqual(candidatePackets.map(\.summary), ["Example Tables: Candidates requested", "Example Tables: Candidates received"])
         XCTAssertEqual(Set(candidatePackets.compactMap(\.flowID)).count, 1)
         XCTAssertNotEqual(candidatePackets.first?.flowID, flow)
-        XCTAssertFalse(packets.contains { $0.summary.contains(DeliveryToolFixture.device.address) })
+        XCTAssertFalse(packets.contains { $0.summary.contains(ToolFixture.device.address) })
     }
 
     private func noRouteEndsConfirmUnavailable() async throws {
@@ -440,7 +440,7 @@ final class PartnerTravelTests: XCTestCase {
             let card = try await built(rig)
             let fields = try model(card)
             XCTAssertTrue(fields.chooseOption("schedule-travel", "true"))
-            XCTAssertTrue(card.lines.contains("Leave from: \(DeliveryToolFixture.device.address)"), "premise: \(how)")
+            XCTAssertTrue(card.lines.contains("Leave from: \(ToolFixture.device.address)"), "premise: \(how)")
             _ = await card.resolve(how)
             XCTAssertEqual(card.mark, .cancelled)
             XCTAssertEqual(fields.card.fields.map(\.key), ["restaurant", "party_size", "start", "name", "note", "0"], "\(how)")

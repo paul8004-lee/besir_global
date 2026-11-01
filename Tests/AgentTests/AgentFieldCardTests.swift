@@ -288,7 +288,7 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertEqual(model.values.text("note"), " 12 Example Street")
         // A text with no limit of its own is cut at the delivery text limit.
         XCTAssertTrue(model.setText("note", String(repeating: "n", count: 130)))
-        XCTAssertEqual(model.values.text("note")?.count, AgentDelivery.maxDeliveryText)
+        XCTAssertEqual(model.values.text("note")?.count, AgentFieldText.maxLength)
         // A blank text clears the value, and only blanks do.
         XCTAssertTrue(model.setText("note", " \t "))
         XCTAssertNil(model.values.text("note"))

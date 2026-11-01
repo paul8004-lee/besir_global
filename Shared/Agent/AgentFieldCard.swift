@@ -59,7 +59,7 @@ struct AgentFieldSpec: Equatable {
     /// `pick_one`: the partner's chips, one or more. `on_off`: the two chips, the words being the field's own; the first stands for
     /// the on side and the second for the off side whatever their ids.
     var options: [AgentFieldOption] = []
-    /// Text only: the most characters the field holds. Without one the field holds `AgentDelivery.maxDeliveryText`.
+    /// Text only: the most characters the field holds. Without one the field holds `AgentFieldText.maxLength`.
     var limit: Int?
     /// True when the card may leave the field blank.
     var isOptional = false
@@ -163,11 +163,11 @@ indirect enum AgentFieldRow {
 
         func entry(_ key: String) -> Entry? { entries.first { $0.key == key } }
 
-        /// The text of a text field, or the delivery text of a place (its address, else its name).
+        /// The text of a text field, or the text of a place (its address, else its name).
         func text(_ key: String) -> String? {
             switch entry(key)?.value {
             case .text(let text)?: return text
-            case .place(let place)?: return AgentDelivery.placeText(place)
+            case .place(let place)?: return AgentFieldText.placeText(place)
             default: return nil
             }
         }
@@ -361,12 +361,12 @@ indirect enum AgentFieldRow {
         return true
     }
 
-    /// Chooses a place with its coordinates; the value is the delivery text of the place (its address, else its name). A place
+    /// Chooses a place with its coordinates; the value is the text of the place (its address, else its name). A place
     /// with neither is refused and nothing changes.
     @discardableResult
     func choosePlace(_ key: String, _ place: Place) -> Bool {
         guard !isFrozen, let index = index(of: key), var slot = slots[key], slot.spec.kind == .place,
-              var text = AgentDelivery.placeText(place) else { return false }
+              var text = AgentFieldText.placeText(place) else { return false }
         if slot.spec.partnerLookup {
             // @MX:NOTE a partner-resolved row takes only a candidate the partner listed and the row still shows; a place of an older
             // list, a favorite or an unlisted place changes nothing. The check is of the tap, not of a value already held.
@@ -392,7 +392,7 @@ indirect enum AgentFieldRow {
         guard !isFrozen, let index = index(of: key), var slot = slots[key] else { return false }
         switch slot.spec.kind {
         case .text:
-            let cleaned = AgentDelivery.cleanedTyped(text, limit: slot.spec.limit ?? AgentDelivery.maxDeliveryText)
+            let cleaned = AgentFieldText.cleanedTyped(text, limit: slot.spec.limit ?? AgentFieldText.maxLength)
             card.setTitleText(field: card.fields[index].id, text: cleaned)
             let blank = cleaned.trimmingCharacters(in: .whitespaces).isEmpty
             slot.value = blank ? nil : .text(cleaned)
@@ -662,10 +662,10 @@ indirect enum AgentFieldRow {
             // The stated text only seeds the row's search; it is never the value, so Confirm cannot pass on unresolved text.
             seed = text.trimmingCharacters(in: .whitespaces).isEmpty ? nil : text
         case (.text, .text(let text)?):
-            let cleaned = AgentDelivery.cleanedTyped(text, limit: spec.limit ?? AgentDelivery.maxDeliveryText)
+            let cleaned = AgentFieldText.cleanedTyped(text, limit: spec.limit ?? AgentFieldText.maxLength)
             kept = cleaned.trimmingCharacters(in: .whitespaces).isEmpty ? nil : .text(cleaned)
         case (.place, .place(let place)?):
-            kept = AgentDelivery.placeText(place) == nil ? nil : .place(place)
+            kept = AgentFieldText.placeText(place) == nil ? nil : .place(place)
         case (.place, .text(let text)?):
             kept = text.trimmingCharacters(in: .whitespaces).isEmpty ? nil : .text(text)
         case (.time, .time?):
@@ -735,7 +735,7 @@ indirect enum AgentFieldRow {
     private func chosenText(_ value: AgentFieldValue?) -> String? {
         switch value {
         case .text(let text)?: return text
-        case .place(let place)?: return AgentDelivery.placeText(place)
+        case .place(let place)?: return AgentFieldText.placeText(place)
         case .time(let date)?: return BesirTime.isoFormatter.string(from: date)
         case .option(let id)?: return id
         case .flag(let on)?: return on ? AgentFieldSpec.onValue : AgentFieldSpec.offValue
