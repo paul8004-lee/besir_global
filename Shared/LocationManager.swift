@@ -112,7 +112,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     var realFixLocation: CLLocationCoordinate2D? { isApproximate ? nil : currentLocation }
 
     /// The place that may bias the agent's place search: the manual origin, else the current location, the approximate guess
-    /// included. It is never a trip origin; that stays `realFixLocation` (SPEC-TRAVELLEGS-001).
+    /// included. It is never a trip origin; a trip starts only from a real fix (SPEC-TRAVELLEGS-001).
     var searchOrigin: Place? { AgentPlaces.devicePlace(manual: manualOrigin, current: currentLocation) }
 
     /// Metres a fix has to differ from the last delivered one before CoreLocation reports it again.
