@@ -33,4 +33,44 @@ enum PartnerHand {
         return symbol
         #endif
     }
+
+    /// The history row's estimate line: `Estimate $90.00`. Every price in the app is marked as an estimate.
+    static func estimateText(cents: Int) -> String { "" }
+}
+
+/// SPEC-FULLHAND-001 (card t101): the one cancel of a partner's request. The button and the toolbox's tool both call it; it names no
+/// partner.
+enum PartnerCancel {
+    enum Outcome: Equatable {
+        case cancelled(partner: String), declined(partner: String), unavailable(partner: String), noRecord
+    }
+
+    /// The warning both callers show after a cancel that changed nothing.
+    static let notCancelledNotice = "Nothing was cancelled."
+
+    @MainActor
+    static func run(activityID: UUID, store: Store, records: PartnerRecords, ledger: BudgetLedger,
+                    client: PartnerClient) async -> Outcome {
+        .noRecord
+    }
+}
+
+/// One row of the history list: an entry the schedule still holds and the partner request record that made it.
+struct PartnerHistoryRow: Identifiable, Equatable {
+    /// The entry's id.
+    let id: UUID
+    /// The entry's current title.
+    let title: String
+    let start: Date
+    let end: Date
+    /// The entry's place: the one the partner request chose.
+    let place: Place?
+    /// The record's estimate in whole cents, when the partner gave one.
+    let estimateCents: Int?
+    let partnerName: String
+}
+
+enum PartnerHistory {
+    @MainActor
+    static func rows(records: PartnerRecords, store: Store) -> [PartnerHistoryRow] { [] }
 }
