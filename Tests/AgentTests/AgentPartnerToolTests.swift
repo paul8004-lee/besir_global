@@ -1275,7 +1275,7 @@ final class AgentPartnerToolTests: XCTestCase {
         let values = try XCTUnwrap(picked.partner.bodies(op: "submit").first?["values"] as? [String: Any])
         XCTAssertEqual(Set(values.keys), ["restaurant", "party_size", "start", "name"])
         XCTAssertNil(values["schedule-end"])
-        XCTAssertNil(values["schedule-length"])
+        XCTAssertFalse(values.keys.contains { $0.contains("length") }, "no length is sent")
 
         let seeded = makeRig()
         let seededCard = try await built(seeded, .init(start: start))
