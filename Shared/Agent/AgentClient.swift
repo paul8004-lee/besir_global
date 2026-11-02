@@ -42,8 +42,19 @@ enum AgentWire {
         return ([first] + fixedSentences).joined(separator: "\n")
     }
 
+    // @MX:NOTE: [AUTO] Line order of every request: the date line, the Always lines, then (only with at least one count line and a non-empty Memory section) the Memory lines and the count lines. The place after the Always lines is reserved for the user's own rules (SPEC-MEMORY-003).
+    /// The date line, the Always lines of `rules`, then, only when `countLines` is not empty and `rules` has Memory lines, the
+    /// Memory lines followed by `countLines`; one per line, with no trailing newline. Nil when `rules` is nil or has no Always line.
     static func instructions(now: Date, timeZone: TimeZone, rules: BesirRules?, countLines: [String]) -> String? {
-        nil
+        guard let rules, !rules.always.isEmpty else { return nil }
+        let stamp = formatter("yyyy-MM-dd'T'HH:mm", timeZone).string(from: now)
+        let weekday = formatter("EEEE", timeZone).string(from: now)
+        let first = "Current local date and time: \(stamp) (\(weekday)), time zone \(timeZone.identifier)."
+        var lines = [first] + rules.always
+        if !countLines.isEmpty, !rules.memory.isEmpty {
+            lines += rules.memory + countLines
+        }
+        return lines.joined(separator: "\n")
     }
 
     // MARK: Request body
