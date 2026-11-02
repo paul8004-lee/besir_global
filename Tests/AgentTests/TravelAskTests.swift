@@ -108,6 +108,11 @@ final class TravelAskTests: XCTestCase {
         let handle = try routeHandle(await rig.travel("p1", "car"))
 
         assertRefused(rig.create(place: "p1"), "a route came back after the refusal")
+        assertRefused(rig.create(place: "p1"), "that refusal opens nothing without a later user line")
+        addUserLine(rig)
+        let placeOnly = try XCTUnwrap(rig.create(place: "p1").card, "a user line after the latest refusal opens it")
+        XCTAssertEqual(placeOnly.lines, Self.placeCard)
+        assertRefused(rig.create(place: "p1"), "the opening was used up by the card")
 
         let card = try XCTUnwrap(rig.create(place: "p1", route: handle).card, "the route builds its card")
         XCTAssertEqual(card.lines.count, 7)
