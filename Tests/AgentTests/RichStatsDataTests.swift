@@ -323,6 +323,14 @@ final class RichStatsDataTests: XCTestCase {
         let model = BeRichSirModel(desk: BudgetDesk(client: client), now: { clock.now }, zone: { clock.zone })
         XCTAssertEqual(model.stats.weekTitle, "Week of Oct 26", "right after init, before appear")
 
+        let emptyRig = makeRig()
+        let emptyClient = BudgetClient(config: BudgetToolFixture.config, ledger: emptyRig.ledger, send: emptyRig.partner.send,
+                                       connections: emptyRig.log)
+        let emptyClock = emptyRig.clock
+        let emptyModel = BeRichSirModel(desk: BudgetDesk(client: emptyClient), now: { emptyClock.now }, zone: { emptyClock.zone })
+        XCTAssertEqual(emptyModel.stats.weekTitle, "Week of Oct 26", "an empty ledger still has its week right after init")
+        XCTAssertEqual(emptyModel.stats.recordCount, 0)
+
         await model.appear()
         XCTAssertEqual(model.stats.recordCount, 2, "appear shows the held entries")
         XCTAssertEqual(model.stats.groups.first?.rows.count, 2)
@@ -340,6 +348,14 @@ final class RichStatsDataTests: XCTestCase {
         await wait { model.rows.count == 2 && !model.isBusy && model.standing?.spentCents == 7850 }
         XCTAssertEqual(model.stats.recordCount, 2, "a removed entry")
         XCTAssertEqual(model.stats.groups.first?.rows.count, 2)
+
+        // An entry of an older week leaves this week's total as it is, so only the ledger change itself can bring it in.
+        let older = entry(UUID().uuidString, "2026-10-19", 2500)
+        rig.ledger.add(older)
+        await wait { model.stats.groups.count == 2 }
+        XCTAssertEqual(model.stats.groups.count, 2, "an entry of an older week reaches the groups")
+        XCTAssertEqual(model.stats.groups.last?.rows.count, 1)
+        XCTAssertEqual(model.stats.recordCount, 2, "this week's count is not changed by it")
 
         // The stats add no request: the same three left requests the screen made before this card.
         let ops = (0..<rig.partner.requests.count).map { rig.partner.body($0)?["op"] as? String ?? "" }
