@@ -114,20 +114,34 @@ struct MemoryLine: Equatable {
     /// count line (first field `count`) is never a raw line.
     init?(text: String) {
         guard text.hasPrefix("- "), text.unicodeScalars.count <= Self.maxLineScalars else { return nil }
-        let parts = text.dropFirst(2).components(separatedBy: Self.separator)
+        let parts = Self.split(text.unicodeScalars.dropFirst(2))
         guard (5...(5 + Self.maxFields)).contains(parts.count) else { return nil }
         let (day, weekday, time, kind, place) = (parts[0], parts[1], parts[2], parts[3], parts[4])
         guard let dayWeekday = Self.weekday(ofDay: day), dayWeekday == weekday,
               Self.isTime(time), Self.isToken(kind), Self.clean(place) == place else { return nil }
         var fields: [MemoryField] = []
         for part in parts.dropFirst(5) {
-            guard let equals = part.firstIndex(of: "=") else { return nil }
-            let key = String(part[..<equals])
-            let value = String(part[part.index(after: equals)...])
+            guard let equals = part.unicodeScalars.firstIndex(of: "=") else { return nil }
+            let key = String(part.unicodeScalars[..<equals])
+            let value = String(part.unicodeScalars[part.unicodeScalars.index(after: equals)...])
             guard Self.isToken(key), !fields.contains(where: { $0.key == key }), Self.clean(value) == value else { return nil }
             fields.append(MemoryField(key: key, value: value))
         }
         self.init(date: day, weekday: weekday, time: time, kind: kind, place: place, fields: fields)
+    }
+
+    /// The texts between the ` | ` separators, found by code point as `clean` writes them: a text that begins with a
+    /// combining mark or ends with a prepended mark would otherwise join the separator's space into one Character.
+    private static func split(_ scalars: Substring.UnicodeScalarView) -> [String] {
+        let mark = Array(separator.unicodeScalars)
+        var parts: [String] = []
+        var rest = scalars[...]
+        while let range = rest.firstRange(of: mark) {
+            parts.append(String(rest[..<range.lowerBound]))
+            rest = rest[range.upperBound...]
+        }
+        parts.append(String(rest))
+        return parts
     }
 
     /// A Settings row: the stored line without its leading `- `.
