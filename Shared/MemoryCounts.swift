@@ -16,7 +16,7 @@ struct MemoryCountLine: Equatable {
     }
 }
 
-// @MX:NOTE: [AUTO] One generic rule over the fields of the raw memory lines: no list of kinds, keys or partners, and every line is read through MemoryLine(text:). The window (42 calendar days in the request's zone), the thresholds (leader 2, slice 3) and the limits (16 lines, 1600 code points) are the named constants below.
+// @MX:NOTE: [AUTO] One generic rule over the fields of the raw memory lines: no list of kinds, keys or partners, and every raw line is read through MemoryLine(text:). The count lines MemoryCountLine(text:) accepts are read too (SPEC-MEMORY-004). The window (42 calendar days in the request's zone), the thresholds (leader 2, slice 3) and the limits (16 lines, 1600 code points) are the named constants below.
 /// The counts the app makes from the raw lines of `memory.md` for the chat request.
 enum MemoryCounts {
     static let windowDays = 42
@@ -51,12 +51,9 @@ enum MemoryCounts {
         }
     }
 
-    /// Every count line the raw lines dated on or after today minus 42 calendar days support (today and the window start taken
-    /// in `timeZone`, with no upper bound). For each kind and each subject key (the place, and each field not named `place`):
-    /// an overall line when the leader was chosen at least twice, and a slice line for each context fact (weekday, part of the
-    /// day, place) of another name whose slice holds at least three lines, whose leader was chosen at least twice and differs
-    /// from the overall leader. A line's dates are the first and last date of its leader's lines in its group.
-    static func candidates(from lines: [String], now: Date, timeZone: TimeZone) -> [MemoryCountLine] {
+    /// Today and the first day of the window as `yyyy-MM-dd` texts, both taken in `timeZone`: the window is the last 42 calendar
+    /// days, with no upper bound.
+    static func window(now: Date, timeZone: TimeZone) -> (today: String, start: String) {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let formatter = DateFormatter()
@@ -64,8 +61,20 @@ enum MemoryCounts {
         formatter.calendar = calendar
         formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd"
-        guard let startDay = calendar.date(byAdding: .day, value: -windowDays, to: calendar.startOfDay(for: now)) else { return [] }
-        let start = formatter.string(from: startDay)
+        let today = formatter.string(from: now)
+        guard let startDay = calendar.date(byAdding: .day, value: -windowDays, to: calendar.startOfDay(for: now)) else {
+            return (today, today)
+        }
+        return (today, formatter.string(from: startDay))
+    }
+
+    /// Every count line the raw lines dated on or after today minus 42 calendar days support (today and the window start taken
+    /// in `timeZone`, with no upper bound). For each kind and each subject key (the place, and each field not named `place`):
+    /// an overall line when the leader was chosen at least twice, and a slice line for each context fact (weekday, part of the
+    /// day, place) of another name whose slice holds at least three lines, whose leader was chosen at least twice and differs
+    /// from the overall leader. A line's dates are the first and last date of its leader's lines in its group.
+    static func candidates(from lines: [String], now: Date, timeZone: TimeZone) -> [MemoryCountLine] {
+        let start = window(now: now, timeZone: timeZone).start
 
         let counted = lines.compactMap(MemoryLine.init(text:)).filter { $0.date >= start }.map(Counted.init)
         var result: [MemoryCountLine] = []
@@ -97,13 +106,7 @@ enum MemoryCounts {
     /// order; taken in that order until the first line that would make more than 16 lines or more than 1600 code points, each
     /// line counted with one line feed.
     static func select(_ candidates: [MemoryCountLine]) -> [MemoryCountLine] {
-        let ordered = candidates.sorted { a, b in
-            let left = a.n * a.n * b.total
-            let right = b.n * b.n * a.total
-            if left != right { return left > right }
-            if a.to != b.to { return a.to > b.to }
-            return a.text.unicodeScalars.lexicographicallyPrecedes(b.text.unicodeScalars)
-        }
+        let ordered = ranked(candidates)
         var taken: [MemoryCountLine] = []
         var used = 0
         for line in ordered {
@@ -113,6 +116,18 @@ enum MemoryCounts {
             used += size
         }
         return taken
+    }
+
+    /// The count lines by strength n*n/N (compared by cross-multiplication), then the later `to` date, then the text in code-point
+    /// order: the order `select` takes them in, with no limit.
+    static func ranked(_ candidates: [MemoryCountLine]) -> [MemoryCountLine] {
+        candidates.sorted { a, b in
+            let left = a.n * a.n * b.total
+            let right = b.n * b.n * a.total
+            if left != right { return left > right }
+            if a.to != b.to { return a.to > b.to }
+            return a.text.unicodeScalars.lexicographicallyPrecedes(b.text.unicodeScalars)
+        }
     }
 
     /// The texts of the selected count lines of `lines` at `now` in `timeZone`.

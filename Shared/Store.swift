@@ -106,6 +106,8 @@ final class Store: ObservableObject {
     var replanNow: () -> Date = { Date() }
     /// The time zone a memory line's date and time are written in; a test sets a fixed zone.
     var memoryTimeZone: () -> TimeZone = { TimeZone.current }
+    /// The clock of the memory file's compaction; a test sets a fixed instant.
+    var memoryNow: () -> Date = { Date() }
     /// How many days after today the leg window of a repeat reaches, and how many days after its day a leg of an
     /// unstored occurrence is kept.
     nonisolated static let legWindowDays = 14
@@ -3439,7 +3441,7 @@ final class Store: ObservableObject {
     // @MX:NOTE: [AUTO] Four callers (three save points here, the partner record point in AgentToolbox.actOnPartner), all after the user's tap; never call it from a card builder, a repeat, a background leg, an edit or a delete.
     func remember(kind: String, at date: Date, place: Place?, fields: [(String, String)]) {
         guard let line = MemoryLine.make(kind: kind, at: date, zone: memoryTimeZone(), place: place?.name, fields: fields) else { return }
-        if let lines = memory.appending(line) { memoryLines = lines }
+        if let lines = memory.appending(line, compaction: MemoryCompaction(now: memoryNow(), zone: memoryTimeZone())) { memoryLines = lines }
     }
 
     /// Removes the one memory line at `index` (the Settings Memory tab's delete button). A failed write keeps the line.
