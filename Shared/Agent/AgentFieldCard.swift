@@ -425,6 +425,7 @@ indirect enum AgentFieldRow {
         slots[key] = slot
         card.fields[index].chosen = text
         card.fields[index].note = nil
+        card.fields[index].keptQuery = nil
         return true
     }
 
@@ -570,6 +571,8 @@ indirect enum AgentFieldRow {
     func search(_ key: String, _ query: String) {
         guard !isFrozen, let index = index(of: key), let spec = slots[key]?.spec, spec.kind == .place else { return }
         let id = card.fields[index].id
+        // The row keeps the text of its latest search (a blank text keeps nothing), so a closed list gives it back on reopening.
+        card.fields[index].keptQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : query
         // The first search of a partner-resolved row spends its seed, whatever that search asks (even nothing).
         if spec.partnerLookup { spendSeed(key, index) }
         switch debouncer.gate(id, query) {
