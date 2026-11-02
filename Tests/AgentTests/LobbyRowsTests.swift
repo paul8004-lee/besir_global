@@ -1027,12 +1027,14 @@ final class LobbyRowsTests: XCTestCase {
 
     func testLOBBYROWS_T15_EveryLineIsPlainEnglishFactsWithoutAdviceAndTheMarkerIsAppliedOnceOnlyToPartnerLines() {
         var collected: [(kind: LobbyFixtures.RowKind, line: String, titles: [String])] = []
+        var placeholders: [String] = []
         for c in LobbyFixtures.pureCases {
             let onTime = LobbyRows.onTimeLines(items: c.items, now: c.now, calendar: c.calendar)
             let full = LobbyRows.fullLines(stays: c.stays, now: c.now, calendar: c.calendar)
             let rich = LobbyRows.richLines(spentCents: c.spentCents, entries: c.entries)
             XCTAssertLessThanOrEqual(onTime.count, 2, "an on-time row never has more than 2 key lines: \(c.label)")
             XCTAssertLessThanOrEqual(rich.count, 2, "a rich row never has more than 2 key lines: \(c.label)")
+            XCTAssertLessThanOrEqual(full.count, 2, "a full row never has more than 2 key lines: \(c.label)")
             collected += onTime.map { (kind: LobbyFixtures.RowKind.onTime, line: $0, titles: c.itemTitles) }
             collected += full.map { (kind: LobbyFixtures.RowKind.full, line: $0, titles: c.itemTitles) }
             collected += rich.map { (kind: LobbyFixtures.RowKind.rich, line: $0, titles: c.itemTitles) }
@@ -1041,13 +1043,32 @@ final class LobbyRowsTests: XCTestCase {
             let rows = s.rows(folder(), s.now)
             XCTAssertLessThanOrEqual(lines(rows, .onTime).count, 2, "an on-time row never has more than 2 key lines: \(s.label)")
             XCTAssertLessThanOrEqual(lines(rows, .rich).count, 2, "a rich row never has more than 2 key lines: \(s.label)")
+            XCTAssertLessThanOrEqual(lines(rows, .full).count, 2, "a full row never has more than 2 key lines: \(s.label)")
             for row in rows {
                 if let kind = LobbyFixtures.RowKind(rawValue: row.id) {
-                    collected += row.lines.map { (kind: kind, line: $0, titles: s.itemTitles) }
+                    for placeholder in ["No plans today", "No orders today"] where row.lines.contains(placeholder) {
+                        XCTAssertEqual(row.lines, [placeholder], "a placeholder stands alone in its row: \(s.label)")
+                        XCTAssertEqual(kind, placeholder == "No plans today" ? .onTime : .full,
+                                       "a placeholder belongs to its own row: \(s.label)")
+                    }
+                    if row.lines == ["No plans today"] && kind == .onTime || row.lines == ["No orders today"] && kind == .full {
+                        placeholders += row.lines
+                    } else {
+                        collected += row.lines.map { (kind: kind, line: $0, titles: s.itemTitles) }
+                    }
                 }
             }
         }
         XCTAssertGreaterThanOrEqual(collected.count, 25, "the fixtures of T02 to T14 together hold at least 25 lines")
+        XCTAssertTrue(placeholders.contains("No plans today"), "a stored case shows the be on-time sir placeholder")
+        XCTAssertTrue(placeholders.contains("No orders today"), "a stored case shows the be full sir placeholder")
+        for placeholder in placeholders {
+            XCTAssertTrue(isFactText(placeholder), "only fact characters: \(placeholder)")
+            XCTAssertTrue(holdsNoAdvice(placeholder), "no advice word: \(placeholder)")
+            XCTAssertEqual(markerCount(placeholder), 0, "a placeholder carries no marker: \(placeholder)")
+        }
+        XCTAssertFalse(collected.contains { $0.line == "No plans today" || $0.line == "No orders today" },
+                       "a placeholder is never collected as a partner or schedule line")
         for item in collected {
             let text = scanned(item.line, titles: item.titles)
             XCTAssertTrue(isFactText(text), "only fact characters: \(item.line)")
@@ -1076,6 +1097,8 @@ final class LobbyRowsTests: XCTestCase {
                        "the scanner flags a doubled marker")
         XCTAssertFalse(fullLineIsWellFormed("Example Tables 7:00 PM"), "the scanner flags a missing marker")
         XCTAssertFalse(richLineIsWellFormed("$140.00 left this week"), "the scanner flags a missing marker")
+        XCTAssertFalse(fullLineIsWellFormed("No orders today"), "a placeholder is not a partner line")
+        XCTAssertFalse(richLineIsWellFormed("No orders today"), "a placeholder is not a rich line")
         XCTAssertTrue(fullLineIsWellFormed("Example Tables - Simulated 7:00 PM"))
         XCTAssertTrue(richLineIsWellFormed("Estimate $86.00 - Simulated"))
     }
