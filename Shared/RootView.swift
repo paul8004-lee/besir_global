@@ -82,7 +82,7 @@ struct RootView: View {
             }
         }
         .sheet(isPresented: $showingChat, onDismiss: { Task { await chatHolder.session?.sheetDismissed(); SheetHold.shared.closed(SheetHold.chatKey) } }) {
-            if let session = chatHolder.session { AgentChatView(session: session).holdsSharePass(key: SheetHold.chatKey) }
+            if let session = chatHolder.session { AgentChatView(session: session).holdsSharePass(key: SheetHold.chatKey).holdsSharePass() }
         }
         .overlay(alignment: .bottomTrailing) {
             if store.config.hasAI {
