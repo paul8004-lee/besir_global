@@ -478,8 +478,8 @@ final class LobbyRowsTests: XCTestCase {
 
     func testLOBBYROWS_T03_OnTimeLinesCarryLeaveByThenTitleTimeTravelAndMoreToday() {
         let expected: [[String]] = [
-            ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min drive · 2 more today"],
-            ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min drive · 1 more today"],
+            ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min drive · 2\u{00A0}more today"],
+            ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min drive · 1\u{00A0}more today"],
             ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min drive"],
             ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min drive"],
             ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min transit"],
@@ -506,7 +506,7 @@ final class LobbyRowsTests: XCTestCase {
     func testLOBBYROWS_T04_OnTimeLinesLeaveOutWhatTheRecordDoesNotHold() {
         let expected: [[String]] = [
             ["Dinner 7:00 PM"],
-            ["Dinner 7:00 PM · 1 more today"],
+            ["Dinner 7:00 PM · 1\u{00A0}more today"],
             ["Leave by 6:35 PM", "Dinner 7:00 PM"],
             ["Dinner 7:00 PM · 22 min drive"],
             ["7:00 PM"],
@@ -522,13 +522,13 @@ final class LobbyRowsTests: XCTestCase {
 
     func testLOBBYROWS_T05_TheNextItemIsTheFirstStartAfterNowAndMoreTodayCountsEveryOtherLaterOneOfToday() {
         let expected: [[String]] = [
-            ["Next 10:00 AM · 2 more today"],
-            ["A 10:00 AM · 1 more today"],
-            ["A 10:00 AM · 2 more today"],
-            ["A 10:00 AM · 1 more today"],
+            ["Next 10:00 AM · 2\u{00A0}more today"],
+            ["A 10:00 AM · 1\u{00A0}more today"],
+            ["A 10:00 AM · 2\u{00A0}more today"],
+            ["A 10:00 AM · 1\u{00A0}more today"],
             ["A 10:00 AM"],
             ["A 10:00 AM"],
-            ["Gym 6:00 PM · 1 more today"],
+            ["Gym 6:00 PM · 1\u{00A0}more today"],
         ]
         XCTAssertEqual(LobbyFixtures.t05.count, expected.count)
         for (c, want) in zip(LobbyFixtures.t05, expected) {
@@ -659,10 +659,10 @@ final class LobbyRowsTests: XCTestCase {
     func testLOBBYROWS_T12_TheOnTimeItemsComeFromTheStoreIncludingRepeatsAndTheirStoredLegs() throws {
         let rig = LobbyFixtures.t12Rig(folder: folder())
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T09:00"))),
-                       ["Standup 10:00 AM · 3 more today"])
+                       ["Standup 10:00 AM · 3\u{00A0}more today"])
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T10:30"))),
-                       ["Leave by 12:30 PM", "Review 1:00 PM · 30 min walk · 2 more today"])
-        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T13:30"))), ["Gym 5:00 PM · 1 more today"])
+                       ["Leave by 12:30 PM", "Review 1:00 PM · 30 min walk · 2\u{00A0}more today"])
+        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T13:30"))), ["Gym 5:00 PM · 1\u{00A0}more today"])
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T17:30"))),
                        ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min drive"])
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T19:30"))), [],
@@ -681,13 +681,13 @@ final class LobbyRowsTests: XCTestCase {
     func testLOBBYROWS_T13_TravelEventsWithoutAnActivityAreItemsByTheirAnchorTime() {
         let rig = LobbyFixtures.t13Rig(folder: folder())
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T13:30"))),
-                       ["Leave by 2:50 PM", "Airport 3:30 PM · 40 min transit · 5 more today"])
-        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T15:45"))), ["Old 4:00 PM · 4 more today"])
+                       ["Leave by 2:50 PM", "Airport 3:30 PM · 40 min transit · 5\u{00A0}more today"])
+        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T15:45"))), ["Old 4:00 PM · 4\u{00A0}more today"])
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T17:30"))),
-                       ["Leave by 6:20 PM", "Home run 6:20 PM · 30 min drive · 3 more today"])
+                       ["Leave by 6:20 PM", "Home run 6:20 PM · 30 min drive · 3\u{00A0}more today"])
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T18:45"))),
-                       ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min drive · 2 more today"])
-        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T19:30"))), ["Back 9:00 PM · 1 more today"])
+                       ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min drive · 2\u{00A0}more today"])
+        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T19:30"))), ["Back 9:00 PM · 1\u{00A0}more today"])
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T22:00"))),
                        ["Leave by 11:50 PM", "Night drive 11:50 PM · 40 min drive"])
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T23:55"))), [])
@@ -697,7 +697,7 @@ final class LobbyRowsTests: XCTestCase {
             rig.store.events[i].travelSeconds = 3000
         }
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T13:30"))),
-                       ["Leave by 2:40 PM", "Airport 3:30 PM · 50 min transit · 5 more today"],
+                       ["Leave by 2:40 PM", "Airport 3:30 PM · 50 min transit · 5\u{00A0}more today"],
                        "the rows read the store again, not a copy")
     }
 
@@ -757,7 +757,7 @@ final class LobbyRowsTests: XCTestCase {
     /// Non-empty, and only ASCII letters and digits, space, `. , : $ ( ) -` and the middle dot.
     private func isFactText(_ text: String) -> Bool {
         guard !text.isEmpty else { return false }
-        let allowed: Set<Character> = [" ", ".", ",", ":", "$", "(", ")", "-", "·"]
+        let allowed: Set<Character> = [" ", "\u{00A0}", ".", ",", ":", "$", "(", ")", "-", "·"]
         return text.allSatisfy { c in (c.isASCII && (c.isLetter || c.isNumber)) || allowed.contains(c) }
     }
 

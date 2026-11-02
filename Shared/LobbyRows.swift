@@ -73,7 +73,7 @@ enum LobbyRows {
                 && isUpcoming(start: $0.element.start, now: now)
         }.count
         if moreToday >= 1 {
-            parts.append("\(moreToday) more today")
+            parts.append("\(moreToday)\u{00A0}more today")
         }
         lines.append(parts.joined(separator: " · "))
         return lines
