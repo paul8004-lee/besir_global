@@ -253,7 +253,7 @@ struct RootView: View {
                 let rows = LobbyRows.rows(store: store, records: PartnerRecords.shared, ledger: BudgetLedger.shared,
                                           now: Date(), calendar: Calendar.current)
                 ScrollView {
-                    // One block as wide as its widest row, centred; the last row stops above the besir AI circle.
+                    // One block that always takes the full width between the side margins; the last row stops above the besir AI circle.
                     LobbyColumn {
                         ForEach(rows) { row in
                             if let s = Service(rawValue: row.id) { serviceCard(s, row) }
