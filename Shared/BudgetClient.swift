@@ -62,6 +62,9 @@ final class BudgetClient {
     /// The entries of one week from this client's ledger, in insertion order.
     func weekEntries(weekStart: String) -> [BudgetEntry] { ledger.weekEntries(weekStart: weekStart) }
 
+    /// Every entry of this client's ledger, in insertion order.
+    func allEntries() -> [BudgetEntry] { ledger.allEntries() }
+
     /// Fires once for every effective add or remove of this client's ledger.
     var changes: AnyPublisher<Void, Never> {
         NotificationCenter.default.publisher(for: BudgetLedger.didChange, object: ledger).map { _ in () }.eraseToAnyPublisher()
@@ -75,17 +78,28 @@ final class BudgetClient {
     }
 
     /// Tells the partner about one amount and, after an exact answer, adds it to the ledger once. A request id that is already
-    /// in the ledger sends nothing and fails as `other`.
+    /// in the ledger sends nothing and fails as `other`. `partnerName`, `day` and `kind` stay on the device: they go into the
+    /// ledger entry only (SPEC-RICHSTATS-001), never into the request body, a summary or any result.
     func spend(amountCents: Int, isEstimate: Bool, weekStart: String, requestID: String,
-               flow: UUID) async -> Result<BudgetStanding, BudgetFailure> {
+               flow: UUID, partnerName: String? = nil, day: String? = nil,
+               kind: String? = nil) async -> Result<BudgetStanding, BudgetFailure> {
         guard config.hasProxy else { return .failure(.notSetUp) }
         guard !ledger.contains(requestID: requestID) else { return .failure(.other) }
         let sent = Sent(operation: .spend, weekStart: weekStart, spentCents: ledger.spentCents(weekStart: weekStart),
                         amountCents: amountCents)
-        return await run(sent, requestID: requestID, isEstimate: isEstimate, flow: flow)
+        let extra = BudgetEntryExtras(partnerName: partnerName, day: day, kind: kind)
+        return await run(sent, requestID: requestID, isEstimate: isEstimate, extras: extra, flow: flow)
     }
 
-    private func run(_ sent: Sent, requestID: String?, isEstimate: Bool, flow: UUID) async -> Result<BudgetStanding, BudgetFailure> {
+    /// The device-only texts of one spend, carried from `spend` to the ledger write.
+    private struct BudgetEntryExtras {
+        let partnerName: String?
+        let day: String?
+        let kind: String?
+    }
+
+    private func run(_ sent: Sent, requestID: String?, isEstimate: Bool, extras: BudgetEntryExtras? = nil,
+                     flow: UUID) async -> Result<BudgetStanding, BudgetFailure> {
         var fields: [String: Any] = ["op": sent.operation.rawValue, "week_start": sent.weekStart, "spent_cents": sent.spentCents]
         if let amount = sent.amountCents, let requestID {
             fields["amount_cents"] = amount
@@ -100,7 +114,8 @@ final class BudgetClient {
         var outcome = result
         if case .success(let standing) = result {
             if let amount = sent.amountCents, let requestID {
-                ledger.add(BudgetEntry(requestID: requestID, weekStart: sent.weekStart, amountCents: amount, isEstimate: isEstimate))
+                ledger.add(BudgetEntry(requestID: requestID, weekStart: sent.weekStart, amountCents: amount, isEstimate: isEstimate,
+                                       partnerName: extras?.partnerName, day: extras?.day, kind: extras?.kind))
             }
             // Read after the write, so a spend that was just added counts.
             outcome = .success(BudgetStanding(weekStart: standing.weekStart, budgetCents: standing.budgetCents,

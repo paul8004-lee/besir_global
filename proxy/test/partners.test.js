@@ -212,7 +212,7 @@ test("AC-PARTNERS-001 N03: the plumbing of the directory route", async () => {
 
 const SYMBOL_RULE = /^[a-z0-9][a-z0-9.]{0,39}$/;
 
-test("AC-FULLHAND-023 Y01: the symbols request answers each entry with a sixth key and keeps its own fault order", async () => {
+test("AC-FULLHAND-023 Y01: the symbols request answers each entry with a sixth and a seventh key and keeps its own fault order", async () => {
   let calls = 0;
   globalThis.fetch = async () => {
     calls += 1;
@@ -227,7 +227,7 @@ test("AC-FULLHAND-023 Y01: the symbols request answers each entry with a sixth k
     assert.equal(Object.keys(answer).join(), "partners");
     assert.ok(answer.partners.length >= 1);
     for (const entry of answer.partners) {
-      assert.equal(Object.keys(entry).join(), "id,name,title,summary,route,symbol");
+      assert.equal(Object.keys(entry).join(), "id,name,title,summary,route,symbol,kind");
       assert.equal(typeof entry.symbol, "string");
       assert.match(entry.symbol, SYMBOL_RULE);
     }
@@ -258,8 +258,73 @@ test("AC-FULLHAND-023 Y02: the plain answer is unchanged and the symbols answer 
     assert.equal(Object.keys(entry).join(), "id,name,title,summary,route");
   }
   assert.equal(plainText.includes('"symbol"'), false);
+  assert.equal(plainText.includes('"kind"'), false);
   const withSymbols = await (await call({ op: "list", symbols: true })).json();
-  for (const entry of withSymbols.partners) delete entry.symbol;
+  for (const entry of withSymbols.partners) {
+    // The symbols answer carries a kind to take away; without one this comparison would hide a missing key.
+    assert.equal(typeof entry.kind, "string");
+    delete entry.symbol;
+    delete entry.kind;
+  }
   assert.deepEqual(withSymbols, plain);
   assert.equal(JSON.stringify(withSymbols), plainText);
+});
+
+const KIND_RULE = /^[A-Za-z](?:[A-Za-z ]{0,18}[A-Za-z])?$/;
+
+test("AC-RICHSTATS-019 K01: the symbols answer carries a kind per entry and the plain answer none", async () => {
+  const answer = await (await call({ op: "list", symbols: true })).json();
+  const kindById = {};
+  for (const entry of answer.partners) {
+    assert.equal(Object.keys(entry).join(), "id,name,title,summary,route,symbol,kind");
+    assert.match(entry.kind, KIND_RULE);
+    kindById[entry.id] = entry.kind;
+  }
+  assert.equal(kindById.booking, "Dining");
+  assert.equal(kindById.delivery, "Delivery");
+  const plainText = await (await call({ op: "list" })).text();
+  assert.equal(plainText.includes('"kind"'), false);
+});
+
+// An independent reading of the kind rule (spec REQ-019), written without the Worker's code and without KIND_RULE: one to
+// twenty characters, each an ASCII letter or a space, the first and the last a letter, and `kind` after `symbol`.
+function kindProblem(entry) {
+  const keys = Object.keys(entry);
+  if (!keys.includes("kind")) return "missing kind";
+  if (!keys.includes("symbol") || keys.indexOf("kind") < keys.indexOf("symbol")) return "kind before symbol";
+  if (typeof entry.kind !== "string") return "not a text";
+  const letters = [...entry.kind].map((c) => c.codePointAt(0));
+  if (letters.length < 1 || letters.length > 20) return "bad length";
+  const isLetter = (c) => (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+  if (!letters.every((c) => isLetter(c) || c === 32)) return "bad character";
+  if (!isLetter(letters[0]) || !isLetter(letters[letters.length - 1])) return "edge is not a letter";
+  return null;
+}
+
+test("AC-RICHSTATS-019 K02: an independent reading of the kind rule accepts the live kinds and finds each planted fault", async () => {
+  const base = { id: "booking", name: "Example Tables", title: "Reserve a table", summary: "Reserves a table.", route: "/booking", symbol: "fork.knife" };
+  // The reading accepts what the rule allows.
+  for (const kind of ["A", "a".repeat(20), "Fast Food", "Dining"]) {
+    assert.equal(kindProblem({ ...base, kind }), null, kind);
+  }
+  // The reading fires: each planted fault is found.
+  const planted = [
+    ["an empty kind", { ...base, kind: "" }],
+    ["a leading space", { ...base, kind: " Dining" }],
+    ["a trailing space", { ...base, kind: "Dining " }],
+    ["a digit", { ...base, kind: "Din1ng" }],
+    ["21 letters", { ...base, kind: "a".repeat(21) }],
+    ["a trailing line break", { ...base, kind: "Dining\n" }],
+    ["a number", { ...base, kind: 5 }],
+    ["a missing kind", { ...base }],
+    ["a kind before the symbol", { id: base.id, name: base.name, title: base.title, summary: base.summary, route: base.route, kind: "Dining", symbol: base.symbol }],
+  ];
+  for (const [name, entry] of planted) {
+    assert.notEqual(kindProblem(entry), null, `the reading missed: ${name}`);
+  }
+  // The live answer passes the reading.
+  const answer = await (await call({ op: "list", symbols: true })).json();
+  for (const entry of answer.partners) {
+    assert.equal(kindProblem(entry), null, `${entry.id}: ${kindProblem(entry)}`);
+  }
 });

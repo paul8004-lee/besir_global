@@ -1,7 +1,9 @@
 import Foundation
 
-/// One amount the device sent to the budget partner (SPEC-BUDGET-001). Whole cents, the week and the request id, and nothing
-/// else: there is no field for a place, a title, a time, a person or a payment, on purpose.
+/// One amount the device sent to the budget partner (SPEC-BUDGET-001). Whole cents, the week and the request id, plus three
+/// optional texts that stay on the device (SPEC-RICHSTATS-001): the partner's name, the day and the kind. There is no field for
+/// a place, a title, a time, a person or a payment, on purpose, and none of the three ever enters a request to the budget
+/// partner or a Connections summary.
 struct BudgetEntry: Codable, Equatable {
     /// A UUID made when the spend was made; the same id is never counted twice.
     let requestID: String
@@ -10,6 +12,12 @@ struct BudgetEntry: Codable, Equatable {
     let amountCents: Int
     /// True for an amount besir computed (a table's estimated spend); false for an amount the user stated.
     let isEstimate: Bool
+    /// The name of the partner an estimate came from; nil for a stated amount and for every entry written before this field.
+    var partnerName: String? = nil
+    /// The day the amount counts on, `yyyy-MM-dd`; nil for every entry written before this field.
+    var day: String? = nil
+    /// The kind the partner's directory entry announced, as received; nil when it announced none.
+    var kind: String? = nil
 }
 
 /// The device's spending, in one JSON file and one capped list. It never throws and never gets in the way of the exchange it
@@ -72,6 +80,13 @@ final class BudgetLedger: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return entries.filter { $0.weekStart == weekStart }
+    }
+
+    /// Every entry in insertion order, across all weeks (SPEC-RICHSTATS-001). A copy taken under the lock.
+    func allEntries() -> [BudgetEntry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries
     }
 
     // MARK: Write
@@ -140,11 +155,23 @@ enum BudgetWeek {
         // Sunday is 1 and Monday 2, so Monday gives 0 days back, Tuesday 1, and Sunday 6.
         let back = (calendar.component(.weekday, from: date) + 5) % 7
         let monday = calendar.date(byAdding: .day, value: -back, to: date) ?? date
+        return text(of: monday, calendar: calendar, zone: zone)
+    }
+
+    /// The calendar day of `date` in `zone`, as `yyyy-MM-dd` (`en_US_POSIX`, Gregorian): the same formatter as `start(of:in:)`
+    /// without the step back to Monday, so a day lies in its week when both come from the same instant and zone.
+    static func day(of date: Date, in zone: TimeZone) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        return text(of: date, calendar: calendar, zone: zone)
+    }
+
+    private static func text(of date: Date, calendar: Calendar, zone: TimeZone) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = calendar
         formatter.timeZone = zone
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: monday)
+        return formatter.string(from: date)
     }
 }
