@@ -982,7 +982,8 @@ final class AgentToolbox {
     }
 
     /// The directory and one form for each entry; the partners whose form is good, in the directory's order. `symbols` asks the
-    /// directory for the partners' symbols: only the hand path passes true, the model path passes false.
+    /// directory for the partners' symbols and kinds: the hand path and the chat's lookup both pass true. The model's listing
+    /// is built apart (`AgentPartner.listResult`) and holds neither.
     func loadPartners(flow: UUID, symbols: Bool) async -> [PartnerSpec] {
         await loadPartnerDirectory(flow: flow, symbols: symbols).specs
     }
@@ -1022,7 +1023,7 @@ final class AgentToolbox {
     private func partnersLookup(flow: UUID?) -> AgentToolOutcome {
         let flow = flow ?? ConnectionLog.beginFlow()
         return .lookup(AgentLookup { [self] in
-            let good = await loadPartners(flow: flow, symbols: false)
+            let good = await loadPartners(flow: flow, symbols: true)
             guard !good.isEmpty, !Task.isCancelled else {
                 let result = Self.encode(["status": "unavailable", "simulated": true, "message": AgentPartner.listUnavailableMessage])
                 return AgentLookupOutput(result: result, showsGoogleData: false)

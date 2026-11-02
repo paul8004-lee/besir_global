@@ -63,8 +63,9 @@ extension PartnerEntry {
 
     /// Accepts only the exact one-key answer: 1 to 8 entries, each exactly `id`, `name`, `title`, `summary`, `route`, with
     /// unique ids and unique routes. One defect in one entry makes the whole directory unusable. With `symbols` on (the answer to
-    /// the symbols request) an entry may carry a sixth key `symbol`: it is kept when it is well formed and otherwise dropped with
-    /// the entry kept; with it off, which is the reader of every older build, a sixth key fails the directory.
+    /// the symbols request) an entry may carry a sixth key `symbol` and a seventh key `kind`, either alone or both: each is kept
+    /// when it is well formed and otherwise dropped with the entry kept, and any other extra key fails the directory; with it off,
+    /// which is the reader of every older build, a sixth key fails the directory.
     static func list(from data: Data, symbols: Bool = false) -> [PartnerEntry]? {
         guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], object.count == 1,
               let listed = object["partners"] as? [Any], (1...maxEntries).contains(listed.count) else { return nil }
@@ -78,16 +79,21 @@ extension PartnerEntry {
     }
 
     private init?(object: [String: Any], symbols: Bool) {
-        let withSymbol = symbols && object.count == 6 && object["symbol"] != nil
-        guard object.count == 5 || withSymbol, let id = object["id"] as? String, Self.isID(id),
+        let announced = symbols && (5...7).contains(object.count) && object.keys.allSatisfy { Self.announcedKeys.contains($0) }
+        guard object.count == 5 || announced, let id = object["id"] as? String, Self.isID(id),
               let name = object["name"] as? String, PartnerForm.isItemName(name),
               let title = object["title"] as? String, PartnerForm.isLabel(title, upTo: 40),
               let summary = object["summary"] as? String, PartnerForm.isLabel(summary, upTo: 120),
               let route = object["route"] as? String, Self.isRoute(route) else { return nil }
         // A missing, non-string or ill-formed symbol keeps the entry without one.
         let symbol = (object["symbol"] as? String).flatMap { Self.isSymbol($0) ? $0 : nil }
-        self.init(id: id, name: name, title: title, summary: summary, route: route, symbol: symbol)
+        // A missing, non-string or ill-formed kind keeps the entry without one.
+        let kind = (object["kind"] as? String).flatMap { Self.isKind($0) ? $0 : nil }
+        self.init(id: id, name: name, title: title, summary: summary, route: route, symbol: symbol, kind: kind)
     }
+
+    /// The keys a symbols answer may hold: the five of the plain answer and the two it may add.
+    private static let announcedKeys: Set<String> = ["id", "name", "title", "summary", "route", "symbol", "kind"]
 
     /// 1 to 40 characters of `a-z`, `0-9` and `.`, the first a letter or digit. Checked scalar by scalar, never by a pattern, so a
     /// trailing line break is ill-formed.
@@ -97,10 +103,16 @@ extension PartnerEntry {
         return scalars.dropFirst().allSatisfy { isLower($0) || isDigit($0) || $0 == "." }
     }
 
-    /// The kind rule. Skeleton of SPEC-RICHSTATS-001 (card t116): no text passes until the rule lands.
+    /// The kind rule (SPEC-RICHSTATS-001, card t116): 1 to 20 characters of ASCII letters and spaces, a letter at both ends. Checked
+    /// scalar by scalar, never by a pattern, so a trailing line break is ill-formed.
     static func isKind(_ text: String) -> Bool {
-        false
+        let scalars = Array(text.unicodeScalars)
+        guard (1...20).contains(scalars.count), let first = scalars.first, let last = scalars.last,
+              isLetter(first), isLetter(last) else { return false }
+        return scalars.allSatisfy { isLetter($0) || $0 == " " }
     }
+
+    private static func isLetter(_ scalar: Unicode.Scalar) -> Bool { isLower(scalar) || ("A"..."Z").contains(scalar) }
 
     /// 1 to 24 characters of `a-z`, `0-9` and `_`, the first a letter.
     private static func isID(_ text: String) -> Bool {

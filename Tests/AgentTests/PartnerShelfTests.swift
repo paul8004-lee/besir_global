@@ -407,8 +407,10 @@ final class PartnerShelfTests: XCTestCase {
         XCTAssertEqual((listed?["partners"] as? [[String: Any]])?.count, 1)
         XCTAssertEqual(first.partner.requests.count, 2)
         let body = try XCTUnwrap(first.partner.body(0))
-        XCTAssertEqual(body.count, 1)
+        // SPEC-RICHSTATS-001 D11: the chat's lookup asks the directory with symbols so a booking can keep the partner's kind.
+        XCTAssertEqual(body.count, 2)
         XCTAssertEqual(body["op"] as? String, "list")
+        XCTAssertEqual(body["symbols"] as? Bool, true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "the model path writes no file")
 
         // Building a rig empties the support folder (`EmptyStore.make`), so the second rig is built before the seed is written.
