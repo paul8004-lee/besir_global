@@ -401,7 +401,7 @@ enum PlaceLine {
 
     /// The text a place row's search field starts with when its list opens or the card is drawn again.
     static func openingText(_ field: EditField) -> String {
-        field.searchSeed ?? ""
+        field.keptQuery ?? field.searchSeed ?? ""
     }
 
     /// What a closed place row shows and whether it is a chosen value (ink) or only the placeholder style (muted).
@@ -412,7 +412,9 @@ enum PlaceLine {
 
     /// The closed row of a place row: the chosen text when there is one, else a kept text that is not blank, else nothing.
     static func closedRow(closed: String, kept: String?) -> ClosedRow {
-        ClosedRow(text: closed, isValue: !closed.isEmpty)
+        if !closed.isEmpty { return ClosedRow(text: closed, isValue: true) }
+        if let kept, !kept.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return ClosedRow(text: kept, isValue: false) }
+        return ClosedRow(text: "", isValue: false)
     }
 
     /// The note a partner row shows for its lookup: the no-match words for an empty answer, the failed words for a failed one,
