@@ -42,6 +42,10 @@ enum AgentWire {
         return ([first] + fixedSentences).joined(separator: "\n")
     }
 
+    static func instructions(now: Date, timeZone: TimeZone, rules: BesirRules?, countLines: [String]) -> String? {
+        nil
+    }
+
     // MARK: Request body
 
     private static func encode(_ value: Any) -> Data {
@@ -214,19 +218,27 @@ final class AgentClient: AgentTransport {
     private let now: () -> Date
     private let timeZone: () -> TimeZone
     private let session: URLSession
+    private let rules: () -> BesirRules?
+    private let memoryLines: () -> [String]
 
     /// `timeZone` is read for every request, so a zone change while the app runs reaches the instruction text.
     init(config: AppConfig, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone,
-         session: URLSession = URLSession(configuration: .ephemeral)) {
+         session: URLSession = URLSession(configuration: .ephemeral),
+         rules: @escaping () -> BesirRules? = { BesirRules.bundled() },
+         memoryLines: @escaping () -> [String] = { [] }) {
         self.config = config
         self.now = now
         self.timeZone = timeZone
         self.session = session
+        self.rules = rules
+        self.memoryLines = memoryLines
     }
 
     convenience init(config: AppConfig, now: @escaping () -> Date, timeZone: TimeZone,
-                     session: URLSession = URLSession(configuration: .ephemeral)) {
-        self.init(config: config, now: now, timeZone: { timeZone }, session: session)
+                     session: URLSession = URLSession(configuration: .ephemeral),
+                     rules: @escaping () -> BesirRules? = { BesirRules.bundled() },
+                     memoryLines: @escaping () -> [String] = { [] }) {
+        self.init(config: config, now: now, timeZone: { timeZone }, session: session, rules: rules, memoryLines: memoryLines)
     }
 
     var isConfigured: Bool { config.hasAI }
