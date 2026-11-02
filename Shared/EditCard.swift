@@ -399,6 +399,24 @@ enum PlaceLine {
         return seedToSearchOnOpen(seed: field.searchSeed, lookup: field.lookup)
     }
 
+    /// The text a place row's search field starts with when its list opens or the card is drawn again.
+    static func openingText(_ field: EditField) -> String {
+        field.keptQuery ?? field.searchSeed ?? ""
+    }
+
+    /// What a closed place row shows and whether it is a chosen value (ink) or only the placeholder style (muted).
+    struct ClosedRow: Equatable {
+        let text: String
+        let isValue: Bool
+    }
+
+    /// The closed row of a place row: the chosen text when there is one, else a kept text that is not blank, else nothing.
+    static func closedRow(closed: String, kept: String?) -> ClosedRow {
+        if !closed.isEmpty { return ClosedRow(text: closed, isValue: true) }
+        if let kept, !kept.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return ClosedRow(text: kept, isValue: false) }
+        return ClosedRow(text: "", isValue: false)
+    }
+
     /// The note a partner row shows for its lookup: the no-match words for an empty answer, the failed words for a failed one,
     /// nil for any other state and for a row that is not the partner's.
     static func partnerNote(partnerLookup: Bool, lookup: EditField.Lookup) -> String? {
@@ -578,6 +596,9 @@ enum PlaceLine {
     /// 갈래다(018 REQ-009: 앱이 못 푼 값은 그 줄에서 고르게 하되 낱말은 남긴다). 이미 실린
     /// 후보를 다시 검색하지는 않는다.
     var searchSeed: String? = nil
+    /// The text of the row's latest search, kept by an owner that keeps one (the partner card model), so a closed list keeps it
+    /// and a reopened list starts with it; nil for every other owner, after a blank text and after a chosen place.
+    var keptQuery: String? = nil
     /// 시각 줄이 도착/출발 기준을 갖는지. 활동의 시작·종료처럼 기준 없는 시각은 false로 만들며,
     /// 그런 줄은 기준 칩이 없고(REQ-002) 확정이 chooseTimePlain으로 간다(REQ-001 (d)). 기본값이
     /// true인 이유는 기존 생성부(AddEventView·AIAssistant)가 전부 기준 있는 줄이라 그 둘이 한

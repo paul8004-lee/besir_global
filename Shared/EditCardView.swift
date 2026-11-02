@@ -104,12 +104,11 @@ struct EditCardView: View {
             for f in card.fields where f.startsOpen && f.kind == .datetime && dialOpenedAt[f.id] == nil {
                 dialOpenedAt[f.id] = Date()
             }
-            // startsOpen인 장소 줄은 목록을 연 채 시작한다 — 후보 카드가 미리 얹은 낱말(searchSeed)을
-            // 검색창에 채워 글자가 있는 갈래(맞는 즐겨찾기 → 후보)로 보이게 하고, 이미 실린 후보를
-            // 다시 검색하지 않는다(O-S1-1 (나)).
+            // A place row that starts open begins with the opening text (the kept text, else the unspent seed, else empty), so the
+            // list shows the matching favorites and the candidates the row already holds; only a seed no search has spent is searched.
             for f in card.fields where f.kind == .place && f.startsOpen {
                 placeOpen.insert(f.id)
-                if let seed = f.searchSeed { draft[f.id] = seed }
+                draft[f.id] = PlaceLine.openingText(f)
                 if let seed = PlaceLine.searchOnAppear(f) { actions.searchPlaces(f.id, seed) }
             }
         }
@@ -583,15 +582,15 @@ struct EditCardView: View {
     /// 정하는 일이라 뷰가 따로 판단하지 않는다(계약 5).
     private func closedPlaceRow(_ field: EditField) -> some View {
         // 폴백 사슬은 합의된 순서다 — 화면 소유자가 내려준 글자, 골라 둔 값의 라벨, 없음.
-        let text = actions.closedSearchText?(field.id) ?? field.chosenLabel ?? ""
-        let shown = text.isEmpty ? placeholder(for: field) : text
+        let row = PlaceLine.closedRow(closed: actions.closedSearchText?(field.id) ?? field.chosenLabel ?? "", kept: field.keptQuery)
+        let shown = row.text.isEmpty ? placeholder(for: field) : row.text
         return Button {
             openPlaceList(field)
         } label: {
             HStack {
                 Text(shown)
                     .font(.callout)
-                    .foregroundStyle(text.isEmpty ? Theme.muted : Theme.ink)
+                    .foregroundStyle(row.isValue ? Theme.ink : Theme.muted)
                 Spacer()
             }
             .padding(.horizontal, 12)
@@ -605,12 +604,12 @@ struct EditCardView: View {
         .accessibilityLabel("\(field.label), \(shown)")
     }
 
-    /// 장소 목록 열기 — 다른 줄의 에디터를 먼저 정리하고(한 카드에서 열린 에디터는 하나),
-    /// 검색창에 씨앗 낱말을 얹는다. 다시 검색하지 않는다: 닫을 때 lookup을 지우지 않았으므로
-    /// 후보 카드가 미리 얹은 후보가 다시 열어도 살아 있다(R-1, O-S1-1 (나)).
+    /// Opens a place list: the other open editors close first (one open editor per card), and the search field starts with the
+    /// opening text (the kept text, else the unspent seed, else empty). Opening asks nothing new: the close leaves the row's lookup
+    /// and kept text in the model, so the candidates the row already holds are listed again; only a seed no search has spent is searched.
     private func openPlaceList(_ field: EditField) {
         collapseOtherEditors(except: field.id)
-        draft[field.id] = field.searchSeed ?? ""
+        draft[field.id] = PlaceLine.openingText(field)
         placeOpen.insert(field.id)
         placeFocus = field.id
         // A text the model stated for a row the partner resolves starts one lookup the first time the row is opened; the search
@@ -627,8 +626,9 @@ struct EditCardView: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
-    /// 장소 목록 닫기 — 고르지 않고 닫으면 입력하던 글자를 지우고 확정값 이름의 누름 글자로
-    /// 돌아간다(O-S1-2: 줄 값과 다른 글자가 닫힌 줄에 남지 않게). lookup은 지우지 않는다.
+    /// Closes a place list without a choice: the view's draft text is dropped, so the closed row shows the chosen value or, for a
+    /// row whose owner keeps a text, that kept text in the placeholder style (O-S1-2: an unchosen text never reads as the row's
+    /// value). The row's lookup and kept text live in the model and are not touched here.
     private func closePlaceList(_ field: EditField) {
         placeOpen.remove(field.id)
         draft[field.id] = nil
@@ -762,6 +762,7 @@ struct EditCardView: View {
         Binding(
             get: { draft[field.id] ?? "" },
             set: { text in
+                guard placeOpen.contains(field.id) else { return }
                 draft[field.id] = text
                 rejected.remove(field.id)
                 actions.searchPlaces(field.id, text)
