@@ -24,9 +24,11 @@ enum AgentWire {
         instructions(now: now, timeZone: timeZone, rules: BesirRules.bundled(), countLines: []) ?? ""
     }
 
-    // @MX:NOTE: [AUTO] Line order of every request: the date line, the Always lines, then (only with at least one count line and a non-empty Memory section) the Memory lines and the count lines. The place after the Always lines is reserved for the user's own rules (SPEC-MEMORY-003).
-    /// The date line, the Always lines of `rules`, then, only when `countLines` is not empty and `rules` has Memory lines, the
-    /// Memory lines followed by `countLines`; one per line, with no trailing newline. Nil when `rules` is nil or has no Always line.
+    // @MX:NOTE: [AUTO] Line order of every request, three blocks after the date line: the Always lines; then the Rules lines and the user's standing rules (SPEC-MEMORY-003, only when both exist, never one without the other); then the Memory lines and the count lines (only with at least one count line and a non-empty Memory section). With no standing rule the text is the same as before SPEC-MEMORY-003.
+    /// The date line, the Always lines of `rules`, then, only when `userRules` is not empty and `rules` has Rules lines, the
+    /// Rules lines followed by `userRules` as stored, then, only when `countLines` is not empty and `rules` has Memory lines,
+    /// the Memory lines followed by `countLines`; one per line, with no trailing newline. Nil when `rules` is nil or has no
+    /// Always line.
     static func instructions(now: Date, timeZone: TimeZone, rules: BesirRules?, countLines: [String],
                              userRules: [String] = []) -> String? {
         guard let rules, !rules.always.isEmpty else { return nil }
@@ -34,6 +36,9 @@ enum AgentWire {
         let weekday = formatter("EEEE", timeZone).string(from: now)
         let first = "Current local date and time: \(stamp) (\(weekday)), time zone \(timeZone.identifier)."
         var lines = [first] + rules.always
+        if !userRules.isEmpty, !rules.rules.isEmpty {
+            lines += rules.rules + userRules
+        }
         if !countLines.isEmpty, !rules.memory.isEmpty {
             lines += rules.memory + countLines
         }
@@ -244,12 +249,14 @@ final class AgentClient: AgentTransport {
     var isConfigured: Bool { config.hasAI }
 
     /// The request for a history, made by the configuration's single request builder (60 second timeout).
-    /// The rules and the memory lines are read again for every request; nil when the rules cannot be read.
+    /// The rules, the user's standing rules and the memory lines are read again for every request; nil when the rules cannot be
+    /// read. An unreadable rules.md gives no standing rule and the request is still built.
     func makeRequest(history: [AgentEntry]) -> URLRequest? {
         let at = now()
         let zone = timeZone()
         let counts = MemoryCounts.summary(lines: memoryLines(), now: at, timeZone: zone)
-        guard let text = AgentWire.instructions(now: at, timeZone: zone, rules: rules(), countLines: counts) else { return nil }
+        guard let text = AgentWire.instructions(now: at, timeZone: zone, rules: rules(), countLines: counts,
+                                                userRules: userRules()) else { return nil }
         let body = AgentWire.requestBody(history: history, instructions: text)
         return config.proxyPOSTRequest("/ai", body: body, timeout: 60)
     }

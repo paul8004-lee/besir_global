@@ -3407,7 +3407,7 @@ final class Store: ObservableObject {
     }
 
     /// **[Testing only]** Deletes every event, activity, meal record and repeat, empties the budget ledger and the partner
-    /// records, and empties memory.md. The connection log stays. Events and activities go through the per-item delete paths
+    /// records, and empties rules.md and memory.md. The connection log stays. Events and activities go through the per-item delete paths
     /// (`deleteEvents`/`deleteActivities`), so their notifications are cancelled as usual. Remove this function together with
     /// the Settings button before release.
     func deleteEverythingForTesting() {
@@ -3423,6 +3423,8 @@ final class Store: ObservableObject {
         // The budget ledger and the partner records go too; the connection log stays (the walks count paid calls from it).
         BudgetLedger.shared.removeAll()
         PartnerRecords.shared.removeAll()
+        // The standing rules go before memory; a failed emptying keeps the rule lines and does not stop the rest (SPEC-MEMORY-003).
+        if let emptied = rules.removingAll() { ruleLines = emptied }
         // Memory goes last. A failed emptying write keeps the lines in the file and in the list (SPEC-MEMORY-001 REQ-013).
         if let emptied = memory.removingAll() { memoryLines = emptied }
     }
@@ -3447,11 +3449,20 @@ final class Store: ObservableObject {
 
     // MARK: - Rules (SPEC-MEMORY-003)
 
-    /// Adds one standing rule. M1 skeleton: refuses every add.
-    @discardableResult func addRule(_ text: String) -> RuleAdd { .failed }
+    /// Adds one standing rule the user wrote or confirmed, or names the refusal (no rule text, already saved, full, or the file
+    /// cannot be read or written). A refusal changes nothing: `ruleLines` then stays as the file was.
+    // @MX:NOTE: [AUTO] The only writer of rules.md. Two callers, both after the user's tap: the save-rule card's Confirm and the Settings Add; never call it from memory, counts, compaction or a tool result.
+    @discardableResult func addRule(_ text: String) -> RuleAdd {
+        let outcome = rules.appending(text)
+        if case .added(let lines) = outcome { ruleLines = lines }
+        return outcome
+    }
 
-    /// Removes the one rule line at `index`. M1 skeleton: changes nothing.
-    func deleteRule(at index: Int) {}
+    /// Removes the one rule line at `index` (the Settings Rules tab's delete button). An index out of range or a failed write
+    /// keeps the lines.
+    func deleteRule(at index: Int) {
+        if let lines = rules.removing(at: index) { ruleLines = lines }
+    }
 
     // MARK: - 설정
 

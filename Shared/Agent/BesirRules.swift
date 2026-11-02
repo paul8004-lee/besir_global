@@ -21,11 +21,13 @@ struct BesirRules: Equatable {
 
     /// Reads the text by one rule: lines before the first `## ` heading are skipped; a heading's name is the rest of its line;
     /// inside a section a line that is empty, only spaces and tabs, or begins with `#` is skipped, and any other line is taken as
-    /// written (one trailing carriage return removed) into `always` or `memory` when the section is named exactly `Always` or
-    /// `Memory`. A name that heads two sections gives the lines of both in file order. No escaping, no front matter.
+    /// written (one trailing carriage return removed) into `always`, `memory` or `rules` when the section is named exactly
+    /// `Always`, `Memory` or `Rules`. A name that heads two sections gives the lines of both in file order. No escaping, no
+    /// front matter.
     static func parse(_ text: String) -> BesirRules {
         var always: [String] = []
         var memory: [String] = []
+        var rules: [String] = []
         var section: String?
         for raw in lines(of: text) {
             var scalars = raw.unicodeScalars[...]
@@ -39,10 +41,11 @@ struct BesirRules: Equatable {
             switch section {
             case "Always": always.append(line)
             case "Memory": memory.append(line)
+            case "Rules": rules.append(line)
             default: break
             }
         }
-        return BesirRules(always: always, memory: memory)
+        return BesirRules(always: always, memory: memory, rules: rules)
     }
 
     /// The rules in a UTF-8 file, or nil when the file cannot be read or is not valid UTF-8 (never a lossy decode).
