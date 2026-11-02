@@ -6,6 +6,8 @@ struct BudgetSpendPlan: Equatable {
     let cents: Int
     let weekStart: String
     let requestID: String
+    /// The day of the same `now` the week came from, `yyyy-MM-dd`; it goes into the ledger entry only (SPEC-RICHSTATS-001).
+    var day: String? = nil
 }
 
 /// The one neutral home of the budget steps both the chat's tools and the be rich sir screen use. It builds no JSON for a
@@ -35,7 +37,8 @@ struct BudgetDesk {
     static func spendPlan(amountText: String, now: Date, zone: TimeZone,
                           requestID: String = UUID().uuidString) -> BudgetSpendPlan? {
         guard let cents = AgentBudget.parseAmountCents(amountText) else { return nil }
-        return BudgetSpendPlan(cents: cents, weekStart: week(now: now, zone: zone), requestID: requestID)
+        return BudgetSpendPlan(cents: cents, weekStart: week(now: now, zone: zone), requestID: requestID,
+                               day: BudgetWeek.day(of: now, in: zone))
     }
 
     var isConfigured: Bool { client.isConfigured }
@@ -46,7 +49,7 @@ struct BudgetDesk {
 
     func send(_ plan: BudgetSpendPlan, flow: UUID) async -> Result<BudgetStanding, BudgetFailure> {
         await client.spend(amountCents: plan.cents, isEstimate: false, weekStart: plan.weekStart, requestID: plan.requestID,
-                           flow: flow)
+                           flow: flow, day: plan.day)
     }
 
     func weekEntries(weekStart: String) -> [BudgetEntry] {

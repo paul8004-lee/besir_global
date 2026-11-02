@@ -1233,7 +1233,8 @@ final class AgentToolbox {
         var budget: AgentBudget.BookingSpend?
         var spendID: String?
         if let cents = results.moneyCents {
-            let sent = await sendEstimatedSpend(amountCents: cents, start: start ?? now(), requestID: UUID().uuidString, flow: flow)
+            let sent = await sendEstimatedSpend(amountCents: cents, start: start ?? now(), requestID: UUID().uuidString, flow: flow,
+                                                partnerName: spec.entry.name, kind: spec.entry.kind)
             budget = sent?.spend
             // The id is kept only when the budget partner recorded the spend: only then is there an entry under it.
             if case .recorded? = sent?.spend { spendID = sent?.requestID }
@@ -1250,14 +1251,16 @@ final class AgentToolbox {
 
     /// One `spend` of the answered amount, counted in the week of `start`, under the request's own flow, with the request id the
     /// caller made (returned with the result so the record can keep it). Nil when the proxy is not configured. A failure, or a task
-    /// cancelled meanwhile, never changes the request.
-    private func sendEstimatedSpend(amountCents: Int, start: Date, requestID: String,
-                                    flow: UUID) async -> (spend: AgentBudget.BookingSpend, requestID: String)? {
+    /// cancelled meanwhile, never changes the request. The partner's name, the kind it announced and the day of `start` go into
+    /// the ledger entry only (SPEC-RICHSTATS-001); no result, notice or body carries them.
+    private func sendEstimatedSpend(amountCents: Int, start: Date, requestID: String, flow: UUID,
+                                    partnerName: String, kind: String?) async -> (spend: AgentBudget.BookingSpend, requestID: String)? {
         let client = budgetClient()
         guard client.isConfigured else { return nil }
         let week = BudgetWeek.start(of: start, in: zone())
         let result = await client.spend(amountCents: amountCents, isEstimate: true, weekStart: week,
-                                        requestID: requestID, flow: flow)
+                                        requestID: requestID, flow: flow, partnerName: partnerName,
+                                        day: BudgetWeek.day(of: start, in: zone()), kind: kind)
         switch result {
         case .success(let standing):
             let phrase = AgentBudget.weekPhrase(weekStart: week, currentWeekStart: BudgetWeek.start(of: now(), in: zone()))
