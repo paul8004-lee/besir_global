@@ -30,6 +30,10 @@ final class Store: ObservableObject {
     /// 보일지는 뷰가 정하는 일이라 캐시는 전부 둔다 — AC-010 ③). 활동만 담는다(O-C5): 붙은
     /// 이동의 제목("(복귀)" 등)과 옛 단독 이동은 점에만 남고 여기엔 없다.
     @Published private(set) var daysWithActivityTitles: [Int: [(id: UUID, title: String)]] = [:]
+    /// The item lines of `memory.md` in file order (SPEC-MEMORY-001), as the file held them after the last read or write.
+    @Published private(set) var memoryLines: [String] = []
+    /// The memory file. The file is the truth: this Store's `memoryLines` is a copy that lives and dies with the Store.
+    let memory: MemoryBook
 
     /// Date → yyyyMMdd 정수 키(daysWithSchedule 조회용).
     static func dayKey(_ date: Date, calendar: Calendar = .current) -> Int {
@@ -96,6 +100,8 @@ final class Store: ObservableObject {
     /// The clock of the new code only (debounce, `now` of the classification, `checkedAt`). The baseline reads of `Date()`
     /// stay as they are.
     var replanNow: () -> Date = { Date() }
+    /// The time zone a memory line's date and time are written in; a test sets a fixed zone.
+    var memoryTimeZone: () -> TimeZone = { TimeZone.current }
     /// How many days after today the leg window of a repeat reaches, and how many days after its day a leg of an
     /// unstored occurrence is kept.
     nonisolated static let legWindowDays = 14
@@ -111,8 +117,9 @@ final class Store: ObservableObject {
     /// The answer of the live lookup that `applyEstimate` just made for an event, read once by the refresh loop.
     private var lastLiveAnswers: [UUID: (seconds: TimeInterval, noTrafficSeconds: TimeInterval?)] = [:]
 
-    init(notifications: NotificationManager) {
+    init(notifications: NotificationManager, memory: MemoryBook = .app()) {
         self.notifications = notifications
+        self.memory = memory
         self.config = AppConfig.load()
         load()
         loadFavorites()
@@ -212,7 +219,8 @@ final class Store: ObservableObject {
                                notifyLeadMinutes: Int,
                                notifyEnabled: Bool = true,
                                syncToCalendar: Bool = true,
-                               travelSecondsHint: TimeInterval? = nil) async -> (activityId: UUID, travelLegs: Int) {
+                               travelSecondsHint: TimeInterval? = nil,
+                               remembers: Bool = true) async -> (activityId: UUID, travelLegs: Int) {
         var activity = ActivityBlock(title: title, location: location, startDate: startDate, endDate: endDate)
         activity.syncToCalendar = syncToCalendar
         activities.append(activity)
@@ -3392,6 +3400,14 @@ final class Store: ObservableObject {
         // The budget ledger and the partner records go too; the connection log stays (the walks count paid calls from it).
         BudgetLedger.shared.removeAll()
         PartnerRecords.shared.removeAll()
+    }
+
+    // MARK: - Memory (SPEC-MEMORY-001)
+
+    func remember(kind: String, at date: Date, place: Place?, fields: [(String, String)]) {
+    }
+
+    func deleteMemoryLine(at index: Int) {
     }
 
     // MARK: - 설정
