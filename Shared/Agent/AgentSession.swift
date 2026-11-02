@@ -223,6 +223,11 @@ final class AgentSession: ObservableObject {
         begin(clean, shown: shown, cap: Self.maxRequests)
     }
 
+    /// SPEC-VOICE-001: appends one error line to the chat and touches nothing else (no history, flow, request or send state).
+    func showError(_ line: String) {
+        entries.append(AgentLogEntry(kind: .error(line)))
+    }
+
     /// The path of every user message: the flow, the history, the chat line and the first request.
     private func begin(_ clean: String, shown: String?, cap: Int) {
         let line = shown?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
