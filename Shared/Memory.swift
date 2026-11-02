@@ -170,7 +170,11 @@ struct MemoryLine: Equatable {
     }
 }
 
-/// The file `memory.md` in the app's support folder. Skeleton: no behavior yet.
+/// The file `memory.md` in the app's support folder: plain UTF-8, its item lines (lines beginning with `- `) each ended by one
+/// line feed, newest last. It keeps no copy in memory and reads the file on every call, so a test that wipes the folder starts
+/// with no memory. A missing file reads as no lines; a file that exists but is not UTF-8 text shows no lines and is never
+/// overwritten by an add or a single delete (only `removingAll` replaces it). Every write returns the new list, or nil when it
+/// failed; the default writer is atomic, so a failed write leaves the file as it was.
 struct MemoryBook {
     static let fileName = "memory.md"
 
@@ -182,15 +186,57 @@ struct MemoryBook {
         self.write = write
     }
 
+    /// The file the app uses. Under tests `AppConfig.supportDirectory` is a throw-away folder.
     static func app() -> MemoryBook {
         MemoryBook(fileURL: AppConfig.supportDirectory.appendingPathComponent(fileName))
     }
 
-    func lines() -> [String] { [] }
+    /// The item lines in file order.
+    func lines() -> [String] { read() ?? [] }
 
-    func appending(_ line: MemoryLine) -> [String]? { nil }
+    /// Appends one raw line. Past 200 raw lines the first-written raw lines (topmost in the file, whatever their dates) are
+    /// dropped; other item lines (count lines) are neither counted nor dropped, and nothing is merged.
+    func appending(_ line: MemoryLine) -> [String]? {
+        guard var items = read() else { return nil }
+        items.append(line.text)
+        var rawCount = items.filter { MemoryLine(text: $0) != nil }.count
+        while rawCount > MemoryLine.maxRawLines, let first = items.firstIndex(where: { MemoryLine(text: $0) != nil }) {
+            items.remove(at: first)
+            rawCount -= 1
+        }
+        return store(items) ? items : nil
+    }
 
-    func removing(at index: Int) -> [String]? { nil }
+    /// Removes the one item line at `index` (never by value). An index out of range changes nothing and writes nothing.
+    func removing(at index: Int) -> [String]? {
+        guard var items = read() else { return nil }
+        guard items.indices.contains(index) else { return items }
+        items.remove(at: index)
+        return store(items) ? items : nil
+    }
 
-    func removingAll() -> [String]? { nil }
+    /// Empties the file, whatever it held.
+    func removingAll() -> [String]? {
+        store([]) ? [] : nil
+    }
+
+    /// The item lines, `[]` for a missing file, nil for a file that exists but cannot be read as UTF-8 text.
+    private func read() -> [String]? {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return [] }
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        let text = String(decoding: data, as: UTF8.self)
+        guard Data(text.utf8) == data else { return nil }
+        return text.components(separatedBy: "\n").filter {
+            $0.hasPrefix("- ") && $0.unicodeScalars.count <= MemoryLine.maxLineScalars
+        }
+    }
+
+    private func store(_ items: [String]) -> Bool {
+        do {
+            try write(Data(items.map { $0 + "\n" }.joined().utf8), fileURL)
+            return true
+        } catch {
+            return false
+        }
+    }
 }
