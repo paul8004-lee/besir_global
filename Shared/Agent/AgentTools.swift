@@ -1227,7 +1227,7 @@ final class AgentToolbox {
                 title: AgentPartner.entryTitle(partner: spec.entry.name, item: itemName), location: place, startDate: start,
                 endDate: start.addingTimeInterval(TimeInterval(minutes * 60)), travelFrom: leg?.from, returnTo: nil,
                 outboundMode: leg?.mode ?? .walk, returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0,
-                syncToCalendar: store.calendarSyncDefault, travelSecondsHint: leg?.seconds)
+                syncToCalendar: store.calendarSyncDefault, travelSecondsHint: leg?.seconds, remembers: false)
             entryID = made.activityId
         }
         var budget: AgentBudget.BookingSpend?
@@ -1240,10 +1240,19 @@ final class AgentToolbox {
         }
         // The record comes after the spend, so it holds the spend's id; a request that wrote no entry leaves none.
         if let entryID, store.activity(id: entryID) != nil {
-            (partnerRecordsProvider?() ?? PartnerRecords.shared).add(
+            if (partnerRecordsProvider?() ?? PartnerRecords.shared).add(
                 PartnerRecord(activityID: entryID, partnerID: spec.entry.id, partnerName: spec.entry.name, route: spec.entry.route,
                               requestID: requestID, estimateCents: results.moneyCents, quantityHint: quantityHint,
-                              spendRequestID: spendID, switchStarted: false))
+                              spendRequestID: spendID, switchStarted: false)),
+               let entry = store.activity(id: entryID) {
+                // The booking's one memory line (SPEC-MEMORY-001 REQ-008): the entry's time and place, the mode of its leg, the
+                // partner's name as the directory gave it, and the quantity hint. The same code serves every partner.
+                var fields: [(String, String)] = []
+                if entry.location != nil, let leg { fields.append(("mode", leg.mode.rawValue)) }
+                fields.append(("partner", spec.entry.name))
+                if let quantityHint { fields.append(("quantity", String(quantityHint))) }
+                store.remember(kind: "partner", at: entry.startDate, place: entry.location, fields: fields)
+            }
         }
         return partnerApplied(entryID, partner: spec.entry.name, results: results, skipped: skipped, budget: budget)
     }

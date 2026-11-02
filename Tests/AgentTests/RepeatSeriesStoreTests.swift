@@ -3912,4 +3912,26 @@ final class RepeatSeriesStoreTests: XCTestCase {
         XCTAssertEqual(store.events.first { $0.id == outbound.id }?.arrivalDate, at(2026, 11, 8, 23))
         XCTAssertEqual(store.series[0].skippedDayKeys, [20261109])
     }
+
+    /// SPEC-MEMORY-001 AC-008: a repeat and the legs the background fill makes for it write no memory line.
+    func testMEM_R01_ARepeatAndItsBackgroundLegsWriteNoLine() async throws {
+        let store = fixtureStore()
+        store.drvTravelLookupOverride = { _, _, _ in 900 }
+        store.memoryTimeZone = { TestClock.zone }
+        store.addMeal(category: .diningOut, title: "Lunch", place: office, loggedAt: at(2026, 11, 2, 12))
+        XCTAssertEqual(store.memoryLines.count, 1, "positive control: one meal line")
+        let before = store.memoryLines
+        let file = dataURL(MemoryBook.fileName)
+        let bytes = try? Data(contentsOf: file)
+        XCTAssertNotNil(bytes)
+
+        XCTAssertTrue(store.addSeries(plannedStandup()))
+        XCTAssertEqual(store.memoryLines, before, "after addSeries")
+        XCTAssertEqual(try? Data(contentsOf: file), bytes, "after addSeries")
+
+        await store.fillSeriesLegs()
+        XCTAssertFalse(store.events.isEmpty, "positive control: the background legs were made")
+        XCTAssertEqual(store.memoryLines, before, "after fillSeriesLegs")
+        XCTAssertEqual(try? Data(contentsOf: file), bytes, "after fillSeriesLegs")
+    }
 }

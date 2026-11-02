@@ -13,9 +13,11 @@ struct SettingsView: View {
 
     // 즐겨찾기는 추가·삭제가 즉시 저장되고, 기본 설정은 아래 저장 단추를 눌러야 반영된다 —
     // 두 저장 문법이 섞이면 "저장을 안 눌렀는데 바뀌었네"가 생기므로 탭으로 가른다(REQ-003).
+    // The Memory tab saves at once like Favorites: each delete button writes memory.md, and the tab has no Save row.
     private enum SettingsTab: Hashable {
         case basic
         case favorites
+        case memory
     }
 
     @State private var tab: SettingsTab = .basic
@@ -27,12 +29,14 @@ struct SettingsView: View {
             Picker("Settings Section", selection: $tab) {
                 Text("General").tag(SettingsTab.basic)
                 Text("Favorites").tag(SettingsTab.favorites)
+                Text("Memory").tag(SettingsTab.memory)
             }
             .pickerStyle(.segmented)
 
             switch tab {
             case .basic: basicTab
             case .favorites: favoritesTab
+            case .memory: memoryTab
             }
         }
         .padding(24)
@@ -117,6 +121,34 @@ struct SettingsView: View {
         ScrollView {
             FavoritesList()
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Memory tab (SPEC-MEMORY-001): every item line of memory.md in file order, shown without its leading `- `, each with one
+    /// delete button that removes exactly that line at once. No heading, caption or helper text.
+    private var memoryTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if store.memoryLines.isEmpty {
+                    Text("No memory yet.")
+                        .font(.callout).foregroundStyle(Theme.muted)
+                } else {
+                    ForEach(Array(store.memoryLines.enumerated()), id: \.offset) { item in
+                        HStack {
+                            Text(MemoryLine.display(item.element))
+                            Spacer()
+                            Button(role: .destructive) { store.deleteMemoryLine(at: item.offset) } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Delete")
+                        }
+                        .padding(.vertical, 6)
+                        Divider()
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
