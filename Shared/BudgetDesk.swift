@@ -28,6 +28,9 @@ struct BudgetDesk {
         BudgetDesk(client: makeClient(config: config))
     }
 
+    /// The weekly budget in cents: the client's one constant, forwarded so the screen reads it through the desk.
+    static let weeklyBudgetCents = BudgetClient.weeklyBudgetCents
+
     static func week(now: Date, zone: TimeZone) -> String {
         BudgetWeek.start(of: now, in: zone)
     }
