@@ -18,6 +18,7 @@ final class AgentToolsTests: XCTestCase {
         "record_spend": ["amount"],
         "get_partners": [],
         "request_partner": ["partner", "fields"],
+        "save_rule": ["rule"],
         "cancel_booking": ["id"],
     ]
     private static let expectedRequired: [String: [String]] = [
@@ -33,6 +34,7 @@ final class AgentToolsTests: XCTestCase {
         "record_spend": ["amount"],
         "get_partners": [],
         "request_partner": ["partner"],
+        "save_rule": ["rule"],
         "cancel_booking": ["id"],
     ]
 
@@ -62,10 +64,10 @@ final class AgentToolsTests: XCTestCase {
     func testAG002_ExactlyFourFlatFunctionTools() {
         // SPEC-AGENTPLACE-001 supersedes REQ-AGENT-005: six tools now (the name is kept for the SPEC-AGENT trace).
         let decls = declarations()
-        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(decls.count, 14)
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity",
-                        "search_places", "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "get_partners", "request_partner", "cancel_booking"])
+                        "search_places", "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend", "get_partners", "request_partner", "save_rule", "cancel_booking"])
         for decl in decls {
             XCTAssertEqual(decl["type"] as? String, "function")
             // Flat: the name and the parameters sit at the top level, not under a "function" key.
@@ -79,7 +81,7 @@ final class AgentToolsTests: XCTestCase {
     func testAG002_ParametersMatchArgumentContract() {
         // SPEC-AGENTPLACE-001: the contract covers six tools and the two new create_activity arguments.
         let decls = declarations()
-        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(decls.count, 14)
         for decl in decls {
             let name = decl["name"] as? String ?? "?"
             let props = properties(decl)
@@ -97,7 +99,7 @@ final class AgentToolsTests: XCTestCase {
         // except in exactly `place_id` and `origin_place_id`.
         let decls = declarations()
         // First: the six tools and at least one parameter each are present, so an empty declaration fails.
-        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(decls.count, 14)
         var names: [String] = []
         for decl in decls {
             let params = Array(properties(decl).keys)
@@ -118,7 +120,7 @@ final class AgentToolsTests: XCTestCase {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
         // SPEC-AGENTPLACE-001: the fixture is the amended six declarations, so an empty fixture cannot match an empty encoding.
-        XCTAssertEqual((recorded as? [Any])?.count, 13)
+        XCTAssertEqual((recorded as? [Any])?.count, 14)
         let encoded = try JSONSerialization.jsonObject(with: AgentTools.declarationsJSON())
         XCTAssertTrue((encoded as AnyObject).isEqual(recorded), "encoded declarations differ from Fixtures/tools.json")
     }
@@ -139,11 +141,11 @@ final class AgentToolsTests: XCTestCase {
             "delete_activity": ["id": id],
         ]
         let decls = declarations()
-        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(decls.count, 14)
         var checked = 0
         for decl in decls {
             let tool = decl["name"] as? String ?? "?"
-            if tool == "search_places" || tool == "get_travel_time" || tool == "request_partner" || tool == "get_partners" || tool == "check_day_plan" || tool == "show_day_plan" || tool == "get_budget_left" || tool == "record_spend" || tool == "cancel_booking" { continue }
+            if tool == "search_places" || tool == "get_travel_time" || tool == "request_partner" || tool == "get_partners" || tool == "check_day_plan" || tool == "show_day_plan" || tool == "get_budget_left" || tool == "record_spend" || tool == "cancel_booking" || tool == "save_rule" { continue }
             let base = valid[tool] ?? [:]
             XCTAssertFalse(base.isEmpty, tool)
             // The baseline call is accepted: a list answer or a card, never a rejection.

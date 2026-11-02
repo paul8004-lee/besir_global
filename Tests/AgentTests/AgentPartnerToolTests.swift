@@ -559,10 +559,10 @@ final class AgentPartnerToolTests: XCTestCase {
 
     func testPARTNER_G01_TwelveDeclarationsTheOldOnesUnchangedAndTheNewTwoStrict() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(decls.count, 14)
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 13)
+        XCTAssertEqual(recorded.count, 14)
         for index in 0..<6 {
             XCTAssertTrue((decls[index] as AnyObject).isEqual(recorded[index]), "declaration \(index) changed")
         }
@@ -1482,10 +1482,10 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places", "get_travel_time",
                         "check_day_plan", "show_day_plan", "get_budget_left", "record_spend",
-                        "get_partners", "request_partner", "cancel_booking"])
+                        "get_partners", "request_partner", "save_rule", "cancel_booking"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let recorded = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(recorded.count, 13)
+        XCTAssertEqual(recorded.count, 14)
         XCTAssertTrue((decls as AnyObject).isEqual(recorded), "the whole array equals the fixture")
         let list = try XCTUnwrap(decls.count > 10 ? decls[10] : nil)
         XCTAssertEqual(list["description"] as? String, Text.listDescription)
@@ -2267,8 +2267,8 @@ final class AgentPartnerToolTests: XCTestCase {
 
     func testGROUP_GT5_TheDeclarationsAreTwelveAndTheFieldsDescriptionTeachesRows() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 13)
-        XCTAssertEqual(Array(decls.compactMap { $0["name"] as? String }.suffix(3)), ["get_partners", "request_partner", "cancel_booking"])
+        XCTAssertEqual(decls.count, 14)
+        XCTAssertEqual(Array(decls.compactMap { $0["name"] as? String }.suffix(4)), ["get_partners", "request_partner", "save_rule", "cancel_booking"])
         let request = try XCTUnwrap(decls.count > 11 ? decls[11] : nil)
         let parameters = try XCTUnwrap(request["parameters"] as? [String: Any])
         let properties = try XCTUnwrap(parameters["properties"] as? [String: Any])
@@ -2728,11 +2728,11 @@ final class AgentPartnerToolTests: XCTestCase {
 
     func testDELIVERY_T05_TheRemovedDeliveryToolsAreUnknownAndTheDeclarationsAreTwelve() throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(decls.count, 14)
         XCTAssertEqual(decls.compactMap { $0["name"] as? String },
                        ["list_activities", "create_activity", "update_activity", "delete_activity", "search_places",
                         "get_travel_time", "check_day_plan", "show_day_plan", "get_budget_left", "record_spend",
-                        "get_partners", "request_partner", "cancel_booking"])
+                        "get_partners", "request_partner", "save_rule", "cancel_booking"])
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let fixture = try XCTUnwrap(try? JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
         XCTAssertTrue((decls as AnyObject).isEqual(fixture), "the declarations equal Fixtures/tools.json")
@@ -3047,10 +3047,10 @@ final class AgentPartnerToolTests: XCTestCase {
 
     func testFULLHAND_T09_CancelBookingIsTheThirteenthToolAndItsConfirmRunsTheSameCancel() async throws {
         let decls = declarations()
-        XCTAssertEqual(decls.count, 13)
+        XCTAssertEqual(decls.count, 14)
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "tools", withExtension: "json"))
         let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [[String: Any]])
-        XCTAssertEqual(fixture.count, 13)
+        XCTAssertEqual(fixture.count, 14)
         XCTAssertTrue((decls as AnyObject).isEqual(fixture), "the declarations equal Fixtures/tools.json")
         let last = try XCTUnwrap(decls.last)
         XCTAssertEqual(last["name"] as? String, "cancel_booking", "appended last")
@@ -3063,7 +3063,7 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(Set(properties.keys), ["id"])
         XCTAssertEqual((properties["id"] as? [String: Any])?["type"] as? String, "string")
         XCTAssertEqual((properties["id"] as? [String: Any])?["description"] as? String, CancelText.idDescription)
-        XCTAssertEqual(decls.compactMap { $0["name"] as? String }.suffix(2), ["request_partner", "cancel_booking"])
+        XCTAssertEqual(decls.compactMap { $0["name"] as? String }.suffix(3), ["request_partner", "save_rule", "cancel_booking"])
 
         // The card, and Confirm answering cancelled.
         let stub = StubPartner()
