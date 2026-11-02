@@ -11,12 +11,16 @@ import UIKit
 @MainActor
 final class AgentChatHolder {
     var session: AgentSession?
+    /// SPEC-VOICE-001: the microphone logic lives beside the session for the same reason.
+    var voice: VoiceInput?
 }
 
 struct AgentChatView: View {
     @ObservedObject var session: AgentSession
+    @ObservedObject var voice: VoiceInput
     @State private var draft = ""
     @FocusState private var composerFocused: Bool
+    @Environment(\.scenePhase) private var scenePhase
 
     private static let bottomID = "chat-bottom"
 
@@ -38,6 +42,10 @@ struct AgentChatView: View {
             #endif
         }
         .presentationDragIndicator(.visible)
+        .onDisappear { voice.cancel() }
+        .onChange(of: scenePhase) { _, phase in
+            if VoiceInput.cancels(onScene: phase) { voice.cancel() }
+        }
     }
 
     // MARK: Pieces
@@ -151,13 +159,51 @@ struct AgentChatView: View {
         HStack(alignment: .bottom, spacing: 12) {
             TextField("Message", text: $draft, axis: .vertical)
                 .lineLimit(1...5)
+                .frame(minHeight: 44)
                 .focused($composerFocused)
-                .disabled(!session.canSend)
+                .disabled(!session.canSend || voice.phase != .idle)
+            microphone
             Button("Send", action: sendDraft)
-                .disabled(!session.canSend || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .frame(height: 44)
+                .disabled(!session.canSend || voice.phase != .idle || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    /// SPEC-VOICE-001: tap to start, tap to stop. An icon only; the states are the icon and a progress indicator.
+    private var microphone: some View {
+        Button {
+            Task { await voice.tap(deliver: deliverVoice, fail: session.showError) }
+        } label: {
+            switch voice.phase {
+            case .idle:
+                Image(systemName: "mic")
+            case .recording:
+                Image(systemName: "stop.fill").foregroundStyle(Theme.warn)
+            case .transcribing:
+                ProgressView()
+            }
+        }
+        .frame(width: 44, height: 44)
+        .disabled(VoiceInput.isControlDisabled(phase: voice.phase, canSend: session.canSend))
+        .accessibilityLabel(microphoneLabel)
+    }
+
+    private var microphoneLabel: String {
+        switch voice.phase {
+        case .idle: return "Record message"
+        case .recording: return "Stop recording"
+        case .transcribing: return "Transcribing"
+        }
+    }
+
+    /// A voice text takes the same road as a typed one: `session.send`, or the draft when the chat cannot take it now.
+    private func deliverVoice(_ text: String) {
+        switch VoiceDelivery.route(text: text, canSend: session.canSend) {
+        case .send(let message): session.send(message)
+        case .draft(let message): draft = VoiceDelivery.merged(draft: draft, voice: message)
+        }
     }
 
     private func sendDraft() {
