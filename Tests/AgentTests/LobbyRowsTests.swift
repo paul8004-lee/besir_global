@@ -232,7 +232,7 @@ final class LobbyRowsTests: XCTestCase {
                 PureCase(label: "equal starts, the other input order",
                          stays: [stay("e2", partner: "b-id", name: "Example Delivery", "2026-10-27T19:00"),
                                  stay("e1", partner: "a-id", name: "Example Tables", "2026-10-27T19:00")]),
-                PureCase(label: "three partners, no cap",
+                PureCase(label: "three partners, capped at two",
                          stays: [stay("e1", partner: "c-id", name: "Acme Cars", "2026-10-27T09:05"),
                                  stay("e2", partner: "b-id", name: "Example Delivery", "2026-10-27T12:40"),
                                  stay("e3", partner: "a-id", name: "Example Tables", "2026-10-27T19:00")]),
@@ -290,8 +290,49 @@ final class LobbyRowsTests: XCTestCase {
             ]
         }
 
+        /// The two-line cap of the be full sir row (SPEC-LOBBYROWS-002 REQ-LOBBYROWS2-004), nine cases.
+        static var t17: [PureCase] {
+            [
+                PureCase(label: "three partners, capped at two",
+                         stays: [stay("e1", partner: "c-id", name: "Acme Cars", "2026-10-27T09:05"),
+                                 stay("e2", partner: "b-id", name: "Example Delivery", "2026-10-27T12:40"),
+                                 stay("e3", partner: "a-id", name: "Example Tables", "2026-10-27T19:00")]),
+                PureCase(label: "three partners, the other input order",
+                         stays: [stay("e3", partner: "a-id", name: "Example Tables", "2026-10-27T19:00"),
+                                 stay("e2", partner: "b-id", name: "Example Delivery", "2026-10-27T12:40"),
+                                 stay("e1", partner: "c-id", name: "Acme Cars", "2026-10-27T09:05")]),
+                PureCase(label: "exactly two partners",
+                         stays: [stay("e2", partner: "b-id", name: "Example Delivery", "2026-10-27T12:40"),
+                                 stay("e3", partner: "a-id", name: "Example Tables", "2026-10-27T19:00")]),
+                PureCase(label: "one partner",
+                         stays: [stay("e3", partner: "a-id", name: "Example Tables", "2026-10-27T19:00")]),
+                PureCase(label: "three at one start, partner ids decide",
+                         stays: [stay("e2", partner: "c-id", name: "Beta", "2026-10-27T19:00"),
+                                 stay("e1", partner: "b-id", name: "Alpha", "2026-10-27T19:00"),
+                                 stay("e3", partner: "a-id", name: "Gamma", "2026-10-27T19:00")]),
+                PureCase(label: "the pick comes before the cap",
+                         stays: [stay("e1", partner: "c-id", name: "Acme Cars", "2026-10-27T07:00"),
+                                 stay("e4", partner: "c-id", name: "Acme Cars", "2026-10-27T20:00"),
+                                 stay("e2", partner: "b-id", name: "Example Delivery", "2026-10-27T12:40"),
+                                 stay("e3", partner: "a-id", name: "Example Tables", "2026-10-27T19:00")]),
+                PureCase(label: "a passed pick sorts first",
+                         stays: [stay("e5", partner: "d-id", name: "Delta", "2026-10-27T08:00"),
+                                 stay("e2", partner: "b-id", name: "Example Delivery", "2026-10-27T12:40"),
+                                 stay("e3", partner: "a-id", name: "Example Tables", "2026-10-27T19:00")]),
+                PureCase(label: "four partners",
+                         stays: [stay("e4", partner: "d-id", name: "Delta", "2026-10-27T13:00"),
+                                 stay("e3", partner: "c-id", name: "Gamma", "2026-10-27T12:00"),
+                                 stay("e2", partner: "b-id", name: "Beta", "2026-10-27T11:00"),
+                                 stay("e1", partner: "a-id", name: "Alpha", "2026-10-27T10:00")]),
+                PureCase(label: "a partner tomorrow does not take a slot",
+                         stays: [stay("e2", partner: "b-id", name: "Example Delivery", "2026-10-27T12:40"),
+                                 stay("e3", partner: "a-id", name: "Example Tables", "2026-10-27T19:00"),
+                                 stay("e6", partner: "c-id", name: "Acme Cars", "2026-10-28T09:00")]),
+            ]
+        }
+
         static var pureCases: [PureCase] {
-            t02 + t03 + t04 + t05 + t06 + t07 + t08 + t09 + t10
+            t02 + t03 + t04 + t05 + t06 + t07 + t08 + t09 + t10 + t17
         }
 
         // MARK: T11 to T14, the store-backed fixtures
@@ -458,22 +499,28 @@ final class LobbyRowsTests: XCTestCase {
         XCTAssertEqual(rows.map(\.title), ["be on-time sir", "be full sir", "be rich sir"])
         XCTAssertEqual(rows.map(\.title), RootView.Service.allCases.map(\.title))
         XCTAssertEqual(Set(rows.map(\.id)).count, 3, "the ids are unique")
-        XCTAssertEqual(onTimeLines(rows), [])
-        XCTAssertEqual(fullLines(rows), [])
+        XCTAssertEqual(onTimeLines(rows), ["No plans today"])
+        XCTAssertEqual(fullLines(rows), ["No orders today"])
         XCTAssertEqual(richLines(rows), ["$200.00 left this week - Simulated"])
     }
 
-    func testLOBBYROWS_T02_AFeatureWithNothingToSayHasNoLines() {
+    func testLOBBYROWS_T02_AFeatureWithNothingToSayShowsItsPlaceholderAndItsBuilderGivesNoLines() {
         let cases = LobbyFixtures.t02
         XCTAssertEqual(cases.count, 8)
         for c in cases[0...4] {
-            XCTAssertEqual(onTimeLines(build(c)), [], c.label)
+            XCTAssertEqual(onTimeLines(build(c)), ["No plans today"], c.label)
+            XCTAssertEqual(LobbyRows.onTimeLines(items: c.items, now: c.now, calendar: c.calendar), [],
+                           "the builder itself still gives no line: \(c.label)")
         }
         XCTAssertEqual(onTimeLines(build(cases[5])), ["Item 10:00 AM"], "the positive control keeps the row honest")
-        XCTAssertEqual(fullLines(build(cases[6])), [], cases[6].label)
-        XCTAssertEqual(fullLines(build(cases[7])), [], cases[7].label)
+        XCTAssertEqual(fullLines(build(cases[6])), ["No orders today"], cases[6].label)
+        XCTAssertEqual(fullLines(build(cases[7])), ["No orders today"], cases[7].label)
+        for c in cases[6...7] {
+            XCTAssertEqual(LobbyRows.fullLines(stays: c.stays, now: c.now, calendar: c.calendar), [],
+                           "the builder itself still gives no line: \(c.label)")
+        }
         XCTAssertTrue(build(cases[5]).flatMap(\.lines).allSatisfy { !$0.isEmpty },
-                      "no placeholder, caption or empty string on any row")
+                      "no empty string on any row")
     }
 
     func testLOBBYROWS_T03_OnTimeLinesCarryLeaveByThenTitleTimeTravelAndMoreToday() {
@@ -566,8 +613,8 @@ final class LobbyRowsTests: XCTestCase {
             ["Example Delivery - Simulated 12:40 PM", "Example Tables - Simulated 7:00 PM"],
             ["Example Tables - Simulated 7:00 PM", "Example Delivery - Simulated 7:00 PM"],
             ["Example Tables - Simulated 7:00 PM", "Example Delivery - Simulated 7:00 PM"],
-            ["Acme Cars - Simulated 9:05 AM", "Example Delivery - Simulated 12:40 PM", "Example Tables - Simulated 7:00 PM"],
-            ["Acme Cars - Simulated 9:05 AM", "Example Delivery - Simulated 12:40 PM", "Example Tables - Simulated 7:00 PM"],
+            ["Acme Cars - Simulated 9:05 AM", "Example Delivery - Simulated 12:40 PM"],
+            ["Acme Cars - Simulated 9:05 AM", "Example Delivery - Simulated 12:40 PM"],
             ["Alpha - Simulated 7:00 PM"],
             ["Alpha - Simulated 7:00 PM"],
             ["Alpha - Simulated 8:00 AM"],
@@ -634,7 +681,7 @@ final class LobbyRowsTests: XCTestCase {
 
     func testLOBBYROWS_T11_MidnightWeekAndClockChangeEdgesInLosAngeles() {
         let rig = LobbyFixtures.t11Rig(folder: folder())
-        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T23:59:59"))), [],
+        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T23:59:59"))), ["No plans today"],
                        "an item at the next day's first half minute is not today's")
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-28T00:00:00"))), ["Late 12:00 AM"])
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-11-01T22:00"))), ["Late 11:30 PM"],
@@ -665,7 +712,7 @@ final class LobbyRowsTests: XCTestCase {
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T13:30"))), ["Gym 5:00 PM · 1\u{00A0}more today"])
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T17:30"))),
                        ["Leave by 6:35 PM", "Dinner 7:00 PM · 22 min drive"])
-        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T19:30"))), [],
+        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T19:30"))), ["No plans today"],
                        "the owned return leg is not an item")
 
         let dinner = try XCTUnwrap(rig.store.activities.first { $0.title == "Dinner" })
@@ -690,7 +737,7 @@ final class LobbyRowsTests: XCTestCase {
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T19:30"))), ["Back 9:00 PM · 1\u{00A0}more today"])
         XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T22:00"))),
                        ["Leave by 11:50 PM", "Night drive 11:50 PM · 40 min drive"])
-        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T23:55"))), [])
+        XCTAssertEqual(onTimeLines(rig.rows(now: TestClock.date("2026-10-27T23:55"))), ["No plans today"])
 
         for i in rig.store.events.indices where rig.store.events[i].title == "Airport" {
             rig.store.events[i].departureDate = TestClock.date("2026-10-27T14:40")
@@ -717,7 +764,7 @@ final class LobbyRowsTests: XCTestCase {
         rig.store.activities.removeAll { $0.id == tables.id }
         XCTAssertEqual(fullLines(rig.rows(now: TestClock.now)), ["Example Delivery - Simulated 12:40 PM"])
         XCTAssertTrue(rig.records.remove(activityID: delivery.id))
-        XCTAssertEqual(fullLines(rig.rows(now: TestClock.now)), [])
+        XCTAssertEqual(fullLines(rig.rows(now: TestClock.now)), ["No orders today"])
 
         let stated = LobbyFixtures.entry(1800, estimate: false)
         let earlyEstimate = LobbyFixtures.entry(8600, estimate: true)
@@ -740,6 +787,70 @@ final class LobbyRowsTests: XCTestCase {
         XCTAssertEqual(richLines(rig.rows(now: TestClock.now)).first,
                        AgentPartner.partnerLine(AgentBudget.dollars(cents: abs(left)) + " left this week"),
                        "the rich figure is the weekly budget less the ledger's total for the week")
+    }
+
+    // MARK: T16 and T17, SPEC-LOBBYROWS-002 (card t117): the placeholders and the two-line cap
+
+    func testLOBBYROWS_T16_AnEmptyOnTimeOrFullRowShowsItsPlaceholderAndNothingElseChanges() {
+        let empty = LobbyRows.rows(items: [], stays: [], spentCents: 0, entries: [],
+                                   now: TestClock.now, calendar: LobbyFixtures.calendar)
+        XCTAssertEqual(empty.map(\.lines), [["No plans today"], ["No orders today"],
+                                            ["$200.00 left this week - Simulated"]])
+
+        let control = LobbyRows.rows(items: [LobbyFixtures.item("Item", "2026-10-27T10:00")],
+                                     stays: [LobbyFixtures.stay("s1", partner: "p-tables", name: "Example Tables",
+                                                                "2026-10-27T19:00")],
+                                     spentCents: 0, entries: [], now: TestClock.now, calendar: LobbyFixtures.calendar)
+        XCTAssertEqual(control.map(\.lines), [["Item 10:00 AM"], ["Example Tables - Simulated 7:00 PM"],
+                                              ["$200.00 left this week - Simulated"]],
+                       "the positive control: rows with something to say show no placeholder")
+        XCTAssertFalse(control.flatMap(\.lines).contains("No plans today"))
+        XCTAssertFalse(control.flatMap(\.lines).contains("No orders today"))
+
+        let passed = LobbyRows.rows(items: [LobbyFixtures.item("Early", "2026-10-27T08:59")], stays: [],
+                                    spentCents: 0, entries: [], now: TestClock.now, calendar: LobbyFixtures.calendar)
+        XCTAssertEqual(onTimeLines(passed), ["No plans today"], "today's items are all over: the same placeholder")
+
+        let over = LobbyRows.rows(items: [], stays: [], spentCents: 25000, entries: [LobbyFixtures.entry(25000, estimate: false)],
+                                  now: TestClock.now, calendar: LobbyFixtures.calendar)
+        XCTAssertEqual(richLines(over), ["$50.00 over this week - Simulated"], "the rich row never gets a placeholder")
+
+        for c in LobbyFixtures.pureCases {
+            let rows = build(c)
+            let onTime = LobbyRows.onTimeLines(items: c.items, now: c.now, calendar: c.calendar)
+            let full = LobbyRows.fullLines(stays: c.stays, now: c.now, calendar: c.calendar)
+            let rich = LobbyRows.richLines(spentCents: c.spentCents, entries: c.entries)
+            XCTAssertEqual(onTimeLines(rows), onTime.isEmpty ? ["No plans today"] : onTime, c.label)
+            XCTAssertEqual(fullLines(rows), full.isEmpty ? ["No orders today"] : full, c.label)
+            XCTAssertEqual(richLines(rows), rich, c.label)
+        }
+
+        XCTAssertEqual("No plans today".components(separatedBy: "Simulated").count - 1, 0)
+        XCTAssertEqual("No orders today".components(separatedBy: "Simulated").count - 1, 0)
+    }
+
+    func testLOBBYROWS_T17_TheFullRowShowsAtMostTheTwoEarliestPicks() {
+        let cases = LobbyFixtures.t17
+        let expected: [[String]] = [
+            ["Acme Cars - Simulated 9:05 AM", "Example Delivery - Simulated 12:40 PM"],
+            ["Acme Cars - Simulated 9:05 AM", "Example Delivery - Simulated 12:40 PM"],
+            ["Example Delivery - Simulated 12:40 PM", "Example Tables - Simulated 7:00 PM"],
+            ["Example Tables - Simulated 7:00 PM"],
+            ["Gamma - Simulated 7:00 PM", "Alpha - Simulated 7:00 PM"],
+            ["Example Delivery - Simulated 12:40 PM", "Example Tables - Simulated 7:00 PM"],
+            ["Delta - Simulated 8:00 AM", "Example Delivery - Simulated 12:40 PM"],
+            ["Alpha - Simulated 10:00 AM", "Beta - Simulated 11:00 AM"],
+            ["Example Delivery - Simulated 12:40 PM", "Example Tables - Simulated 7:00 PM"],
+        ]
+        XCTAssertEqual(cases.count, expected.count)
+        for (c, want) in zip(cases, expected) {
+            XCTAssertEqual(LobbyRows.fullLines(stays: c.stays, now: c.now, calendar: c.calendar), want, c.label)
+            XCTAssertEqual(fullLines(build(c)), want, "the full row: \(c.label)")
+        }
+        for c in cases[0...1] {
+            XCTAssertFalse(LobbyRows.fullLines(stays: c.stays, now: c.now, calendar: c.calendar)
+                            .contains("Example Tables - Simulated 7:00 PM"), "the third partner is absent: \(c.label)")
+        }
     }
 
     // MARK: T15, the scanner
