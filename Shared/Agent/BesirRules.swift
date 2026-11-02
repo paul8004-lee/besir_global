@@ -9,6 +9,15 @@ struct BesirRules: Equatable {
 
     let always: [String]
     let memory: [String]
+    /// The `## Rules` lines (SPEC-MEMORY-003): they go in only together with at least one of the user's standing rules.
+    let rules: [String]
+
+    /// `rules` defaults to no lines, so a value built from the Always and Memory lists alone has no Rules lines.
+    init(always: [String], memory: [String], rules: [String] = []) {
+        self.always = always
+        self.memory = memory
+        self.rules = rules
+    }
 
     /// Reads the text by one rule: lines before the first `## ` heading are skipped; a heading's name is the rest of its line;
     /// inside a section a line that is empty, only spaces and tabs, or begins with `#` is skipped, and any other line is taken as

@@ -27,7 +27,8 @@ enum AgentWire {
     // @MX:NOTE: [AUTO] Line order of every request: the date line, the Always lines, then (only with at least one count line and a non-empty Memory section) the Memory lines and the count lines. The place after the Always lines is reserved for the user's own rules (SPEC-MEMORY-003).
     /// The date line, the Always lines of `rules`, then, only when `countLines` is not empty and `rules` has Memory lines, the
     /// Memory lines followed by `countLines`; one per line, with no trailing newline. Nil when `rules` is nil or has no Always line.
-    static func instructions(now: Date, timeZone: TimeZone, rules: BesirRules?, countLines: [String]) -> String? {
+    static func instructions(now: Date, timeZone: TimeZone, rules: BesirRules?, countLines: [String],
+                             userRules: [String] = []) -> String? {
         guard let rules, !rules.always.isEmpty else { return nil }
         let stamp = formatter("yyyy-MM-dd'T'HH:mm", timeZone).string(from: now)
         let weekday = formatter("EEEE", timeZone).string(from: now)
@@ -213,25 +214,31 @@ final class AgentClient: AgentTransport {
     private let session: URLSession
     private let rules: () -> BesirRules?
     private let memoryLines: () -> [String]
+    /// The user's standing rules (SPEC-MEMORY-003).
+    private let userRules: () -> [String]
 
     /// `timeZone` is read for every request, so a zone change while the app runs reaches the instruction text.
     init(config: AppConfig, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone,
          session: URLSession = URLSession(configuration: .ephemeral),
          rules: @escaping () -> BesirRules? = { BesirRules.bundled() },
-         memoryLines: @escaping () -> [String] = { [] }) {
+         memoryLines: @escaping () -> [String] = { [] },
+         userRules: @escaping () -> [String] = { [] }) {
         self.config = config
         self.now = now
         self.timeZone = timeZone
         self.session = session
         self.rules = rules
         self.memoryLines = memoryLines
+        self.userRules = userRules
     }
 
     convenience init(config: AppConfig, now: @escaping () -> Date, timeZone: TimeZone,
                      session: URLSession = URLSession(configuration: .ephemeral),
                      rules: @escaping () -> BesirRules? = { BesirRules.bundled() },
-                     memoryLines: @escaping () -> [String] = { [] }) {
-        self.init(config: config, now: now, timeZone: { timeZone }, session: session, rules: rules, memoryLines: memoryLines)
+                     memoryLines: @escaping () -> [String] = { [] },
+                     userRules: @escaping () -> [String] = { [] }) {
+        self.init(config: config, now: now, timeZone: { timeZone }, session: session, rules: rules, memoryLines: memoryLines,
+                  userRules: userRules)
     }
 
     var isConfigured: Bool { config.hasAI }

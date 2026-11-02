@@ -34,6 +34,10 @@ final class Store: ObservableObject {
     @Published private(set) var memoryLines: [String] = []
     /// The memory file. The file is the truth: this Store's `memoryLines` is a copy that lives and dies with the Store.
     let memory: MemoryBook
+    /// The item lines of rules.md in file order (SPEC-MEMORY-003), as the file held them after the last read or write.
+    @Published private(set) var ruleLines: [String] = []
+    /// The rules file. The file is the truth: this Store's `ruleLines` is a copy that lives and dies with the Store.
+    let rules: RuleBook
 
     /// Date → yyyyMMdd 정수 키(daysWithSchedule 조회용).
     static func dayKey(_ date: Date, calendar: Calendar = .current) -> Int {
@@ -117,9 +121,10 @@ final class Store: ObservableObject {
     /// The answer of the live lookup that `applyEstimate` just made for an event, read once by the refresh loop.
     private var lastLiveAnswers: [UUID: (seconds: TimeInterval, noTrafficSeconds: TimeInterval?)] = [:]
 
-    init(notifications: NotificationManager, memory: MemoryBook = .app()) {
+    init(notifications: NotificationManager, memory: MemoryBook = .app(), rules: RuleBook = .app()) {
         self.notifications = notifications
         self.memory = memory
+        self.rules = rules
         self.config = AppConfig.load()
         load()
         loadFavorites()
@@ -127,6 +132,7 @@ final class Store: ObservableObject {
         loadSeries()
         loadMeals()
         memoryLines = memory.lines()
+        ruleLines = rules.lines()
         // A tap on a departure alert starts the live check of its event (REQ-REPLAN-006).
         notifications.onAlertTap = { [weak self] id in
             Task { @MainActor in await self?.replanAfterAlert(id: id, trigger: .alertTap) }
@@ -3438,6 +3444,14 @@ final class Store: ObservableObject {
     func deleteMemoryLine(at index: Int) {
         if let lines = memory.removing(at: index) { memoryLines = lines }
     }
+
+    // MARK: - Rules (SPEC-MEMORY-003)
+
+    /// Adds one standing rule. M1 skeleton: refuses every add.
+    @discardableResult func addRule(_ text: String) -> RuleAdd { .failed }
+
+    /// Removes the one rule line at `index`. M1 skeleton: changes nothing.
+    func deleteRule(at index: Int) {}
 
     // MARK: - 설정
 
