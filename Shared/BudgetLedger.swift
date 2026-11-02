@@ -103,6 +103,8 @@ final class BudgetLedger: @unchecked Sendable {
         return true
     }
 
+    func removeAll() {}
+
     // MARK: Load
 
     private struct Lossy: Decodable {

@@ -128,6 +128,8 @@ final class PartnerRecords: @unchecked Sendable {
         return true
     }
 
+    func removeAll() {}
+
     private func save() {
         if let data = try? JSONEncoder().encode(entries) { try? write(data, fileURL) }
     }
