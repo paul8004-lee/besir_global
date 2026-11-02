@@ -69,33 +69,42 @@ enum MemoryCounts {
     }
 
     /// Every count line the raw lines dated on or after today minus 42 calendar days support (today and the window start taken
-    /// in `timeZone`, with no upper bound). For each kind and each subject key (the place, and each field not named `place`):
-    /// an overall line when the leader was chosen at least twice, and a slice line for each context fact (weekday, part of the
-    /// day, place) of another name whose slice holds at least three lines, whose leader was chosen at least twice and differs
-    /// from the overall leader. A line's dates are the first and last date of its leader's lines in its group.
+    /// in `timeZone`, with no upper bound), together with the count lines of the file whose last date is on or after the window
+    /// start, whatever their first date, at most the first 40 of them in file order (SPEC-MEMORY-004). For each kind and each
+    /// subject key (the place, and each field not named `place`): an overall line when the leader was chosen at least twice, and
+    /// a slice line for each context fact (weekday, part of the day, place) of another name whose slice holds at least three
+    /// lines, whose leader was chosen at least twice and differs from the overall leader. A value's count is its raw lines plus
+    /// the `n` of the file's count lines of the same identity (kind, key, context), and the total is the raw lines' number plus
+    /// their totals. A line's dates are the first and last date of its leader's raw lines and of its leader's count lines.
+    // @MX:ANCHOR fan_in 2 - the summary sent with the chat request and the fold of MemoryCompaction both call it.
+    // @MX:REASON: changing a rule here changes both what is sent and what is written to the file.
     static func candidates(from lines: [String], now: Date, timeZone: TimeZone) -> [MemoryCountLine] {
         let start = window(now: now, timeZone: timeZone).start
 
         let counted = lines.compactMap(MemoryLine.init(text:)).filter { $0.date >= start }.map(Counted.init)
+        let files = Array(lines.compactMap(MemoryCountLine.init(text:)).filter { $0.to >= start }.prefix(MemoryCompaction.maxCounts))
         var result: [MemoryCountLine] = []
-        for kind in firstAppearances(counted.map(\.line.kind)) {
+        for kind in firstAppearances(counted.map(\.line.kind) + files.map(\.kind)) {
             let ofKind = counted.filter { $0.line.kind == kind }
-            for key in firstAppearances(ofKind.flatMap { $0.subjects.map(\.key) }) {
+            let filesOfKind = files.filter { $0.kind == kind }
+            for key in firstAppearances(ofKind.flatMap { $0.subjects.map(\.key) } + filesOfKind.map(\.field.key)) {
                 let group = ofKind.compactMap { entry in entry.value(for: key).map { (value: $0, entry: entry) } }
-                guard let overall = leader(of: group) else { continue }
-                if overall.n >= leaderMinimum {
+                let filesOfKey = filesOfKind.filter { $0.field.key == key }
+                let overall = leader(of: group, plus: filesOfKey.filter { $0.context == nil })
+                if let overall, overall.n >= leaderMinimum {
                     result.append(MemoryCountLine(from: overall.from, to: overall.to, kind: kind,
                                                   field: MemoryField(key: key, value: overall.value), context: nil,
-                                                  n: overall.n, total: group.count))
+                                                  n: overall.n, total: overall.total))
                 }
-                let contexts = firstAppearances(group.flatMap { $0.entry.contexts }.filter { $0.key != key })
+                let contexts = firstAppearances(group.flatMap { $0.entry.contexts }.filter { $0.key != key }
+                                                + filesOfKey.compactMap(\.context))
                 for context in contexts {
                     let slice = group.filter { $0.entry.contexts.contains(context) }
-                    guard slice.count >= sliceMinimum, let top = leader(of: slice),
-                          top.n >= leaderMinimum, top.value != overall.value else { continue }
+                    guard let top = leader(of: slice, plus: filesOfKey.filter { $0.context == context }),
+                          top.total >= sliceMinimum, top.n >= leaderMinimum, top.value != overall?.value else { continue }
                     result.append(MemoryCountLine(from: top.from, to: top.to, kind: kind,
                                                   field: MemoryField(key: key, value: top.value), context: context,
-                                                  n: top.n, total: slice.count))
+                                                  n: top.n, total: top.total))
                 }
             }
         }
@@ -156,17 +165,21 @@ enum MemoryCounts {
         }
     }
 
-    /// The value chosen most often (a tie goes to the value first in code-point order), how often, and the first and last date
-    /// of its lines; nil for an empty group.
-    private static func leader(of group: [(value: String, entry: Counted)]) -> (value: String, n: Int, from: String, to: String)? {
+    /// The value chosen most often (a tie goes to the value first in code-point order), how often, the total of the group, and the
+    /// first and last date of its lines; nil for an empty group. The count lines of the same identity add their `n` to their
+    /// value and their total to the group's total, and their dates to the leader's.
+    private static func leader(of group: [(value: String, entry: Counted)], plus files: [MemoryCountLine] = [])
+        -> (value: String, n: Int, total: Int, from: String, to: String)? {
         var counts: [String: Int] = [:]
         for item in group { counts[item.value, default: 0] += 1 }
+        for file in files { counts[file.field.value, default: 0] += file.n }
         guard let best = counts.max(by: { a, b in
             a.value != b.value ? a.value < b.value : b.key.unicodeScalars.lexicographicallyPrecedes(a.key.unicodeScalars)
         }) else { return nil }
         let dates = group.filter { $0.value == best.key }.map(\.entry.line.date)
+            + files.filter { $0.field.value == best.key }.flatMap { [$0.from, $0.to] }
         guard let from = dates.min(), let to = dates.max() else { return nil }
-        return (best.key, best.value, from, to)
+        return (best.key, best.value, group.count + files.reduce(0) { $0 + $1.total }, from, to)
     }
 
     /// The distinct elements in the order they first appear.
