@@ -82,7 +82,7 @@ struct RootView: View {
             }
         }
         .sheet(isPresented: $showingChat, onDismiss: { Task { await chatHolder.session?.sheetDismissed(); SheetHold.shared.closed(SheetHold.chatKey) } }) {
-            if let session = chatHolder.session { AgentChatView(session: session).holdsSharePass(key: SheetHold.chatKey).holdsSharePass() }
+            if let session = chatHolder.session, let voice = chatHolder.voice { AgentChatView(session: session, voice: voice).holdsSharePass(key: SheetHold.chatKey).holdsSharePass() }
         }
         .overlay(alignment: .bottomTrailing) {
             if store.config.hasAI {
@@ -208,6 +208,7 @@ struct RootView: View {
             let shareImport = shareImport
             session.onNewChat = { shareImport.dropHeld() }
             chatHolder.session = session
+            chatHolder.voice = VoiceInput(recorder: VoiceRecorder(), client: VoiceClient.live(config: store.config))
         }
     }
 
