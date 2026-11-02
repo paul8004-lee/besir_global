@@ -333,6 +333,7 @@ struct ContentView: View {
                             }
                         }
                 }
+                .holdsSharePass()
             }
         }
         .sheet(isPresented: Binding(
@@ -340,28 +341,28 @@ struct ContentView: View {
             set: { if !$0 { selectedActivityId = nil } }
         )) {
             if let activityId = selectedActivityId {
-                ActivityDetailView(activityId: activityId)
+                ActivityDetailView(activityId: activityId).holdsSharePass()
             }
         }
         .sheet(isPresented: $showingAdd) {
-            AddEventView()
+            AddEventView().holdsSharePass()
         }
         .sheet(isPresented: $showingAddActivity) {
             // 보고 있던 날을 넘긴다 — 시작 바퀴가 그 날에 선다(t50 P3).
-            AddActivityView(defaultDay: selectedDate)
+            AddActivityView(defaultDay: selectedDate).holdsSharePass()
         }
         // 빈칸 꾹 누르기의 새 활동 카드(REQ-009) — 불리언 시트(showingAddActivity) 대신 값을 묶어
         // 띄운다: 눌린 시각은 시트가 뜨는 값에서 파생해야 첫 렌더에 비어 보이지 않는다(§6 위험 표).
         // 날은 selectedDate가 아니라 시드의 날 — 23:55 누름은 다음 날 00:00 시드로 카드가 다음 날에
         // 열린다(O-A6), 누른 페이지의 날이라는 것도 같은 이유다(§4-c).
         .sheet(item: $emptyPressSeed) { seed in
-            AddActivityView(defaultDay: calendar.startOfDay(for: seed.start), presetStart: seed.start)
+            AddActivityView(defaultDay: calendar.startOfDay(for: seed.start), presetStart: seed.start).holdsSharePass()
         }
         .sheet(isPresented: $showingSettings) {
-            SettingsView()
+            SettingsView().holdsSharePass()
         }
         .sheet(isPresented: $showingFavorites) {
-            FavoritesView()
+            FavoritesView().holdsSharePass()
         }
         // AI 채팅 시트는 RootView가 띄운다 — AI를 여는 버튼이 우하단 besir 로고 버튼 하나로
         // 통일돼 그 자리가 RootView이기 때문이다(REQ-007).
