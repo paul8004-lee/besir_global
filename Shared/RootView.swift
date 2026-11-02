@@ -34,7 +34,7 @@ struct RootView: View {
             case .rich: return Theme.ink
             }
         }
-        /// The colour of a row's key lines under its first one: the service's own ink, the deep tone of its tint.
+        /// The colour of every key line of a row, the first included: the service's own ink, the deep tone of its tint.
         var detailInk: Color {
             switch self {
             case .onTime: return Theme.travelInk
@@ -278,7 +278,8 @@ struct RootView: View {
         #endif
     }
 
-    /// One lobby row: the icon beside the first line, the name, then the key lines. No line is cut off.
+    /// One lobby row: the icon beside the name, and the text column under it (the name, then the key lines in
+    /// the row's detail colour over a reserve of three key-line heights). No line is cut off.
     private func serviceCard(_ s: Service, _ row: LobbyRow) -> some View {
         Button {
             service = s
@@ -288,17 +289,7 @@ struct RootView: View {
                     .font(.system(size: 17))
                     .foregroundStyle(s.tint)
                     .frame(width: 24)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(row.title)
-                        .font(.title3)
-                        .foregroundStyle(Theme.ink)
-                    ForEach(Array(row.lines.enumerated()), id: \.offset) { index, line in
-                        Text(line)
-                            .font(index == 0 ? .subheadline.weight(.semibold) : .subheadline)
-                            .foregroundStyle(index == 0 ? Theme.ink : s.detailInk)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
+                LobbyRowText(service: s, row: row)
             }
             .padding(.vertical, 18)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -306,6 +297,44 @@ struct RootView: View {
         }
         .buttonStyle(.plain)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+    }
+}
+
+/// The text column of one lobby row: the name, then the key lines. Every row reserves its name plus three
+/// key-line heights (the two line slots and one spare line): a hidden block of three one-space lines in the
+/// key lines' own style, laid under the real lines in a `ZStack`, so the key-line area is as tall as the larger
+/// of the reserve and the lines drawn. The reserve follows the text size by itself and VoiceOver skips it.
+/// A line that does not fit the width wraps and shows in full; a row grows only when its key lines need more
+/// than the reserve. Every key line is regular weight in the row's detail colour.
+struct LobbyRowText: View {
+    let service: RootView.Service
+    let row: LobbyRow
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(row.title)
+                .font(.title3)
+                .foregroundStyle(Theme.ink)
+            ZStack(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(" ")
+                    Text(" ")
+                    Text(" ")
+                }
+                .font(.subheadline)
+                .fixedSize(horizontal: false, vertical: true)
+                .hidden()
+                .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(LobbyRows.slots(for: row).compactMap { $0 }.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.subheadline)
+                            .foregroundStyle(service.detailInk)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
     }
 }
 

@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import besir
 
@@ -851,6 +852,127 @@ final class LobbyRowsTests: XCTestCase {
             XCTAssertFalse(LobbyRows.fullLines(stays: c.stays, now: c.now, calendar: c.calendar)
                             .contains("Example Tables - Simulated 7:00 PM"), "the third partner is absent: \(c.label)")
         }
+    }
+
+    // MARK: T18 and T19, SPEC-LOBBYROWS-002 (card t117): the line slots and the equal row height
+
+    func testLOBBYROWS_T18_EveryRowHasExactlyTwoLineSlots() {
+        func row(_ lines: [String]) -> LobbyRow { LobbyRow(id: "x", title: "t", lines: lines) }
+        XCTAssertEqual(LobbyRows.slots(for: row([])), [nil, nil])
+        XCTAssertEqual(LobbyRows.slots(for: row(["No orders today"])), ["No orders today", nil])
+        XCTAssertEqual(LobbyRows.slots(for: row(["A - Simulated 7:00 PM", "B - Simulated 8:00 PM"])),
+                       ["A - Simulated 7:00 PM", "B - Simulated 8:00 PM"])
+        for c in LobbyFixtures.pureCases {
+            for r in build(c) {
+                let slots = LobbyRows.slots(for: r)
+                XCTAssertEqual(slots.count, 2, "\(c.label): \(r.id)")
+                XCTAssertEqual(slots.compactMap { $0 }, r.lines, "the filled slots are the row's lines in order: \(c.label): \(r.id)")
+                XCTAssertFalse(slots.contains { $0 == "" }, "no slot holds an empty string: \(c.label): \(r.id)")
+            }
+        }
+    }
+
+    /// The height `sizeThatFits` gives a hosted view proposed 316 pt of width (the 354 pt row less the 24 pt icon and
+    /// the 14 pt spacing), at a text size the test names: the default cases are pinned to `.large`.
+    private func hostedHeight<V: View>(_ view: V, size: DynamicTypeSize = .large) -> CGFloat {
+        UIHostingController(rootView: view.environment(\.dynamicTypeSize, size))
+            .sizeThatFits(in: CGSize(width: 316, height: CGFloat.greatestFiniteMagnitude)).height
+    }
+
+    /// A key line's text as the lobby draws it: `.subheadline`, wrapping, never cut.
+    private func keyLineText(_ text: String) -> some View {
+        Text(text).font(.subheadline).fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The height of one visual line and the pitch between two (the measured gap from one visual line to the
+    /// next). The probe measured them different at `.large` (18 and 20 pt: a single line is as tall as its
+    /// glyphs, a following line adds the text style's leading), so the guard measures both and checks the pitch
+    /// is steady (three explicit lines against two) before it counts anything.
+    private func lineMetrics(size: DynamicTypeSize) -> (one: CGFloat, pitch: CGFloat) {
+        let one = hostedHeight(keyLineText("A"), size: size)
+        let two = hostedHeight(keyLineText("A\nA"), size: size)
+        let three = hostedHeight(keyLineText("A\nA\nA"), size: size)
+        XCTAssertGreaterThan(one, 0, "a hosted one-line text has a height")
+        XCTAssertEqual(one, hostedHeight(keyLineText("A"), size: size), accuracy: 0.01, "two identical measurements agree")
+        XCTAssertEqual(three - two, two - one, accuracy: 0.1, "the line pitch is steady, so a visual line count is trustworthy")
+        return (one, two - one)
+    }
+
+    /// The number of visual lines a text takes at 316 pt: the height above one line, in whole pitches. A height
+    /// that is not a whole number of pitches (within 0.1) fails the test instead of being rounded.
+    private func visualLines(of text: String, size: DynamicTypeSize = .large) -> Int {
+        let metrics = lineMetrics(size: size)
+        let extra = (hostedHeight(keyLineText(text), size: size) - metrics.one) / metrics.pitch
+        XCTAssertEqual(extra, extra.rounded(), accuracy: 0.1, "a whole number of visual lines: \(text)")
+        return 1 + Int(extra.rounded())
+    }
+
+    /// The text grown one word at a time from `base` until it takes `count` visual lines (one added word adds at
+    /// most one line, so the count cannot be skipped); it fails after 40 words.
+    private func grown(from base: String, to count: Int) -> String {
+        var text = base
+        var words = 0
+        while visualLines(of: text) < count && words < 40 {
+            text += " delivery"
+            words += 1
+        }
+        XCTAssertEqual(visualLines(of: text), count, "the derived text takes \(count) visual lines: \(text)")
+        return text
+    }
+
+    func testLOBBYROWS_T19_RowsWithZeroOneOrTwoLinesHaveTheSameHeight() {
+        let short = "Alpha - Simulated 7:00 PM"
+        let short2 = "Beta - Simulated 8:00 PM"
+        XCTAssertEqual(visualLines(of: short), 1)
+        XCTAssertEqual(visualLines(of: short2), 1)
+        let wrapTwoA = grown(from: short, to: 2)
+        let wrapTwoB = grown(from: short2, to: 2)
+        let wrapThree = grown(from: "Gamma - Simulated 9:00 PM", to: 3)
+        XCTAssertEqual(visualLines(of: wrapTwoA), 2)
+        XCTAssertEqual(visualLines(of: wrapTwoB), 2)
+        XCTAssertEqual(visualLines(of: wrapThree), 3)
+
+        func column(_ lines: [String], _ size: DynamicTypeSize = .large) -> CGFloat {
+            let row = LobbyRow(id: RootView.Service.full.id, title: "be full sir", lines: lines)
+            return hostedHeight(LobbyRowText(service: .full, row: row), size: size)
+        }
+        let name = hostedHeight(Text("be full sir").font(.title3))
+        let one = lineMetrics(size: .large).one
+
+        // Equal at the default size: the reserve is three key-line heights, so 0, 1 or 2 lines, and a line that
+        // wraps inside the reserve, change nothing.
+        let reference = column([short, short2])
+        XCTAssertGreaterThan(reference, 0)
+        let equalCases: [(String, [String])] = [
+            ("no line", []), ("one line", ["No orders today"]), ("two lines", [short, short2]),
+            ("first wraps once", [wrapTwoA, short]), ("second wraps once", [short, wrapTwoA]),
+            ("one line takes three visual lines", [wrapThree]),
+        ]
+        for (label, lines) in equalCases {
+            XCTAssertEqual(column(lines), reference, accuracy: 0.5, "the same height: \(label)")
+        }
+        XCTAssertEqual(reference, name + 4 + 3 * one + 2 * 4, accuracy: 0.5,
+                       "the key-line area is the reserve: the name, the gap, three key-line heights and two gaps")
+
+        // Grows by the excess only: the lines need more than the reserve, the row takes exactly their height.
+        let wrapped = hostedHeight(keyLineText(wrapTwoA)) + 4 + hostedHeight(keyLineText(wrapTwoB))
+        let bothWrap = column([wrapTwoA, wrapTwoB])
+        XCTAssertGreaterThan(bothWrap, reference + 0.5, "both lines wrap: the row grows")
+        XCTAssertEqual(bothWrap, name + 4 + wrapped, accuracy: 0.5, "it grows by the excess, nothing is added")
+        let threeAndOne = hostedHeight(keyLineText(wrapThree)) + 4 + hostedHeight(keyLineText(short))
+        let threePlus = column([wrapThree, short])
+        XCTAssertGreaterThan(threePlus, reference + 0.5, "one line needs three visual lines beside another: the row grows")
+        XCTAssertEqual(threePlus, name + 4 + threeAndOne, accuracy: 0.5, "it grows by the excess, nothing is added")
+
+        // The largest size checked: the lines are one visual line each, so only the reserve decides.
+        for text in ["No orders today", "A 1:00 PM", "B 2:00 PM"] {
+            XCTAssertEqual(visualLines(of: text, size: .xxxLarge), 1, "one visual line at the largest size: \(text)")
+        }
+        let largest = column(["A 1:00 PM", "B 2:00 PM"], .xxxLarge)
+        XCTAssertGreaterThan(largest, 0)
+        XCTAssertEqual(column([], .xxxLarge), largest, accuracy: 0.5)
+        XCTAssertEqual(column(["No orders today"], .xxxLarge), largest, accuracy: 0.5)
+        XCTAssertGreaterThan(largest, reference, "the reserve follows the text size")
     }
 
     // MARK: T15, the scanner

@@ -117,6 +117,12 @@ enum LobbyRows {
         return texts.map(AgentPartner.partnerLine)
     }
 
+    /// The two line slots of a row: its key lines in order, then `nil` for each slot left empty.
+    /// The view draws the filled slots only; the empty ones are covered by the row's reserve.
+    static func slots(for row: LobbyRow) -> [String?] {
+        (0..<2).map { $0 < row.lines.count ? row.lines[$0] : nil }
+    }
+
     /// The one rule of what is still ahead: a start after now.
     // @MX:NOTE: one rule shared by the next-item pick and the per-partner pick; a change must move both.
     static func isUpcoming(start: Date, now: Date) -> Bool {
