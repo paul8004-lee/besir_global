@@ -29,14 +29,24 @@ struct LobbyRow: Equatable, Identifiable {
 /// The lobby's key lines, built from the schedule, the partner records and the budget ledger
 /// the app already holds.
 enum LobbyRows {
-    /// One row per feature of the feature list, in the list's order.
+    /// The one key line of an empty be on-time sir row. A fixed text: it reads no clock, calendar or locale.
+    static let noPlansToday = "No plans today"
+    /// The one key line of an empty be full sir row. A fixed text: it reads no clock, calendar or locale.
+    static let noOrdersToday = "No orders today"
+
+    /// One row per feature of the feature list, in the list's order. A be on-time sir or be full sir
+    /// row whose builder gives no line shows its placeholder instead; the be rich sir row never does.
     static func rows(items: [LobbyItem], stays: [LobbyStay], spentCents: Int, entries: [BudgetEntry],
                      now: Date, calendar: Calendar) -> [LobbyRow] {
         RootView.Service.allCases.map { service in
-            let lines: [String]
+            var lines: [String]
             switch service {
-            case .onTime: lines = onTimeLines(items: items, now: now, calendar: calendar)
-            case .full: lines = fullLines(stays: stays, now: now, calendar: calendar)
+            case .onTime:
+                lines = onTimeLines(items: items, now: now, calendar: calendar)
+                if lines.isEmpty { lines = [noPlansToday] }
+            case .full:
+                lines = fullLines(stays: stays, now: now, calendar: calendar)
+                if lines.isEmpty { lines = [noOrdersToday] }
             case .rich: lines = richLines(spentCents: spentCents, entries: entries)
             }
             return LobbyRow(id: service.id, title: service.title, lines: lines)
@@ -81,6 +91,7 @@ enum LobbyRows {
 
     /// The be full sir lines, one per partner that has an entry starting today, each partner id
     /// taken as an opaque key: the partner line of the picked stay's name and the picked start.
+    /// At most two lines: the two partners whose picks come first, by picked start and then partner id.
     static func fullLines(stays: [LobbyStay], now: Date, calendar: Calendar) -> [String] {
         let todays = stays.filter { startsToday($0.start, now: now, calendar: calendar) }
         let picks = Dictionary(grouping: todays, by: { $0.partnerID })
@@ -88,7 +99,7 @@ enum LobbyRows {
         return picks.sorted {
             if $0.value.start != $1.value.start { return $0.value.start < $1.value.start }
             return $0.key < $1.key
-        }.map { _, stay in
+        }.prefix(2).map { _, stay in
             // @MX:NOTE: the marker's only source in the lobby is this call; the word itself is typed nowhere else.
             AgentPartner.partnerLine(stay.partnerName) + " " + Replan.clockText(stay.start, timeZone: calendar.timeZone)
         }
@@ -104,6 +115,12 @@ enum LobbyRows {
         }
         // @MX:NOTE: the marker's only source in the lobby is this call; the word itself is typed nowhere else.
         return texts.map(AgentPartner.partnerLine)
+    }
+
+    /// The two line slots of a row: its key lines in order, then `nil` for each slot left empty.
+    /// The view draws the filled slots only; the empty ones are covered by the row's reserve.
+    static func slots(for row: LobbyRow) -> [String?] {
+        (0..<2).map { $0 < row.lines.count ? row.lines[$0] : nil }
     }
 
     /// The one rule of what is still ahead: a start after now.
