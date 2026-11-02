@@ -306,12 +306,13 @@ struct RootView: View {
     }
 }
 
-/// The lobby rows as one block: as wide as its widest row, at most the width offered, every row
-/// stacked on the same left edge and given the block's width (so a divider spans the block).
+/// The lobby rows as one block: always the full width offered, whatever the row text, so the icons
+/// and names never move sideways when a line gets longer or shorter. Every row is stacked on the
+/// same left edge and given the block's width (so a divider spans the block). With no width offered
+/// the block falls back to its widest row.
 private struct LobbyColumn: Layout {
     private func width(_ proposal: ProposedViewSize, _ subviews: Subviews) -> CGFloat {
-        let widest = subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
-        return min(widest, proposal.width ?? widest)
+        proposal.width ?? subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
     }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
