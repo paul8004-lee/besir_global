@@ -119,7 +119,7 @@ enum SnapEntry {
     }
 
     /// The automatic share pass hands a message to the chat only with a free session and a closed camera cover.
-    static func shareMayHand(canSend: Bool, coverOpen: Bool) -> Bool {
+    static func shareMayHand(canSend: Bool, coverOpen: Bool, sheetOpen: Bool = false) -> Bool {
         canSend && !coverOpen
     }
 }
