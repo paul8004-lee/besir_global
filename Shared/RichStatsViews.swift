@@ -348,49 +348,78 @@ struct RichTrendsTab: View {
     private var chart: some View {
         let spoken = stats.weeks.filter(\.hasBar).map { $0.label + " " + RichStats.money($0.cents) }.joined(separator: ", ")
         return VStack(spacing: 6) {
-            Color.clear
-                .frame(height: barArea + labelRoom)
-                .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(Theme.line).frame(height: 1).offset(y: -height(of: (stats.budgetCents + 1) / 2))
-                }
-                .overlay(alignment: .bottom) {
-                    RichDashedLine()
-                        .stroke(Theme.muted, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
-                        .frame(height: 1.5)
-                        .offset(y: -height(of: stats.budgetCents))
-                }
-                .overlay(alignment: .bottom) {
-                    HStack(alignment: .bottom, spacing: 8) {
-                        ForEach(stats.weeks, id: \.weekStart) { week in column(week) }
+            HStack(alignment: .bottom, spacing: gutterSpacing) {
+                gutterSizer
+                    .frame(height: barArea + labelRoom, alignment: .bottom)
+                    .overlay(alignment: .bottomTrailing) {
+                        Text("Budget " + stats.budgetText)
+                            .font(.caption2)
+                            .foregroundStyle(Theme.ink)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .offset(y: -height(of: stats.budgetCents) - 2)
                     }
-                }
-                .overlay(alignment: .bottomLeading) {
-                    Text("Budget " + stats.budgetText)
-                        .font(.caption2)
-                        .foregroundStyle(Theme.ink)
-                        .offset(y: -height(of: stats.budgetCents) - 2)
-                }
-                .overlay(alignment: .bottomLeading) {
-                    Text(stats.halfBudgetText)
-                        .font(.caption2)
-                        .foregroundStyle(Theme.muted)
-                        .offset(y: -height(of: (stats.budgetCents + 1) / 2) - 2)
-                }
-            HStack(spacing: 8) {
-                ForEach(stats.weeks, id: \.weekStart) { week in
-                    Text(week.label)
-                        .font(.caption2)
-                        .fontWeight(week.isCurrent ? .semibold : .regular)
-                        .foregroundStyle(week.isCurrent ? Theme.ink : Theme.muted)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.5)
-                        .frame(maxWidth: .infinity)
+                    .overlay(alignment: .bottomTrailing) {
+                        Text(stats.halfBudgetText)
+                            .font(.caption2)
+                            .foregroundStyle(Theme.muted)
+                            .multilineTextAlignment(.trailing)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .offset(y: -height(of: (stats.budgetCents + 1) / 2) - 2)
+                    }
+                Color.clear
+                    .frame(height: barArea + labelRoom)
+                    .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+                    .overlay(alignment: .bottom) {
+                        Rectangle().fill(Theme.line).frame(height: 1).offset(y: -height(of: (stats.budgetCents + 1) / 2))
+                    }
+                    .overlay(alignment: .bottom) {
+                        RichDashedLine()
+                            .stroke(Theme.muted, style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                            .frame(height: 1.5)
+                            .offset(y: -height(of: stats.budgetCents))
+                    }
+                    .overlay(alignment: .bottom) {
+                        HStack(alignment: .bottom, spacing: 8) {
+                            ForEach(stats.weeks, id: \.weekStart) { week in column(week) }
+                        }
+                    }
+            }
+            HStack(spacing: gutterSpacing) {
+                gutterSizer
+                HStack(spacing: 8) {
+                    ForEach(stats.weeks, id: \.weekStart) { week in
+                        Text(week.label)
+                            .font(.caption2)
+                            .fontWeight(week.isCurrent ? .semibold : .regular)
+                            .foregroundStyle(week.isCurrent ? Theme.ink : Theme.muted)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.5)
+                            .frame(maxWidth: .infinity)
+                    }
                 }
             }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(spoken)
+    }
+
+    /// The gap between the label gutter and the plot.
+    private let gutterSpacing: CGFloat = 4
+
+    /// An invisible column as wide as the widest of the three label words at the current text size. It is the leading element of
+    /// the plot row (the labels sit on it) and of the week-label row (so the weeks stay under their bars), so both rows get the
+    /// same width without a fixed number of points.
+    private var gutterSizer: some View {
+        ZStack {
+            Text("Budget")
+            Text(stats.budgetText)
+            Text(stats.halfBudgetText)
+        }
+        .font(.caption2)
+        .lineLimit(1)
+        .fixedSize()
+        .hidden()
     }
 
     /// One week's column: its bar on the baseline, with the total above it for the current week and for a completed week over.
