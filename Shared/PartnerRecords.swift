@@ -128,6 +128,15 @@ final class PartnerRecords: @unchecked Sendable {
         return true
     }
 
+    /// Removes every record and writes the empty list, also when the list was already empty; a failed write leaves the
+    /// in-memory list empty. Posts nothing: the readers re-read on appear.
+    func removeAll() {
+        lock.lock()
+        defer { lock.unlock() }
+        entries.removeAll()
+        save()
+    }
+
     private func save() {
         if let data = try? JSONEncoder().encode(entries) { try? write(data, fileURL) }
     }
