@@ -160,6 +160,9 @@ struct RichStats: Equatable {
         case none
     }
 
+    /// Money text for the views (M5 accessor): the app's one money formatter, so no view writes an amount of its own.
+    static func money(_ cents: Int) -> String { AgentBudget.dollars(cents: cents) }
+
     // MARK: Parts of the build
 
     private static func row(_ entry: BudgetEntry) -> Row {
