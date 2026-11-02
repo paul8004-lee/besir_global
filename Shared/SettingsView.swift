@@ -10,13 +10,17 @@ struct SettingsView: View {
     #if DEBUG && os(iOS)
     @State private var debugCalendarLines: [String] = []
     #endif
+    @State private var newRule = ""
+    @State private var ruleError: String?
 
     // 즐겨찾기는 추가·삭제가 즉시 저장되고, 기본 설정은 아래 저장 단추를 눌러야 반영된다 —
     // 두 저장 문법이 섞이면 "저장을 안 눌렀는데 바뀌었네"가 생기므로 탭으로 가른다(REQ-003).
     // The Memory tab saves at once like Favorites: each delete button writes memory.md, and the tab has no Save row.
+    // The Rules tab saves at once too: Add and each delete button write rules.md, and the tab has no Save row.
     private enum SettingsTab: Hashable {
         case basic
         case favorites
+        case rules
         case memory
     }
 
@@ -29,6 +33,7 @@ struct SettingsView: View {
             Picker("Settings Section", selection: $tab) {
                 Text("General").tag(SettingsTab.basic)
                 Text("Favorites").tag(SettingsTab.favorites)
+                Text("Rules").tag(SettingsTab.rules)
                 Text("Memory").tag(SettingsTab.memory)
             }
             .pickerStyle(.segmented)
@@ -36,6 +41,7 @@ struct SettingsView: View {
             switch tab {
             case .basic: basicTab
             case .favorites: favoritesTab
+            case .rules: rulesTab
             case .memory: memoryTab
             }
         }
@@ -122,6 +128,53 @@ struct SettingsView: View {
             FavoritesList()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Rules tab (SPEC-MEMORY-003): every rule line of rules.md in file order, shown without its leading `- `, each with one
+    /// delete button that removes exactly that line at once, and one add row. No heading, caption or helper text.
+    private var rulesTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                if store.ruleLines.isEmpty {
+                    Text("No rules yet.")
+                        .font(.callout).foregroundStyle(Theme.muted)
+                } else {
+                    ForEach(Array(store.ruleLines.enumerated()), id: \.offset) { item in
+                        HStack {
+                            Text(RuleLine.display(item.element))
+                            Spacer()
+                            Button(role: .destructive) { store.deleteRule(at: item.offset) } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Delete")
+                        }
+                        .padding(.vertical, 6)
+                        Divider()
+                    }
+                }
+                HStack {
+                    TextField("Add a rule", text: $newRule)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit { addRule() }
+                    Button("Add") { addRule() }
+                        .disabled(newRule.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(.vertical, 6)
+                if let ruleError {
+                    Text(ruleError).font(.caption).foregroundStyle(Theme.warn)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Stores the field's text through the one writer, unchanged: the Store's cleaning answers `.empty` for a text with no rule
+    /// text. Every outcome sets the error text (nil for an added rule or no rule text); only an added rule empties the field.
+    private func addRule() {
+        let outcome = store.addRule(newRule)
+        ruleError = outcome.errorText
+        if case .added = outcome { newRule = "" }
     }
 
     /// Memory tab (SPEC-MEMORY-001): every item line of memory.md in file order, shown without its leading `- `, each with one
