@@ -94,13 +94,13 @@ struct FullSirView: View {
                 }
             }
             .sheet(item: $scheduling) { item in
-                MealScheduleSheet(target: item) { scheduling = nil }
+                MealScheduleSheet(target: item) { scheduling = nil }.holdsSharePass()
             }
             .sheet(item: $openCard) { hand in
-                PartnerCardSheet(card: hand.card)
+                PartnerCardSheet(card: hand.card).holdsSharePass()
             }
             .sheet(isPresented: $showingHistory) {
-                PartnerHistoryView()
+                PartnerHistoryView().holdsSharePass()
             }
             .onChange(of: baseKey) { baseChanged() }
         }

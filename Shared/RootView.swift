@@ -58,6 +58,8 @@ struct RootView: View {
     @State private var showingSnap = false
     @StateObject private var snap = SnapFlow()
     @StateObject private var shareImport = SharedImport()
+    /// The open sheets: the automatic share pass waits while any is open and runs again when the last one closes.
+    @ObservedObject private var sheets = SheetHold.shared
     @Environment(\.scenePhase) private var scenePhase
 
     /// 로비 맨 위 줄의 besir 로고와 설정 톱니는 한 줄에 나란히 서지만 틀 크기는 따로 잡는다 — 로고(BesirMark)는 틀의 가로 약
@@ -79,8 +81,8 @@ struct RootView: View {
                 BeRichSirView(onBack: { service = nil })
             }
         }
-        .sheet(isPresented: $showingChat, onDismiss: { Task { await chatHolder.session?.sheetDismissed() } }) {
-            if let session = chatHolder.session { AgentChatView(session: session) }
+        .sheet(isPresented: $showingChat, onDismiss: { Task { await chatHolder.session?.sheetDismissed(); SheetHold.shared.closed(SheetHold.chatKey) } }) {
+            if let session = chatHolder.session { AgentChatView(session: session).holdsSharePass(key: SheetHold.chatKey) }
         }
         .overlay(alignment: .bottomTrailing) {
             if store.config.hasAI {
@@ -130,7 +132,7 @@ struct RootView: View {
         }
         .task { await runShareImport() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await runShareImport() } } }
-        .onChange(of: showingChat) { _, showing in if !showing { Task { await runShareImport() } } }
+        .onChange(of: sheets.isAnyOpen) { _, open in if !open { Task { await runShareImport() } } }
         // A tap on a departure alert opens its event on the on-time screen, from the home screen and from be full sir alike.
         .onChange(of: notifications.tappedEventID, initial: true) { _, id in
             if id != nil, service != .onTime { service = .onTime }
@@ -141,7 +143,7 @@ struct RootView: View {
     /// (SPEC-SHARE-001, SPEC-SHAREBUBBLE-001).
     private func runShareImport() async {
         let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
-        await shareImport.pass(vision: client, canHand: { SnapEntry.shareMayHand(canSend: chatHolder.session?.canSend ?? true, coverOpen: showingSnap) },
+        await shareImport.pass(vision: client, canHand: { SnapEntry.shareMayHand(canSend: chatHolder.session?.canSend ?? true, coverOpen: showingSnap, sheetOpen: sheets.isAnyOpen) },
                               holdForPlan: true, hand: SharedImport.chatHandOff(holder: chatHolder, openChat: openChat))
     }
 
@@ -268,7 +270,7 @@ struct RootView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Theme.bg)
         .sheet(isPresented: $showingSettings) {
-            SettingsView()
+            SettingsView().holdsSharePass()
         }
         #if os(macOS)
         .frame(minWidth: 520, minHeight: 560)

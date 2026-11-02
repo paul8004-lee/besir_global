@@ -122,11 +122,14 @@ struct EventDetailView: View {
         .sheet(isPresented: $showingEdit) {
             // 연결된 구간의 편집은 활동 카드로 간다(REQ-001·006) — 시간을 고치면 활동과 분리되던
             // 창이 나오지 않게 한다. 활동이 없으면(단독 구간·매달린 링크) 지금처럼 이동 일정 폼.
-            if let linked = store.activity(forLeg: event) {
-                ActivityDetailView(activityId: linked.id)
-            } else {
-                AddEventView(editing: event)
+            Group {
+                if let linked = store.activity(forLeg: event) {
+                    ActivityDetailView(activityId: linked.id)
+                } else {
+                    AddEventView(editing: event)
+                }
             }
+            .holdsSharePass()
         }
     }
 
