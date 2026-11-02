@@ -1623,6 +1623,115 @@ final class AgentFieldCardTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(model.field("venue")).options.isEmpty)
     }
 
+    // MARK: PLACEKEEP a place row keeps its text when its list closes (card t113, SPEC-PLACEKEEP-001)
+
+    /// The row the model stated, as it is after the view drew the card: the seed searched as the card appears, the answer in.
+    private func appearedVenueRow(_ gate: LookupGate) async throws -> AgentFieldCard {
+        gate.reply = .found(branches(3))
+        let model = makeLookupCard([.field(venueSpec, value: .text("Market Street"), source: .stated)], lookups: gate)
+        let row = try XCTUnwrap(model.field("venue"))
+        model.actions.searchPlaces(row.id, try XCTUnwrap(PlaceLine.searchOnAppear(row)))
+        await settle()
+        return model
+    }
+
+    func testPLACEKEEP_T01_TheSeedSearchedAsTheCardAppearsStaysTheRowsTextAfterTheSeedIsSpent() async throws {
+        let gate = LookupGate()
+        let model = try await appearedVenueRow(gate)
+        XCTAssertEqual(model.field("venue")?.keptQuery, "Market Street")
+        // Controls, green on the base: the seed is spent, the answer is in, one lookup was asked.
+        XCTAssertNil(model.field("venue")?.searchSeed)
+        XCTAssertEqual(results(model.field("venue")?.lookup), branches(3))
+        XCTAssertEqual(gate.calls, [LookupCall(key: "venue", text: "Market Street")])
+    }
+
+    func testPLACEKEEP_T02_AReopenedRowStartsWithItsTextShowsTheHeldCandidatesAndAsksNothing() async throws {
+        let gate = LookupGate()
+        let model = try await appearedVenueRow(gate)
+        // The close changes nothing in the model. The row is reopened:
+        let again = try XCTUnwrap(model.field("venue"))
+        XCTAssertEqual(PlaceLine.openingText(again), "Market Street")
+        XCTAssertNil(PlaceLine.seedToSearchOnOpen(seed: again.searchSeed, lookup: again.lookup), "nothing is searched on opening")
+        let listed = PlaceLine.rows(query: PlaceLine.openingText(again), specials: again.placeSpecials, favorites: again.options,
+                                    candidates: branches(3))
+        XCTAssertEqual(listed.filter { if case .candidate = $0 { return true } else { return false } }.count, 3)
+        // The field hands the same text back: no new lookup, the candidates and the kept text stay.
+        model.search("venue", PlaceLine.openingText(again))
+        await settle()
+        XCTAssertEqual(gate.calls.count, 1)
+        XCTAssertEqual(results(model.field("venue")?.lookup), branches(3))
+        XCTAssertEqual(model.field("venue")?.keptQuery, "Market Street")
+    }
+
+    func testPLACEKEEP_T03_AnEditedTextIsSearchedAsUsualAndBecomesTheKeptTextAndABlankTextClearsIt() async throws {
+        let gate = LookupGate()
+        let model = try await appearedVenueRow(gate)
+        let row = try XCTUnwrap(model.field("venue"))
+        model.actions.searchPlaces(row.id, "Pasta")
+        await settle()
+        XCTAssertEqual(gate.calls.map(\.text), ["Market Street", "Pasta"])
+        XCTAssertEqual(model.field("venue")?.keptQuery, "Pasta")
+        XCTAssertEqual(PlaceLine.openingText(try XCTUnwrap(model.field("venue"))), "Pasta")
+        // A text too short to ask is kept and asks nothing.
+        model.search("venue", "a")
+        await settle()
+        XCTAssertEqual(model.field("venue")?.keptQuery, "a")
+        XCTAssertEqual(gate.calls.count, 2)
+        XCTAssertTrue(isIdle(model.field("venue")?.lookup))
+        // A blank text clears it.
+        model.search("venue", "   ")
+        XCTAssertNil(model.field("venue")?.keptQuery)
+        XCTAssertEqual(PlaceLine.openingText(try XCTUnwrap(model.field("venue"))), "")
+    }
+
+    func testPLACEKEEP_T04_AnAcceptedCandidateClearsTheKeptTextAndAFrozenCardKeepsIt() async throws {
+        let gate = LookupGate()
+        let model = try await appearedVenueRow(gate)
+        XCTAssertEqual(model.field("venue")?.keptQuery, "Market Street", "control: the text is kept before the pick")
+        XCTAssertTrue(model.choosePlace("venue", branches(3)[0]))
+        let picked = try XCTUnwrap(model.field("venue"))
+        XCTAssertNil(picked.keptQuery)
+        XCTAssertEqual(PlaceLine.openingText(picked), "")
+        XCTAssertEqual(PlaceLine.closedRow(closed: picked.chosenLabel ?? "", kept: picked.keptQuery),
+                       PlaceLine.ClosedRow(text: "Branch 0, 1 Main Street", isValue: true))
+        // A frozen card changes no kept text.
+        let gate2 = LookupGate()
+        let model2 = try await appearedVenueRow(gate2)
+        model2.freeze()
+        model2.search("venue", "delta")
+        await settle()
+        XCTAssertEqual(model2.field("venue")?.keptQuery, "Market Street")
+        XCTAssertEqual(gate2.calls.count, 1)
+    }
+
+    func testPLACEKEEP_T05_TheOpeningTextAndTheClosedRowFollowOneRuleForEveryCard() {
+        XCTAssertEqual(PlaceLine.closedRow(closed: "", kept: "Market Street"), PlaceLine.ClosedRow(text: "Market Street", isValue: false))
+        XCTAssertEqual(PlaceLine.closedRow(closed: "Branch 0, 1 Main Street", kept: "Branch"),
+                       PlaceLine.ClosedRow(text: "Branch 0, 1 Main Street", isValue: true))
+        XCTAssertEqual(PlaceLine.closedRow(closed: "", kept: nil), PlaceLine.ClosedRow(text: "", isValue: false))
+        XCTAssertEqual(PlaceLine.closedRow(closed: "", kept: "  "), PlaceLine.ClosedRow(text: "", isValue: false))
+        // A manual-card row: no kept text, the seed, else empty; a kept text comes before the seed.
+        var field = EditField(key: "p", kind: .place, label: "Place", options: [], allowsCustom: true)
+        XCTAssertEqual(PlaceLine.openingText(field), "")
+        field.searchSeed = "Domo"
+        XCTAssertEqual(PlaceLine.openingText(field), "Domo")
+        field.keptQuery = "Market Street"
+        XCTAssertEqual(PlaceLine.openingText(field), "Market Street")
+    }
+
+    func testPLACEKEEP_T06_APlaceSearchRowOfThePartnerCardKeepsItsTextTheSameWay() async throws {
+        let searches = Searches()
+        searches.places = branches(2)
+        let gate = LookupGate()
+        let model = makeLookupCard([.field(originSpec, value: nil, source: .blank)], searches: searches, lookups: gate)
+        model.search("origin", "Ferry")
+        await settle()
+        XCTAssertEqual(searches.queries, ["Ferry"])
+        XCTAssertEqual(gate.calls, [])
+        XCTAssertEqual(model.field("origin")?.keptQuery, "Ferry")
+        XCTAssertEqual(PlaceLine.openingText(try XCTUnwrap(model.field("origin"))), "Ferry")
+    }
+
     // MARK: Seeds of the number stepper and menu list tests (cards t107, t106)
 
     private func seed(_ value: AgentFieldValue?, _ source: AgentFieldSource) -> AgentFieldSeed {
