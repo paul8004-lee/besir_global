@@ -159,6 +159,7 @@ struct AgentChatView: View {
         HStack(alignment: .bottom, spacing: 12) {
             TextField("Message", text: $draft, axis: .vertical)
                 .lineLimit(1...5)
+                .frame(minHeight: 44)
                 .focused($composerFocused)
                 .disabled(!session.canSend || voice.phase != .idle)
             microphone
