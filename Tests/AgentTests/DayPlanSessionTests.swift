@@ -663,6 +663,14 @@ final class DayPlanSessionTests: XCTestCase {
 
         // create_activity with a place
         before = Set(rig.store.activities.map(\.id))
+        if withTravel {
+            // SPEC-TRAVELASK-001: outside a plan turn a place with no route is first refused with the travel question; the
+            // card below is built after one user line.
+            let asked = await call(rig, "create_activity", ["title": "Team sync", "start": "2026-10-28T19:00", "end": "2026-10-28T20:00", "place_id": "p1"])
+            XCTAssertNil(asked.card, "\(label): no card before the travel question")
+            XCTAssertEqual(asked.text, #"{"message":"\#(PlaceText.travelAsk)","status":"rejected"}"#, "\(label): travel question")
+            rig.tools.userLines = { ["I'm already there."] }
+        }
         let placed = try await cardOf(rig, "create_activity", ["title": "Team sync", "start": "2026-10-28T19:00", "end": "2026-10-28T20:00", "place_id": "p1"])
         XCTAssertEqual(placed.lines, ["Add event", "Team sync", "Wed, Oct 28, 7:00 PM - 8:00 PM", "At Example Cafe"], "\(label): place card")
         XCTAssertTrue(placed.showsGoogleMark, label)

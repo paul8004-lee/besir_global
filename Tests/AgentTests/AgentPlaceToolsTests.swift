@@ -965,7 +965,7 @@ final class AgentPlaceToolsTests: XCTestCase {
         let hostileCard = try XCTUnwrap(hostile.create(place: "p3", route: "r1").card)
         XCTAssertEqual(hostileCard.lines.count > 4 ? hostileCard.lines[4] : nil, "From " + String(repeating: "A", count: 80))
 
-        let placeOnly = try XCTUnwrap(rig.create(place: "p1").card)
+        let placeOnly = try XCTUnwrap(rig.createAfterAsk(place: "p1").card)
         XCTAssertFalse(placeOnly.lines.contains { $0.hasPrefix("From") }, "a card without a route has no From line")
     }
 
@@ -1030,7 +1030,7 @@ final class AgentPlaceToolsTests: XCTestCase {
 
     func testAGPLACE_CardWithPlaceOnlyHasAtLineAndNoLeaveOrVerifiedLine() async throws {
         let rig = await seeded()
-        let card = try XCTUnwrap(rig.create(place: "p1").card)
+        let card = try XCTUnwrap(rig.createAfterAsk(place: "p1").card)
         XCTAssertEqual(card.lines, ["Add event", "Team sync", Self.rangeLine, "At Example Cafe"])
         XCTAssertTrue(card.showsGoogleMark)
         XCTAssertFalse(card.lines.contains { $0.hasPrefix("Leave") })
@@ -1041,7 +1041,7 @@ final class AgentPlaceToolsTests: XCTestCase {
         let rig = await seeded()
         XCTAssertTrue(try XCTUnwrap(rig.create(place: "p1", route: "r1").card).showsGoogleMark, "route and place")
         XCTAssertTrue(try XCTUnwrap(rig.create(route: "r1").card).showsGoogleMark, "route only")
-        XCTAssertTrue(try XCTUnwrap(rig.create(place: "p1").card).showsGoogleMark, "place only")
+        XCTAssertTrue(try XCTUnwrap(rig.createAfterAsk(place: "p1").card).showsGoogleMark, "place only")
         XCTAssertFalse(try XCTUnwrap(rig.create().card).showsGoogleMark, "neither")
 
         // Update and delete cards never draw the mark, even when the record holds a stored Google place.
@@ -1186,7 +1186,7 @@ final class AgentPlaceToolsTests: XCTestCase {
     func testAGPLACE_ConfirmWithPlaceOnlyWritesLocationAndNoLeg() async throws {
         let originals = PlaceFixture.places("places-search-three")
         let rig = await seeded()
-        let card = try XCTUnwrap(rig.create(place: "p1").card)
+        let card = try XCTUnwrap(rig.createAfterAsk(place: "p1").card)
         XCTAssertEqual(card.lines.last, "At Example Cafe")
         _ = await card.resolve(.confirm)
         XCTAssertEqual(rig.store.activities.count, 1)
@@ -1235,7 +1235,7 @@ final class AgentPlaceToolsTests: XCTestCase {
     func testAGPLACE_ConfirmWithAPassedStartWritesNothing() async throws {
         let rig = await seeded()
         let routeCard = try XCTUnwrap(rig.create(place: "p1", route: "r1").card)
-        let placeCard = try XCTUnwrap(rig.create(place: "p1").card)
+        let placeCard = try XCTUnwrap(rig.createAfterAsk(place: "p1").card)
         XCTAssertEqual(routeCard.lines.count, 7)
         XCTAssertEqual(placeCard.lines.count, 4)
         let before = rig.snapshot
@@ -1296,7 +1296,7 @@ final class AgentPlaceToolsTests: XCTestCase {
         XCTAssertEqual(applied?.json?["leave_by"] as? String, "2026-10-28T18:37")
         XCTAssertEqual(applied?.json?["minutes"] as? Int, 18)
 
-        let placeCard = try XCTUnwrap(rig.create(place: "p1", title: "Coffee").card)
+        let placeCard = try XCTUnwrap(rig.createAfterAsk(place: "p1", title: "Coffee").card)
         let placeOnly = await placeCard.resolve(.confirm)
         XCTAssertEqual(Set(placeOnly?.json?.keys.map { $0 } ?? []), ["status", "id", "title", "start", "end", "location"])
         XCTAssertEqual(placeOnly?.json?["location"] as? String, "AlphaGuard Cafe")
