@@ -163,6 +163,7 @@ struct AgentChatView: View {
                 .disabled(!session.canSend || voice.phase != .idle)
             microphone
             Button("Send", action: sendDraft)
+                .frame(height: 44)
                 .disabled(!session.canSend || voice.phase != .idle || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
         .padding(.horizontal, 16)
