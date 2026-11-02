@@ -120,6 +120,7 @@ struct PartnerHistoryView: View {
                         Divider().overlay(Theme.line)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(20)
             }
             .background(Theme.bg)

@@ -151,7 +151,7 @@ private final class SnapPreviewView: UIView {
     var preview: AVCaptureVideoPreviewLayer? { layer as? AVCaptureVideoPreviewLayer }
 }
 
-/// The camera circle left of the besir circle on the root screen.
+/// The camera glyph in the lobby header: icon only, muted, inside a 44 pt tap frame.
 struct SnapEntryButton: View {
     let isShown: Bool
     let action: () -> Void
@@ -160,9 +160,10 @@ struct SnapEntryButton: View {
         if isShown {
             Button(action: action) {
                 Image(systemName: "camera")
-                    .font(.system(size: 22))
-                    .foregroundStyle(Theme.ink)
-                    .floatingCircle()
+                    .font(.system(size: 28))
+                    .foregroundStyle(Theme.muted)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Camera")

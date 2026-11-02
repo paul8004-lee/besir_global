@@ -34,6 +34,14 @@ struct RootView: View {
             case .rich: return Theme.ink
             }
         }
+        /// The colour of a row's key lines under its first one: the service's own ink, the deep tone of its tint.
+        var detailInk: Color {
+            switch self {
+            case .onTime: return Theme.travelInk
+            case .full: return Theme.activityInk
+            case .rich: return Theme.muted
+            }
+        }
     }
 
     @EnvironmentObject var store: Store
@@ -50,6 +58,8 @@ struct RootView: View {
     @State private var showingSnap = false
     @StateObject private var snap = SnapFlow()
     @StateObject private var shareImport = SharedImport()
+    /// The open sheets: the automatic share pass waits while any is open and runs again when the last one closes.
+    @ObservedObject private var sheets = SheetHold.shared
     @Environment(\.scenePhase) private var scenePhase
 
     /// 로비 맨 위 줄의 besir 로고와 설정 톱니는 한 줄에 나란히 서지만 틀 크기는 따로 잡는다 — 로고(BesirMark)는 틀의 가로 약
@@ -71,8 +81,8 @@ struct RootView: View {
                 BeRichSirView(onBack: { service = nil })
             }
         }
-        .sheet(isPresented: $showingChat, onDismiss: { Task { await chatHolder.session?.sheetDismissed() } }) {
-            if let session = chatHolder.session, let voice = chatHolder.voice { AgentChatView(session: session, voice: voice) }
+        .sheet(isPresented: $showingChat, onDismiss: { Task { await chatHolder.session?.sheetDismissed(); SheetHold.shared.closed(SheetHold.chatKey) } }) {
+            if let session = chatHolder.session, let voice = chatHolder.voice { AgentChatView(session: session, voice: voice).holdsSharePass(key: SheetHold.chatKey).holdsSharePass() }
         }
         .overlay(alignment: .bottomTrailing) {
             if store.config.hasAI {
@@ -92,18 +102,16 @@ struct RootView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    HStack(spacing: 12) {
-                        SnapEntryButton(isShown: SnapEntry.isShown(hasAI: store.config.hasAI, choosingMode: choosingMode,
-                                                                   isReading: shareImport.isReading)) { openSnap() }
-                        Button {
-                            openChat()
-                        } label: {
-                            BesirMark(size: 28)
-                                .floatingCircle()
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("besir AI")
+                    Button {
+                        openChat()
+                    } label: {
+                        Image(systemName: "ellipsis.bubble")
+                            .font(.system(size: 22))
+                            .foregroundStyle(Theme.ink)
+                            .floatingCircle()
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("besir AI")
                 }
                 .padding(.trailing, FloatingCircle.inset)
                 .padding(.bottom, FloatingCircle.inset)
@@ -124,7 +132,7 @@ struct RootView: View {
         }
         .task { await runShareImport() }
         .onChange(of: scenePhase) { _, phase in if phase == .active { Task { await runShareImport() } } }
-        .onChange(of: showingChat) { _, showing in if !showing { Task { await runShareImport() } } }
+        .onChange(of: sheets.isAnyOpen) { _, open in if !open { Task { await runShareImport() } } }
         // A tap on a departure alert opens its event on the on-time screen, from the home screen and from be full sir alike.
         .onChange(of: notifications.tappedEventID, initial: true) { _, id in
             if id != nil, service != .onTime { service = .onTime }
@@ -135,7 +143,7 @@ struct RootView: View {
     /// (SPEC-SHARE-001, SPEC-SHAREBUBBLE-001).
     private func runShareImport() async {
         let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
-        await shareImport.pass(vision: client, canHand: { SnapEntry.shareMayHand(canSend: chatHolder.session?.canSend ?? true, coverOpen: showingSnap) },
+        await shareImport.pass(vision: client, canHand: { SnapEntry.shareMayHand(canSend: chatHolder.session?.canSend ?? true, coverOpen: showingSnap, sheetOpen: sheets.isAnyOpen) },
                               holdForPlan: true, hand: SharedImport.chatHandOff(holder: chatHolder, openChat: openChat))
     }
 
@@ -219,6 +227,8 @@ struct RootView: View {
                     .font(.system(size: 32, weight: .regular))
                     .foregroundStyle(Theme.ink)
                 Spacer()
+                SnapEntryButton(isShown: SnapEntry.isShown(hasAI: store.config.hasAI, choosingMode: choosingMode,
+                                                           isReading: shareImport.isReading)) { openSnap() }
                 // 설정은 시간표가 아니라 로비에서 연다(REQ-002) — 시간표 우상단은 비워 둔다(REQ-001).
                 Button {
                     showingSettings = true
@@ -241,48 +251,87 @@ struct RootView: View {
             .padding(.top, 52)
             .padding(.bottom, 34)
 
-            VStack(spacing: 0) {
-                Divider().overlay(Theme.line)
-                ForEach(Service.allCases) { s in
-                    serviceCard(s)
-                    Divider().overlay(Theme.line)
+            // The clock is read here and nowhere else: the closure builds the rows from today's store each minute.
+            TimelineView(.everyMinute) { _ in
+                let rows = LobbyRows.rows(store: store, records: PartnerRecords.shared, ledger: BudgetLedger.shared,
+                                          now: Date(), calendar: Calendar.current)
+                ScrollView {
+                    // One block that always takes the full width between the side margins; the last row stops above the besir AI circle.
+                    LobbyColumn {
+                        ForEach(rows) { row in
+                            if let s = Service(rawValue: row.id) { serviceCard(s, row) }
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, FloatingCircle.diameter + 2 * FloatingCircle.inset)
                 }
             }
-
-            Spacer()
         }
         .padding(.horizontal, 24)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(Theme.bg)
         .sheet(isPresented: $showingSettings) {
-            SettingsView()
+            SettingsView().holdsSharePass()
         }
         #if os(macOS)
         .frame(minWidth: 520, minHeight: 560)
         #endif
     }
 
-    private func serviceCard(_ s: Service) -> some View {
+    /// One lobby row: the icon beside the first line, the name, then the key lines. No line is cut off.
+    private func serviceCard(_ s: Service, _ row: LobbyRow) -> some View {
         Button {
             service = s
         } label: {
-            HStack(spacing: 14) {
+            HStack(alignment: .firstTextBaseline, spacing: 14) {
                 Image(systemName: s.systemImage)
                     .font(.system(size: 17))
                     .foregroundStyle(s.tint)
                     .frame(width: 24)
-                Text(s.title)
-                    .font(.title3)
-                    .foregroundStyle(Theme.ink)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(Theme.faint)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(row.title)
+                        .font(.title3)
+                        .foregroundStyle(Theme.ink)
+                    ForEach(Array(row.lines.enumerated()), id: \.offset) { index, line in
+                        Text(line)
+                            .font(index == 0 ? .subheadline.weight(.semibold) : .subheadline)
+                            .foregroundStyle(index == 0 ? Theme.ink : s.detailInk)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
             .padding(.vertical, 18)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+    }
+}
+
+/// The lobby rows as one block: always the full width offered, whatever the row text, so the icons
+/// and names never move sideways when a line gets longer or shorter. Every row is stacked on the
+/// same left edge and given the block's width (so a divider spans the block). With no width offered
+/// the block falls back to its widest row.
+private struct LobbyColumn: Layout {
+    private func width(_ proposal: ProposedViewSize, _ subviews: Subviews) -> CGFloat {
+        proposal.width ?? subviews.map { $0.sizeThatFits(.unspecified).width }.max() ?? 0
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let w = width(proposal, subviews)
+        let h = subviews.reduce(CGFloat(0)) { $0 + $1.sizeThatFits(ProposedViewSize(width: w, height: nil)).height }
+        return CGSize(width: w, height: h)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            subview.place(at: CGPoint(x: bounds.minX, y: y), anchor: .topLeading,
+                          proposal: ProposedViewSize(width: bounds.width, height: size.height))
+            y += size.height
+        }
     }
 }
 

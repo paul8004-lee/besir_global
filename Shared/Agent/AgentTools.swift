@@ -984,14 +984,37 @@ final class AgentToolbox {
     /// The directory and one form for each entry; the partners whose form is good, in the directory's order. `symbols` asks the
     /// directory for the partners' symbols: only the hand path passes true, the model path passes false.
     func loadPartners(flow: UUID, symbols: Bool) async -> [PartnerSpec] {
+        await loadPartnerDirectory(flow: flow, symbols: symbols).specs
+    }
+
+    /// The one load: the directory, then one form for each entry. Besides the good partners it tells how the load ended and hands
+    /// back the answer bytes the readers accepted. Successful: the directory answered, no request failed offline and at least one
+    /// form is good. Offline: any request failed with the offline transport error, even after some forms were good. Failed: every
+    /// other load. A form that fails for another reason drops only its partner.
+    func loadPartnerDirectory(flow: UUID, symbols: Bool) async -> PartnerLoad {
         let client = partnerClient()
         var good: [PartnerSpec] = []
-        if case .success(let entries) = await client.directory(flow: flow, symbols: symbols) {
-            for entry in entries {
-                if case .success(let spec) = await client.form(of: entry, flow: flow) { good.append(spec) }
+        var raw = PartnerRaw(directory: Data(), forms: [:])
+        var offline = false
+        var listed = false
+        switch await client.directoryAnswer(flow: flow, symbols: symbols) {
+        case .success(let answer):
+            listed = true
+            raw.directory = answer.data
+            for entry in answer.value {
+                switch await client.formAnswer(of: entry, flow: flow) {
+                case .success(let form):
+                    good.append(form.value)
+                    raw.forms[entry.id] = form.data
+                case .failure(let failure):
+                    if failure == .offline { offline = true }
+                }
             }
+        case .failure(let failure):
+            offline = failure == .offline
         }
-        return good
+        let outcome: PartnerLoad.Outcome = offline ? .offline : (listed && !good.isEmpty ? .loaded : .failed)
+        return PartnerLoad(outcome: outcome, specs: good, raw: raw)
     }
 
     /// `get_partners`: the directory and one form for each entry, run as the request in flight. It writes nothing; the partners
@@ -1204,7 +1227,7 @@ final class AgentToolbox {
                 title: AgentPartner.entryTitle(partner: spec.entry.name, item: itemName), location: place, startDate: start,
                 endDate: start.addingTimeInterval(TimeInterval(minutes * 60)), travelFrom: leg?.from, returnTo: nil,
                 outboundMode: leg?.mode ?? .walk, returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0,
-                syncToCalendar: store.calendarSyncDefault, travelSecondsHint: leg?.seconds)
+                syncToCalendar: store.calendarSyncDefault, travelSecondsHint: leg?.seconds, remembers: false)
             entryID = made.activityId
         }
         var budget: AgentBudget.BookingSpend?
@@ -1217,10 +1240,19 @@ final class AgentToolbox {
         }
         // The record comes after the spend, so it holds the spend's id; a request that wrote no entry leaves none.
         if let entryID, store.activity(id: entryID) != nil {
-            (partnerRecordsProvider?() ?? PartnerRecords.shared).add(
+            if (partnerRecordsProvider?() ?? PartnerRecords.shared).add(
                 PartnerRecord(activityID: entryID, partnerID: spec.entry.id, partnerName: spec.entry.name, route: spec.entry.route,
                               requestID: requestID, estimateCents: results.moneyCents, quantityHint: quantityHint,
-                              spendRequestID: spendID, switchStarted: false))
+                              spendRequestID: spendID, switchStarted: false)),
+               let entry = store.activity(id: entryID) {
+                // The booking's one memory line (SPEC-MEMORY-001 REQ-008): the entry's time and place, the mode of its leg, the
+                // partner's name as the directory gave it, and the quantity hint. The same code serves every partner.
+                var fields: [(String, String)] = []
+                if entry.location != nil, let leg { fields.append(("mode", leg.mode.rawValue)) }
+                fields.append(("partner", spec.entry.name))
+                if let quantityHint { fields.append(("quantity", String(quantityHint))) }
+                store.remember(kind: "partner", at: entry.startDate, place: entry.location, fields: fields)
+            }
         }
         return partnerApplied(entryID, partner: spec.entry.name, results: results, skipped: skipped, budget: budget)
     }

@@ -40,10 +40,8 @@ struct FullSirView: View {
     @State private var expanded: Set<String> = []
     /// The toolbox that builds the partners' cards for the hand path; built on first use.
     @State private var handToolbox: AgentToolbox?
-    /// The partners and their forms; nil until the load ends, empty when it failed.
-    @State private var partnerSpecs: [PartnerSpec]?
-    /// Set before the load starts, so two quick expands start one load. Never reset while the screen lives.
-    @State private var partnersRequested = false
+    /// The rules of the partner buttons: the list shown, when the directory is asked, what a tap does (card t110).
+    @StateObject private var shelf = PartnerShelf()
     @State private var openCard: HandCard?
     @State private var showingHistory = false
 
@@ -96,13 +94,13 @@ struct FullSirView: View {
                 }
             }
             .sheet(item: $scheduling) { item in
-                MealScheduleSheet(target: item) { scheduling = nil }
+                MealScheduleSheet(target: item) { scheduling = nil }.holdsSharePass()
             }
             .sheet(item: $openCard) { hand in
-                PartnerCardSheet(card: hand.card)
+                PartnerCardSheet(card: hand.card).holdsSharePass()
             }
             .sheet(isPresented: $showingHistory) {
-                PartnerHistoryView()
+                PartnerHistoryView().holdsSharePass()
             }
             .onChange(of: baseKey) { baseChanged() }
         }
@@ -277,6 +275,15 @@ struct FullSirView: View {
             if open {
                 PlacePhotoStrip(photos: item.photos)
                 handButtons(item)
+                if let notice = shelf.notice, notice.rowID == item.id {
+                    Text(verbatim: notice.text)
+                        .font(.caption)
+                        .foregroundStyle(Theme.warn)
+                        .task(id: notice) {
+                            do { try await Task.sleep(for: .seconds(PartnerShelf.noticeSeconds)) } catch { return }
+                            shelf.expire(notice)
+                        }
+                }
             }
         }
         .padding(.vertical, 6)
@@ -301,8 +308,8 @@ struct FullSirView: View {
             .accessibilityLabel("Add meal event")
 
             if store.config.hasProxy {
-                ForEach(partnerSpecs ?? [], id: \.entry.id) { spec in
-                    Button { openPartner(spec, for: item) } label: {
+                ForEach(shelf.specs, id: \.entry.id) { spec in
+                    Button { if shelf.tapped(spec, row: item.id) { openPartner(spec, for: item) } } label: {
                         Image(systemName: PartnerHand.buttonSymbol(for: spec.entry))
                     }
                     .accessibilityLabel(spec.entry.title)
@@ -313,17 +320,16 @@ struct FullSirView: View {
         .controlSize(.small)
     }
 
-    /// Opens or closes a row. The first open row of the screen starts the load of the partners.
+    /// Opens or closes a row. An open row asks the shelf for the load of the partners; the shelf decides whether one starts.
     private func toggle(_ item: NearbyPlace) {
         if expanded.contains(item.id) {
             expanded.remove(item.id)
+            shelf.rowClosed(item.id)
             return
         }
         expanded.insert(item.id)
         guard store.config.hasProxy else { return }
-        guard !partnersRequested else { return }
-        partnersRequested = true
-        Task { partnerSpecs = await toolbox().loadPartners(flow: ConnectionLog.beginFlow(), symbols: true) }
+        shelf.rowOpened { await toolbox().loadPartnerDirectory(flow: ConnectionLog.beginFlow(), symbols: true) }
     }
 
     /// A partner's card for the tapped place, opened in a sheet. The place's name is the only value it starts with.
@@ -385,6 +391,7 @@ struct FullSirView: View {
         guard epoch == baseEpoch else { return }
         results = found
         expanded = []
+        shelf.searchReplaced()
         searching = false
         searched = true
     }
