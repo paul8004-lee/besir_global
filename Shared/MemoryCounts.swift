@@ -93,12 +93,31 @@ enum MemoryCounts {
         return result
     }
 
+    /// The candidates by strength n*n/N (compared by cross-multiplication), then the later `to` date, then the text in code-point
+    /// order; taken in that order until the first line that would make more than 16 lines or more than 1600 code points, each
+    /// line counted with one line feed.
     static func select(_ candidates: [MemoryCountLine]) -> [MemoryCountLine] {
-        []
+        let ordered = candidates.sorted { a, b in
+            let left = a.n * a.n * b.total
+            let right = b.n * b.n * a.total
+            if left != right { return left > right }
+            if a.to != b.to { return a.to > b.to }
+            return a.text.unicodeScalars.lexicographicallyPrecedes(b.text.unicodeScalars)
+        }
+        var taken: [MemoryCountLine] = []
+        var used = 0
+        for line in ordered {
+            let size = line.text.unicodeScalars.count + 1
+            guard taken.count + 1 <= maxLines, used + size <= maxScalars else { break }
+            taken.append(line)
+            used += size
+        }
+        return taken
     }
 
+    /// The texts of the selected count lines of `lines` at `now` in `timeZone`.
     static func summary(lines: [String], now: Date, timeZone: TimeZone) -> [String] {
-        []
+        select(candidates(from: lines, now: now, timeZone: timeZone)).map(\.text)
     }
 
     // MARK: Helpers
