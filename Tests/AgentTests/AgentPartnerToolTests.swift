@@ -30,6 +30,9 @@ final class StubPartner {
         /// The symbol the partner announces in the directory, only to a request whose body holds `symbols` equal to `true`. Any
         /// value, so a test can announce an ill-formed one. Nil: the entry keeps its five keys.
         var symbol: Any? = nil
+        /// The kind the partner announces in the directory, after `symbol`, only to a request whose body holds `symbols` equal to
+        /// `true`. Any value, so a test can announce an ill-formed one. Nil: the entry keeps the keys it had.
+        var kind: Any? = nil
 
         var entry: [String: Any] { ["id": id, "name": name, "title": title, "summary": summary, "route": route] }
     }
@@ -94,6 +97,7 @@ final class StubPartner {
                 answer = ["partners": shapes.map { shape -> [String: Any] in
                     var entry = shape.entry
                     if asksSymbols, let symbol = shape.symbol { entry["symbol"] = symbol }
+                    if asksSymbols, let kind = shape.kind { entry["kind"] = kind }
                     return entry
                 }]
             } else if brokenRoutes.contains(path) {
@@ -2834,12 +2838,13 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertEqual(rig.partner.requests.count, 0, "(d)")
     }
 
-    /// (e) the hand path asks `{"op":"list","symbols":true}`, the model path still asks `{"op":"list"}` and sees no symbol, and a
-    /// Worker that does not know `symbols` gives no partner.
+    /// (e) the hand path asks `{"op":"list","symbols":true}`, the model path asks the same (SPEC-RICHSTATS-001, D11) and still sees
+    /// no symbol and no kind, and a Worker that does not know `symbols` gives no partner.
     private func handCaseRequestShapeAndOldWorker() async throws {
         let stub = StubPartner()
         var announcing = StubPartner.Shape.tables()
         announcing.symbol = "fork.knife"
+        announcing.kind = "Dining"
         stub.shapes = [announcing]
         let rig = makeRig(partner: stub)
         _ = await loadHand(rig)
@@ -2851,10 +2856,14 @@ final class AgentPartnerToolTests: XCTestCase {
         let listing = try await listedJSON(rig)
         let listBodies = rig.partner.bodies(op: "list")
         XCTAssertEqual(listBodies.count, 2, "(e)")
-        XCTAssertTrue(NSDictionary(dictionary: try XCTUnwrap(listBodies.last)).isEqual(to: ["op": "list"]), "(e) the model path asks the plain directory")
+        XCTAssertTrue(NSDictionary(dictionary: try XCTUnwrap(listBodies.last)).isEqual(to: ["op": "list", "symbols": true]),
+                      "(e) the model path asks the symbols directory")
+        let listTexts = rig.partner.requests.filter { op(of: $0) == "list" }.map { requestText($0) }
+        XCTAssertEqual(listTexts, [#"{"op":"list","symbols":true}"#, #"{"op":"list","symbols":true}"#], "(e) both ask the JSON true")
         let listed = try XCTUnwrap(listing["partners"] as? [[String: Any]])
         XCTAssertEqual(listed.count, 1, "(e)")
         XCTAssertFalse(listed.contains { $0.keys.contains("symbol") }, "(e) the model never sees a symbol")
+        XCTAssertFalse(listed.contains { $0.keys.contains("kind") }, "(e) the model never sees a kind")
 
         let old = StubPartner()
         old.mode = .status(400, #"{"error":"unknown_field"}"#)
@@ -2916,6 +2925,85 @@ final class AgentPartnerToolTests: XCTestCase {
         XCTAssertNotNil(PartnerRecords.shared.record(forActivity: entry.id), "one record for the entry")
         XCTAssertEqual(budget.requests.count, 1, "one estimated spend")
         assertOnlyPartnerRoutes(rig, routes: ["/booking"])
+    }
+
+    // MARK: RICHSTATS T14 the kind reaches the estimate (SPEC-RICHSTATS-001, card t116)
+
+    /// The objects in the ledger file of a rig that has a budget partner, oldest first; empty when the file is not there.
+    private func ledgerObjects(_ rig: PartnerRig) -> [[String: Any]] {
+        guard let data = try? Data(contentsOf: rig.folder.appendingPathComponent(BudgetLedger.fileName)) else { return [] }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] ?? []
+    }
+
+    /// The hand path of a table partner: load with symbols, build the card, fill the four fields a person fills, confirm.
+    private func confirmHandCard(_ rig: PartnerRig) async throws -> AgentResolution? {
+        let specs = await loadHand(rig)
+        guard let spec = specs.first else { return nil }
+        let card = try XCTUnwrap(rig.tools.partnerCard(spec, seeds: PartnerHand.seeds(for: spec, placeName: "Pasta Palace"), source: .inferred))
+        let fields = try model(card)
+        XCTAssertTrue(fields.setText("restaurant", "Pasta Palace"))
+        XCTAssertTrue(fields.setText("party_size", "2"))
+        XCTAssertTrue(fields.chooseTime("start", TestClock.date(BookingFixture.start)))
+        XCTAssertTrue(fields.setText("name", "Sam"))
+        XCTAssertTrue(card.canConfirm)
+        return try await confirm(card)
+    }
+
+    func testRICHSTATS_T14_TheKindReachesTheEstimateFromTheChatAndTheHandPathAndNeverTheModel() async throws {
+        // The model path: the directory is asked for symbols, the model sees neither symbol nor kind, the estimate stores the kind.
+        let stub = StubPartner()
+        var announcing = StubPartner.Shape.tables()
+        announcing.kind = "Dining"
+        stub.shapes = [announcing]
+        let rig = makeRig(partner: stub, budget: BudgetToolPartner())
+        let listing = try await listedJSON(rig)
+        XCTAssertEqual(requestText(try XCTUnwrap(stub.requests.first)), #"{"op":"list","symbols":true}"#, "model path: the first body")
+        let listed = try XCTUnwrap(listing["partners"] as? [[String: Any]])
+        XCTAssertEqual(listed.count, 1, "model path")
+        XCTAssertFalse(listed.contains { $0.keys.contains("symbol") || $0.keys.contains("kind") }, "model path: the listing has no symbol and no kind")
+        XCTAssertFalse(AgentToolbox.encode(listing).contains("Dining"), "model path: the listing does not hold the kind")
+        let card = try await built(rig, lookup: false)
+        let resolution = try await confirm(card)
+        XCTAssertEqual(resolution.status, "applied", "model path")
+        let modelEntries = ledgerObjects(rig)
+        XCTAssertEqual(modelEntries.count, 1, "model path")
+        XCTAssertEqual(modelEntries.first?["kind"] as? String, "Dining", "model path: the estimate stores the kind")
+        XCTAssertEqual(modelEntries.first?["partnerName"] as? String, "Example Tables", "model path: and the partner's name")
+
+        // The hand path: the same entry.
+        let handStub = StubPartner()
+        handStub.shapes = [announcing]
+        let handRig = makeRig(partner: handStub, budget: BudgetToolPartner())
+        let handResolution = try await confirmHandCard(handRig)
+        XCTAssertEqual(handResolution?.status, "applied", "hand path")
+        XCTAssertEqual(ledgerObjects(handRig).first?["kind"] as? String, "Dining", "hand path: the estimate stores the kind")
+
+        // A partner with no time result and no kind: the name, the day of now and no key kind.
+        let parcels = StubPartner()
+        parcels.shapes = [.parcels()]
+        let places = PlacesTransportStub.answering(with: PlaceFixture.data("places-search-three"))
+        let budget = BudgetToolPartner()
+        let parcelRig = makeRig(partner: parcels, budget: budget, places: places)
+        parcelRig.tools.userLines = { ["Send it to Library with fast delivery, 3 copies, memo keep dry"] }
+        _ = try await listedJSON(parcelRig)
+        let entries = [["key": "where", "value": "Library", "quote": "Library"],
+                       ["key": "speed", "value": "fast", "quote": "fast"],
+                       ["key": "signed", "value": "true", "quote": "fast"],
+                       ["key": "count", "value": "3", "quote": "3 copies"],
+                       ["key": "memo", "value": "keep dry", "quote": "keep dry"]]
+        let parcelCard = try XCTUnwrap(parcelRig.call("request_partner", ["partner": "parcels", "fields": PartnerRig.fieldsText(entries)]).card)
+        let parcelFields = try model(parcelCard)
+        XCTAssertTrue(parcelFields.chooseOption("speed", "fast"))
+        XCTAssertTrue(parcelFields.chooseOption("signed", "true"))
+        XCTAssertTrue(parcelCard.canConfirm)
+        let parcelResolution = try await confirm(parcelCard)
+        XCTAssertEqual(parcelResolution.status, "applied", "parcels")
+        XCTAssertEqual(budget.requests.count, 1, "parcels: one estimated spend")
+        let parcelEntries = ledgerObjects(parcelRig)
+        XCTAssertEqual(parcelEntries.count, 1, "parcels")
+        XCTAssertEqual(parcelEntries.first?["partnerName"] as? String, "Example Parcels", "parcels: the name")
+        XCTAssertEqual(parcelEntries.first?["day"] as? String, "2026-10-27", "parcels: the day of now, there is no start")
+        XCTAssertNil(parcelEntries.first?["kind"], "parcels: no kind announced, no key kind")
     }
 
     // MARK: FULLHAND T09 the cancel tool (SPEC-FULLHAND-001, card t101)

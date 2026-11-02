@@ -546,7 +546,9 @@ final class AgentBudgetToolTests: XCTestCase {
 
         let entries = rig.entries
         XCTAssertEqual(entries.count, 1)
-        XCTAssertEqual(Set(entries[0].keys), ["requestID", "weekStart", "amountCents", "isEstimate"])
+        // The four keys and the day (SPEC-RICHSTATS-001): a stated spend stores the day of the call, not of the run.
+        XCTAssertEqual(Set(entries[0].keys), ["requestID", "weekStart", "amountCents", "isEstimate", "day"])
+        XCTAssertEqual(entries[0]["day"] as? String, "2026-11-01")
         XCTAssertEqual(entries[0]["weekStart"] as? String, "2026-10-26")
         XCTAssertEqual(entries[0]["amountCents"] as? Int, 1850)
         XCTAssertEqual(entries[0]["isEstimate"] as? Bool, false)
@@ -935,7 +937,6 @@ final class AgentBudgetToolTests: XCTestCase {
         let packets = await budgetPackets(rig)
         XCTAssertEqual(packets.count, 6)
         seen.append(String(decoding: try JSONEncoder().encode(packets), as: UTF8.self))
-        seen.append(String(decoding: try Data(contentsOf: rig.ledgerFile), as: UTF8.self))
         seen.append(AgentToolbox.encode(try XCTUnwrap(resolution.json?["budget"] as? [String: Any])))
         seen.append(try XCTUnwrap(resolution.notice))
         seen.append(AgentToolbox.encode(left))
@@ -943,6 +944,13 @@ final class AgentBudgetToolTests: XCTestCase {
         for word in ["Sentinel", "Bistro", "Zq9", "EX-AB12CD", "19:00", "2026-10-28"] {
             for text in seen { XCTAssertFalse(text.contains(word), "\(word) in \(text)") }
         }
+        // The ledger file leaves the common scan (SPEC-RICHSTATS-001): an estimate stores the table's day, so the file holds the date
+        // exactly once, as the entry's day, and none of the other sentinels.
+        let ledgerText = String(decoding: try Data(contentsOf: rig.ledgerFile), as: UTF8.self)
+        for word in ["Sentinel", "Bistro", "Zq9", "EX-AB12CD", "19:00"] {
+            XCTAssertFalse(ledgerText.contains(word), "\(word) in the ledger file")
+        }
+        XCTAssertEqual(ledgerText.components(separatedBy: #""day":"2026-10-28""#).count - 1, 1, "the table's day, once")
     }
 
     func testBUDGET_G30_TheToolNamesAppearInTheLogAsGetBudgetLeftAndRecordSpend() async throws {

@@ -5,8 +5,9 @@ const ALL_KEYS = ["op", "symbols"];
 
 // The plain answer holds exactly id, name, title, summary and route per entry, in this order. The route is `/` and 1 to
 // 32 characters (a lowercase letter first, then lowercase letters, digits or `-`) and never `/partners`. The symbol
-// (1 to 40 characters of a-z, 0-9 and `.`, the first a letter or digit) is announced only to the request
-// {"op":"list","symbols":true}, as a sixth key; the plain request never sees it. It may be swapped here alone.
+// (1 to 40 characters of a-z, 0-9 and `.`, the first a letter or digit) and the kind (1 to 20 characters of ASCII letters
+// and spaces, a letter at both ends) are announced only to the request {"op":"list","symbols":true}, as a sixth and a
+// seventh key in that order; the plain request never sees either. Both may be swapped here alone.
 const PARTNERS = [
   {
     id: "booking",
@@ -15,6 +16,7 @@ const PARTNERS = [
     summary: "Reserves a table at a restaurant.",
     route: "/booking",
     symbol: "fork.knife",
+    kind: "Dining",
   },
   {
     id: "delivery",
@@ -23,6 +25,7 @@ const PARTNERS = [
     summary: "Delivers food to a place at a set time.",
     route: "/delivery",
     symbol: "bicycle",
+    kind: "Delivery",
   },
 ];
 
@@ -31,7 +34,7 @@ const directoryAnswer = () => ({
 });
 
 const symbolAnswer = () => ({
-  partners: PARTNERS.map(({ id, name, title, summary, route, symbol }) => ({ id, name, title, summary, route, symbol })),
+  partners: PARTNERS.map(({ id, name, title, summary, route, symbol, kind }) => ({ id, name, title, summary, route, symbol, kind })),
 });
 
 export async function handlePartners(request, { json }) {

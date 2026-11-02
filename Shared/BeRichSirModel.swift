@@ -31,6 +31,8 @@ final class BeRichSirModel: ObservableObject {
     @Published private(set) var problem: Problem?
     @Published private(set) var isBusy = false
     @Published var amountText = ""
+    /// The statistics of the four tabs (SPEC-RICHSTATS-001): rebuilt from the ledger wherever the rows are.
+    @Published private(set) var stats: RichStats
 
     private let desk: BudgetDesk
     private let now: () -> Date
@@ -45,6 +47,14 @@ final class BeRichSirModel: ObservableObject {
         self.desk = desk
         self.now = now
         self.zone = zone
+        self.stats = Self.makeStats(desk: desk, now: now(), zone: zone())
+    }
+
+    /// The one place the stats are made, and the model's one read of the weekly budget; `init` and `refreshStats()` both use it.
+    private static func makeStats(desk: BudgetDesk, now: Date, zone: TimeZone) -> RichStats {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        return RichStats.build(entries: desk.allEntries(), now: now, calendar: calendar, budgetCents: BudgetDesk.weeklyBudgetCents)
     }
 
     /// Subscribes once to the ledger's changes. The ledger posts while it holds its lock, so the event hops to the main queue
@@ -63,6 +73,7 @@ final class BeRichSirModel: ObservableObject {
         problem = nil
         standing = nil
         refreshRows()
+        refreshStats()
         let number = begin()
         if await ask(number: number) { await settle() }
         finish()
@@ -82,6 +93,7 @@ final class BeRichSirModel: ObservableObject {
         case .success(let figure):
             amountText = ""
             refreshRows()
+            refreshStats()
             if number == sequence {
                 standing = figure
                 applied = true
@@ -95,6 +107,7 @@ final class BeRichSirModel: ObservableObject {
 
     func ledgerChanged() async {
         refreshRows()
+        refreshStats()
         guard !isBusy, ledgerDiffersFromStanding() else { return }
         let number = begin()
         if await ask(number: number) { await settle() }
@@ -127,6 +140,12 @@ final class BeRichSirModel: ObservableObject {
         if fresh != rows { rows = fresh }
     }
 
+    /// The stats of the whole ledger at this moment; nothing is kept from an earlier build.
+    private func refreshStats() {
+        let fresh = Self.makeStats(desk: desk, now: now(), zone: zone())
+        if fresh != stats { stats = fresh }
+    }
+
     private func ledgerDiffersFromStanding() -> Bool {
         guard let standing else { return false }
         return standing.weekStart != currentWeek() || rows.reduce(0, { $0 + $1.amountCents }) != standing.spentCents
@@ -152,6 +171,7 @@ final class BeRichSirModel: ObservableObject {
     private func settle() async {
         while true {
             refreshRows()
+            refreshStats()
             guard ledgerDiffersFromStanding() else { return }
             guard await ask(number: nextNumber()) else { return }
         }
