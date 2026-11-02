@@ -365,12 +365,10 @@ struct RichTrendsTab: View {
                         ForEach(stats.weeks, id: \.weekStart) { week in column(week) }
                     }
                 }
-                .overlay(alignment: .bottomTrailing) {
+                .overlay(alignment: .bottomLeading) {
                     Text("Budget " + stats.budgetText)
                         .font(.caption2)
                         .foregroundStyle(Theme.ink)
-                        .padding(.leading, 4)
-                        .background(Theme.bg)
                         .offset(y: -height(of: stats.budgetCents) - 2)
                 }
                 .overlay(alignment: .bottomLeading) {
