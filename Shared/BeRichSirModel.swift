@@ -31,6 +31,8 @@ final class BeRichSirModel: ObservableObject {
     @Published private(set) var problem: Problem?
     @Published private(set) var isBusy = false
     @Published var amountText = ""
+    /// The statistics of the four tabs. Skeleton of SPEC-RICHSTATS-001 (card t116): set once in `init`, never refreshed yet.
+    @Published private(set) var stats: RichStats
 
     private let desk: BudgetDesk
     private let now: () -> Date
@@ -45,6 +47,9 @@ final class BeRichSirModel: ObservableObject {
         self.desk = desk
         self.now = now
         self.zone = zone
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone()
+        self.stats = RichStats.build(entries: desk.allEntries(), now: now(), calendar: calendar, budgetCents: 0)
     }
 
     /// Subscribes once to the ledger's changes. The ledger posts while it holds its lock, so the event hops to the main queue

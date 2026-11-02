@@ -53,5 +53,9 @@ struct BudgetDesk {
         client.weekEntries(weekStart: weekStart)
     }
 
+    func allEntries() -> [BudgetEntry] {
+        client.allEntries()
+    }
+
     var changes: AnyPublisher<Void, Never> { client.changes }
 }

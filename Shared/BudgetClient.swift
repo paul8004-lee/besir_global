@@ -62,6 +62,9 @@ final class BudgetClient {
     /// The entries of one week from this client's ledger, in insertion order.
     func weekEntries(weekStart: String) -> [BudgetEntry] { ledger.weekEntries(weekStart: weekStart) }
 
+    /// Every entry of this client's ledger, in insertion order.
+    func allEntries() -> [BudgetEntry] { ledger.allEntries() }
+
     /// Fires once for every effective add or remove of this client's ledger.
     var changes: AnyPublisher<Void, Never> {
         NotificationCenter.default.publisher(for: BudgetLedger.didChange, object: ledger).map { _ in () }.eraseToAnyPublisher()

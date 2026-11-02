@@ -12,6 +12,8 @@ struct PartnerEntry: Equatable {
     let route: String
     /// The name of the SF Symbol the partner announces for its button; nil unless the directory was asked for symbols.
     var symbol: String? = nil
+    /// The kind the partner announces, as received; nil unless the directory was asked for symbols and the kind is well formed.
+    var kind: String? = nil
 }
 
 /// An entry together with the form it announced: its fields and the kinds of result it will give.
@@ -93,6 +95,11 @@ extension PartnerEntry {
         let scalars = Array(text.unicodeScalars)
         guard (1...40).contains(scalars.count), isLower(scalars[0]) || isDigit(scalars[0]) else { return false }
         return scalars.dropFirst().allSatisfy { isLower($0) || isDigit($0) || $0 == "." }
+    }
+
+    /// The kind rule. Skeleton of SPEC-RICHSTATS-001 (card t116): no text passes until the rule lands.
+    static func isKind(_ text: String) -> Bool {
+        false
     }
 
     /// 1 to 24 characters of `a-z`, `0-9` and `_`, the first a letter.
