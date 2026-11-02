@@ -126,6 +126,7 @@ final class Store: ObservableObject {
         loadActivities()
         loadSeries()
         loadMeals()
+        memoryLines = memory.lines()
         // A tap on a departure alert starts the live check of its event (REQ-REPLAN-006).
         notifications.onAlertTap = { [weak self] id in
             Task { @MainActor in await self?.replanAfterAlert(id: id, trigger: .alertTap) }
@@ -226,6 +227,14 @@ final class Store: ObservableObject {
         activities.append(activity)
         activities.sort { $0.startDate < $1.startDate }
         saveActivities()
+        // One memory line for the choice, written before the legs' awaits; the legs below write none. A partner booking passes
+        // `remembers: false` and writes its own line beside its record (SPEC-MEMORY-001 REQ-006, REQ-008).
+        if remembers, location != nil {
+            var fields: [(String, String)] = []
+            if travelFrom != nil { fields.append(("mode", outboundMode.rawValue)) }
+            if returnTo != nil { fields.append(("return_mode", returnMode.rawValue)) }
+            remember(kind: "activity", at: startDate, place: location, fields: fields)
+        }
 
         // 이동 구간은 활동 장소를 알아야 만들 수 있다(목적지/출발지가 곧 활동 장소).
         // 구간 생성은 addLeg 하나로만 지난다(계약 5) — 여기서 addEvent를 직접 부르면 생성 경로가
@@ -1042,6 +1051,10 @@ final class Store: ObservableObject {
         meals.append(meal)
         meals.sort { $0.loggedAt > $1.loggedAt }
         saveMeals()
+        // "I ate here" is a choice of its own; a meal saved with its activity or event is already that entry's line (REQ-009).
+        if activityId == nil, scheduledEventId == nil, place != nil {
+            remember(kind: "meal", at: loggedAt, place: place, fields: [])
+        }
         return meal
     }
 
@@ -1223,6 +1236,10 @@ final class Store: ObservableObject {
         events.append(event)
         events.sort { $0.arrivalDate < $1.arrivalDate }
         save()
+        // A trip made on its own is a choice; an event made for an activity (every `addLeg` leg) is not (REQ-007).
+        if linkedActivityId == nil {
+            remember(kind: "trip", at: arrivalDate, place: destination, fields: [("mode", mode.rawValue)])
+        }
         return event
     }
 
@@ -3383,8 +3400,8 @@ final class Store: ObservableObject {
         removeUpcomingMeals(eventIDs: legIDs)
     }
 
-    /// **[Testing only]** Deletes every event, activity, meal record and repeat, and empties the budget ledger and the partner
-    /// records. The connection log stays. Events and activities go through the per-item delete paths
+    /// **[Testing only]** Deletes every event, activity, meal record and repeat, empties the budget ledger and the partner
+    /// records, and empties memory.md. The connection log stays. Events and activities go through the per-item delete paths
     /// (`deleteEvents`/`deleteActivities`), so their notifications are cancelled as usual. Remove this function together with
     /// the Settings button before release.
     func deleteEverythingForTesting() {
@@ -3400,14 +3417,25 @@ final class Store: ObservableObject {
         // The budget ledger and the partner records go too; the connection log stays (the walks count paid calls from it).
         BudgetLedger.shared.removeAll()
         PartnerRecords.shared.removeAll()
+        // Memory goes last. A failed emptying write keeps the lines in the file and in the list (SPEC-MEMORY-001 REQ-013).
+        if let emptied = memory.removingAll() { memoryLines = emptied }
     }
 
     // MARK: - Memory (SPEC-MEMORY-001)
 
+    /// Writes one memory line for a choice the user saved. Called only from the four save points, each after the user's tap:
+    /// `addActivityWithTravel` (`activity`), `addEvent` with no linked activity (`trip`), `addMeal` with no link (`meal`), and the
+    /// partner record point of the toolbox (`partner`). The place is the place's name only. A failed write never throws, never
+    /// waits and never changes the save it follows: `memoryLines` then stays as the file was.
+    // @MX:NOTE: [AUTO] Four callers (three save points here, the partner record point in AgentToolbox.actOnPartner), all after the user's tap; never call it from a card builder, a repeat, a background leg, an edit or a delete.
     func remember(kind: String, at date: Date, place: Place?, fields: [(String, String)]) {
+        guard let line = MemoryLine.make(kind: kind, at: date, zone: memoryTimeZone(), place: place?.name, fields: fields) else { return }
+        if let lines = memory.appending(line) { memoryLines = lines }
     }
 
+    /// Removes the one memory line at `index` (the Settings Memory tab's delete button). A failed write keeps the line.
     func deleteMemoryLine(at index: Int) {
+        if let lines = memory.removing(at: index) { memoryLines = lines }
     }
 
     // MARK: - 설정
