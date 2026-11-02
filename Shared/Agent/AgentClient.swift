@@ -255,8 +255,13 @@ final class AgentClient: AgentTransport {
     var isConfigured: Bool { config.hasAI }
 
     /// The request for a history, made by the configuration's single request builder (60 second timeout).
+    /// The rules and the memory lines are read again for every request; nil when the rules cannot be read.
     func makeRequest(history: [AgentEntry]) -> URLRequest? {
-        let body = AgentWire.requestBody(history: history, instructions: AgentWire.instructions(now: now(), timeZone: timeZone()))
+        let at = now()
+        let zone = timeZone()
+        let counts = MemoryCounts.summary(lines: memoryLines(), now: at, timeZone: zone)
+        guard let text = AgentWire.instructions(now: at, timeZone: zone, rules: rules(), countLines: counts) else { return nil }
+        let body = AgentWire.requestBody(history: history, instructions: text)
         return config.proxyPOSTRequest("/ai", body: body, timeout: 60)
     }
 

@@ -203,7 +203,7 @@ struct RootView: View {
             let origin = { AgentPlaces.devicePlace(manual: location.manualOrigin, current: location.realFixLocation) }
             let session = AgentSession(toolbox: AgentToolbox(store: store, now: { Date() }, timeZone: { TimeZone.current },
                                                              deviceOrigin: origin, searchOrigin: { location.searchOrigin }),
-                                       transport: AgentClient(config: store.config, now: { Date() }, timeZone: { TimeZone.current }))
+                                       transport: AgentClient(config: store.config, now: { Date() }, timeZone: { TimeZone.current }, memoryLines: { [memory = store.memory] in memory.lines() }))
             // A held plan carries place handles of this conversation, so a new chat drops it.
             let shareImport = shareImport
             session.onNewChat = { shareImport.dropHeld() }
