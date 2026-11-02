@@ -127,6 +127,16 @@ final class RichStatsTests: XCTestCase {
                        [RichStats.Slice(label: "Dining", cents: 500, isOther: false)],
                        "a kind of 0 cents is not a slice, and there is no empty Other")
 
+        XCTAssertEqual(build([entry(week, 800, estimate: true, kind: "9lives"), entry(week, 300, estimate: true, kind: "Dining")]).slices,
+                       [RichStats.Slice(label: "Dining", cents: 300, isOther: false),
+                        RichStats.Slice(label: "Other", cents: 800, isOther: true)],
+                       "an ill-formed kind that would rank first is still no label: it joins Other")
+
+        XCTAssertEqual(build([entry(week, 900, estimate: true, kind: "Other"), entry(week, 400, estimate: true, kind: "Dining")]).slices,
+                       [RichStats.Slice(label: "Dining", cents: 400, isOther: false),
+                        RichStats.Slice(label: "Other", cents: 900, isOther: true)],
+                       "a stored Other that would rank first is not a named slice: it is the one Other, last")
+
         XCTAssertEqual(build([]).slices, [])
     }
 
@@ -257,6 +267,10 @@ final class RichStatsTests: XCTestCase {
         XCTAssertNil(old?.estimatePercent)
         XCTAssertEqual(old?.lowest, RichStats.Pick(cents: 0, label: "Oct 26"))
         XCTAssertEqual(old?.highest, RichStats.Pick(cents: 0, label: "Oct 26"))
+
+        let edge = build([entry("2026-10-12", 20000), entry("2026-10-19", 19999), entry("2026-10-26", 20001)], now: now).summary
+        XCTAssertEqual(edge?.countedWeeks, 3)
+        XCTAssertEqual(edge?.underCount, 2, "exactly the budget and one cent under count as under; one cent over does not")
 
         XCTAssertNil(build([entry("2026-11-02", 5000)], now: now).summary, "only the current week: nothing completed is counted")
     }
