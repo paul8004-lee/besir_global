@@ -103,7 +103,17 @@ final class BudgetLedger: @unchecked Sendable {
         return true
     }
 
-    func removeAll() {}
+    /// Removes every entry. The empty list is written on every call, also when the list was already empty, so a clear repairs
+    /// a file an earlier failed write left full; a failed write leaves the in-memory list empty. Posts `didChange` once when at
+    /// least one entry was removed, and nothing otherwise.
+    func removeAll() {
+        lock.lock()
+        defer { lock.unlock() }
+        let removed = !entries.isEmpty
+        entries.removeAll()
+        if let data = try? JSONEncoder().encode(entries) { try? write(data, fileURL) }
+        if removed { NotificationCenter.default.post(name: Self.didChange, object: self) }
+    }
 
     // MARK: Load
 

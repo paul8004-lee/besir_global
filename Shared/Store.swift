@@ -3375,10 +3375,10 @@ final class Store: ObservableObject {
         removeUpcomingMeals(eventIDs: legIDs)
     }
 
-    /// **[테스트용]** 일정·활동·식사 기록을 전부 지운다. 출시 전에 이 함수와 설정의 버튼을 같이 뺀다.
-    ///
-    /// 낱개 삭제 경로(`deleteEvents`/`deleteActivities`)를 그대로 거치므로 알림 취소까지
-    /// 정상적으로 처리된다.
+    /// **[Testing only]** Deletes every event, activity, meal record and repeat, and empties the budget ledger and the partner
+    /// records. The connection log stays. Events and activities go through the per-item delete paths
+    /// (`deleteEvents`/`deleteActivities`), so their notifications are cancelled as usual. Remove this function together with
+    /// the Settings button before release.
     func deleteEverythingForTesting() {
         deleteEvents(events)
         deleteActivities(activities)
@@ -3389,6 +3389,9 @@ final class Store: ObservableObject {
         // The repeats go too. Backups of an unreadable series file (`series.unreadable*.json`) are left alone.
         series = []
         saveSeries()
+        // The budget ledger and the partner records go too; the connection log stays (the walks count paid calls from it).
+        BudgetLedger.shared.removeAll()
+        PartnerRecords.shared.removeAll()
     }
 
     // MARK: - 설정
