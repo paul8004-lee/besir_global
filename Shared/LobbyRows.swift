@@ -153,13 +153,16 @@ enum LobbyRows {
         // A travel event that no activity owns is an item by its own anchor time. The owner is looked up
         // with the lobby's calendar, so a repeat's occurrence resolves in the same zone as the day.
         for event in store.events where event.isListed(on: now, calendar: calendar) {
+            // @MX:NOTE: the owner is looked up with the lobby's calendar; owningActivity(of:) reads the current one and can disagree on the day.
             if let owner = event.linkedActivityId, store.activity(id: owner, calendar: calendar) != nil { continue }
+            // @MX:NOTE: a travel event's start is its anchorDate (arrival, or departure for a departure-anchored one), not its departure time.
             items.append(LobbyItem(id: event.id.uuidString, title: event.title, start: event.anchorDate,
                                    leaveBy: event.departureDate, travelSeconds: event.travelSeconds.map { Int($0.rounded()) },
                                    mode: event.mode))
         }
 
         let stays: [LobbyStay] = day.compactMap { activity in
+            // @MX:NOTE: records are read one entry at a time; PartnerRecords.records is for tests only, and starting from today's entries drops orphan records.
             guard let record = records.record(forActivity: activity.id) else { return nil }
             return LobbyStay(id: activity.id.uuidString, start: activity.startDate,
                              partnerID: record.partnerID, partnerName: record.partnerName)
