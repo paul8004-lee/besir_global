@@ -3427,6 +3427,7 @@ final class Store: ObservableObject {
     /// `addActivityWithTravel` (`activity`), `addEvent` with no linked activity (`trip`), `addMeal` with no link (`meal`), and the
     /// partner record point of the toolbox (`partner`). The place is the place's name only. A failed write never throws, never
     /// waits and never changes the save it follows: `memoryLines` then stays as the file was.
+    // @MX:ANCHOR fan_in 4 — the only writer of memory lines; the activity, trip, meal and partner save points call it after the user's tap, so changing its signature or its after-the-tap rule changes all four.
     // @MX:NOTE: [AUTO] Four callers (three save points here, the partner record point in AgentToolbox.actOnPartner), all after the user's tap; never call it from a card builder, a repeat, a background leg, an edit or a delete.
     func remember(kind: String, at date: Date, place: Place?, fields: [(String, String)]) {
         guard let line = MemoryLine.make(kind: kind, at: date, zone: memoryTimeZone(), place: place?.name, fields: fields) else { return }
