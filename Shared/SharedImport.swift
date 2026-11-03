@@ -176,7 +176,7 @@ final class SharedImport: ObservableObject {
     /// `mirror` are the two sources of today's events; `prepare` registers the Store places in the agent session and gives the
     /// events their place handles. Dropped items leave the queue at once, usable ones when `hand` accepts the message. A refused
     /// hand-off keeps the usable fields (not the message) as `held`, so the next tap composes again with its own mode and time.
-    func planPass(mode: TransportMode, vision: VisionReading, activities: () -> [ActivityBlock], mirror: CalendarMirroring,
+    func planPass(mode: TransportMode, viaUber: Bool = false, vision: VisionReading, activities: () -> [ActivityBlock], mirror: CalendarMirroring,
                   calendar: Calendar = .current, prepare: ([PlanMyDay.Event]) -> [PlanMyDay.Event], canHand: () -> Bool,
                   hand: (_ message: String, _ shown: String, _ context: DayPlanContext) -> Bool) async {
         guard !inFlight else { return }

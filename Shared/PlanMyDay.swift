@@ -48,7 +48,7 @@ enum PlanMyDay {
     }
 
     /// The four modes of the dialog, in order.
-    static let modeChoices: [TransportMode] = TransportMode.allCases
+    static let modeChoices: [TravelChoice] = [.standard(.car), .standard(.transit), .standard(.walk), .standard(.bicycle)]
 
     /// `Plan my day (N)`, N the waiting items (at least 1 when a plan is held); nil unless two or more wait or a plan is held.
     static func buttonLabel(count: Int, held: Bool) -> String? {
@@ -202,4 +202,7 @@ struct DayPlanContext {
     let events: [PlanMyDay.Event]
     let checkWindowEnd: Date
     var calendarAvailable: Bool = true
+    var viaUber: Bool = false
+
+    var choice: TravelChoice { .standard(mode) }
 }

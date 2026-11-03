@@ -839,28 +839,28 @@ final class SnapFlowTests: XCTestCase {
         await waiting.flow.chooseMode(.walk)
         XCTAssertNil(waiting.flow.takeOutcome(), "a mode after the end builds nothing")
 
-        // Each mode gives one plan outcome with that mode.
-        for mode in PlanMyDay.modeChoices {
+        // Each choice gives one plan outcome with that choice.
+        for choice in PlanMyDay.modeChoices {
             let rig = await foodRig()
-            await rig.flow.chooseMode(mode)
+            await rig.flow.chooseMode(choice.mode, viaUber: choice == .uber)
             guard case .plan(let text, let shown, let context, _)? = rig.flow.takeOutcome() else {
-                XCTFail("\(mode): a plan outcome")
+                XCTFail("\(choice): a plan outcome")
                 continue
             }
-            XCTAssertEqual(context.mode, mode)
-            XCTAssertTrue(text.contains("I will travel by \(mode.rawValue). Do not ask me how I travel."), "\(mode)")
+            XCTAssertEqual(context.choice, choice)
+            XCTAssertTrue(text.contains("I will travel by \(choice.mode.rawValue). Do not ask me how I travel."), "\(choice)")
             XCTAssertEqual(shown, SnapMessage.shownMeal)
             XCTAssertEqual(rig.registered.map(\.name), ["Foo Kitchen"])
             XCTAssertEqual(rig.prepared, 1)
-            XCTAssertNil(rig.flow.takeOutcome(), "\(mode): one tap, one outcome")
+            XCTAssertNil(rig.flow.takeOutcome(), "\(choice): one tap, one outcome")
         }
 
-        // The dialog offers the four modes of Plan my day, under the fixed title.
-        XCTAssertEqual(PlanMyDay.modeChoices.map(\.rawValue), ["car", "transit", "walk", "bicycle"])
+        // The dialog offers the five travel choices of Plan my day, under the fixed title.
+        XCTAssertEqual(PlanMyDay.modeChoices.map(\.value), ["car", "uber", "transit", "walk", "bicycle"])
         XCTAssertEqual(SnapLine.travelTitle, "How will you travel?")
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let view = try String(contentsOf: root.appendingPathComponent("Shared/SnapView.swift"), encoding: .utf8)
-        XCTAssertTrue(view.contains("ForEach(PlanMyDay.modeChoices)"), "the buttons are the choices of Plan my day")
+        XCTAssertTrue(view.contains("ForEach(PlanMyDay.modeChoices, id: \\.self)"), "the buttons are the choices of Plan my day")
         XCTAssertTrue(view.contains("confirmationDialog(SnapLine.travelTitle"))
     }
 

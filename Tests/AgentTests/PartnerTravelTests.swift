@@ -177,7 +177,7 @@ final class PartnerTravelTests: XCTestCase {
         XCTAssertEqual(fields.values.entry("schedule-from")?.value, .place(ToolFixture.device))
         XCTAssertEqual(fields.source(of: "schedule-from"), .inferred)
         XCTAssertEqual(fields.field("schedule-mode")?.label, "Travel mode")
-        XCTAssertEqual(fields.field("schedule-mode")?.options.map(\.label), ["Car", "Transit", "Walk", "Bicycle"])
+        XCTAssertEqual(fields.field("schedule-mode")?.options.map(\.label), ["Car", "Uber", "Transit", "Walk", "Bicycle"])
         XCTAssertNil(fields.values.entry("schedule-mode")?.value)
         XCTAssertEqual(fields.source(of: "schedule-mode"), .blank)
         XCTAssertFalse(fields.isReady, "the mode is required while shown")

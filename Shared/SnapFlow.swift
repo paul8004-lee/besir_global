@@ -176,7 +176,7 @@ final class SnapFlow: ObservableObject {
     }
 
     /// The travel mode of a place to eat; nil (Cancel, or the dialog dismissed) ends the flow with nothing.
-    func chooseMode(_ mode: TransportMode?) async {
+    func chooseMode(_ mode: TransportMode?, viaUber: Bool = false) async {
         guard let deps, let g = generation, let clue, let place, phase == .awaitingMode else { return }
         guard let mode else {
             self.clue = nil

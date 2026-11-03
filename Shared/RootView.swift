@@ -119,8 +119,8 @@ struct RootView: View {
         }
         // Cancelling or dismissing reads no item, asks for no calendar access and makes no call.
         .confirmationDialog("How will you travel today?", isPresented: $choosingMode, titleVisibility: .visible) {
-            ForEach(PlanMyDay.modeChoices) { mode in
-                Button(mode.title) { Task { await runPlan(mode: mode) } }
+            ForEach(PlanMyDay.modeChoices, id: \.self) { choice in
+                Button(choice.title) { Task { await runPlan(mode: choice.mode, viaUber: false) } }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -156,7 +156,7 @@ struct RootView: View {
     }
 
     /// The mode was chosen: gather the waiting items and today's schedule and hand the agent one plan message.
-    private func runPlan(mode: TransportMode) async {
+    private func runPlan(mode: TransportMode, viaUber: Bool) async {
         ensureSession()
         guard let session = chatHolder.session else { return }
         let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })

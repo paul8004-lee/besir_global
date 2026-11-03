@@ -57,8 +57,8 @@ struct SnapView: View {
                             isPresented: Binding(get: { flow.phase == .awaitingMode },
                                                  set: { if !$0 { Task { await flow.chooseMode(nil) } } }),
                             titleVisibility: .visible) {
-            ForEach(PlanMyDay.modeChoices) { mode in
-                Button(mode.title) { Task { await flow.chooseMode(mode) } }
+            ForEach(PlanMyDay.modeChoices, id: \.self) { choice in
+                Button(choice.title) { Task { await flow.chooseMode(choice.mode) } }
             }
             Button("Cancel", role: .cancel) {}
         }
