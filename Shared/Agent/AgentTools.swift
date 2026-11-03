@@ -366,6 +366,9 @@ private enum Say {
     static let routeExpired = "Call get_travel_time again, then call create_activity again with the new route_id."
     static let routeExpiredNotice = "The travel time is out of date. Nothing was added."
 
+    // SPEC-TRAVELASK-001: names only get_travel_time, create_activity and route_id; no mode value and no way to skip the trip.
+    static let travelAsk = "Call get_travel_time for this place with how the user will travel, then call create_activity again with the route_id it returns. If the user has not said how they will travel, ask them; do not choose a mode for them."
+
     // SPEC-BOOKCARD-001: each string names only get_partners or request_partner.
     static let partnersFirst = "Call get_partners first, then call request_partner again with a partner id from its answer."
     static let partnerWindowAtConfirm = "Nothing was done. Tell the user nothing was done because the time given in the chosen_time key of this result is out of range, and ask for a new time, then call request_partner again. A time must not have passed and must be within the next 366 days."
@@ -482,6 +485,16 @@ final class AgentToolbox {
     /// The partners the last good `get_partners` answer held, with their forms. In memory only: a good answer replaces it and a
     /// new chat forgets it.
     private var partners: [PartnerSpec] = []
+    /// SPEC-TRAVELASK-001: per place handle, the place-only `create_activity` calls refused with the travel question in this
+    /// chat. In memory only; a new chat forgets it.
+    private var travelAsks: [String: TravelAsk] = [:]
+
+    /// One refused place: how many user lines the chat held at the latest refusal, and whether a route to that place was
+    /// registered since.
+    private struct TravelAsk {
+        var userLineCount: Int
+        var routeSince = false
+    }
 
     /// `timeZone` is read on every use, so a zone change while the app runs reaches dates, cards and the gate.
     init(store: Store, now: @escaping () -> Date, timeZone: @escaping () -> TimeZone,
@@ -522,6 +535,7 @@ final class AgentToolbox {
     func resetConversation() {
         registry.clear()
         partners = []
+        travelAsks = [:]
         endDayPlan()
     }
 
@@ -754,6 +768,18 @@ final class AgentToolbox {
         try checkWindow(start, .create)
         try checkTitle(title, .create)
         let trip = try resolveTrip(values)
+        // @MX:NOTE: [AUTO] SPEC-TRAVELASK-001 business rule: outside a plan turn a place card with no route waits for the
+        // travel question. The first place-only call for a place is refused; the place-only card is built only after the user
+        // wrote a line since that refusal and no route to that place came back since, and that card uses the opening up.
+        if trip.place != nil, trip.route == nil, let handle = values["place_id"], dayPlan == nil {
+            let userLineCount = userLines().count
+            if let ask = travelAsks[handle], !ask.routeSince, userLineCount > ask.userLineCount {
+                travelAsks[handle] = nil
+            } else {
+                travelAsks[handle] = TravelAsk(userLineCount: userLineCount)
+                throw Rejection(Say.travelAsk)
+            }
+        }
 
         var lines = ["Add event", title, range(start, end)]
         if let place = trip.place { lines.append("At \(AgentPlaces.displayName(place.name))") }
@@ -866,7 +892,11 @@ final class AgentToolbox {
             let leaveBy = arrival.map {
                 local.string(from: Store.departureTime(arrival: $0, travelSeconds: seconds, bufferMinutes: AgentPlaces.legBufferMinutes))
             }
-            return AgentPlaces.travelOutput(route, leaveBy: leaveBy, registry: &registry)
+            let latest = registry.routeHandles.last
+            let output = AgentPlaces.travelOutput(route, leaveBy: leaveBy, registry: &registry)
+            // SPEC-TRAVELASK-001: only a route that was registered shuts the place-only opening of its destination.
+            if registry.routeHandles.last != latest { travelAsks[destinationId]?.routeSince = true }
+            return output
         })
     }
 

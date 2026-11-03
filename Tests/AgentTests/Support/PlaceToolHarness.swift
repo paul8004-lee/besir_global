@@ -75,6 +75,8 @@ enum PlaceText {
     static let createMismatch = "Call create_activity again with a place_id that matches the route_id, or omit place_id."
     static let routeExpired = "Call get_travel_time again, then call create_activity again with the new route_id."
     static let expiredNotice = "The travel time is out of date. Nothing was added."
+    // SPEC-TRAVELASK-001: the refusal of a create_activity call with a place and no route.
+    static let travelAsk = "Call get_travel_time for this place with how the user will travel, then call create_activity again with the route_id it returns. If the user has not said how they will travel, ask them; do not choose a mode for them."
 
     static let noResults: [String: String] = [
         "status": "no_results",
@@ -378,6 +380,19 @@ struct PlaceRig {
         if let place { args["place_id"] = place }
         if let route { args["route_id"] = route }
         return call("create_activity", args)
+    }
+
+    /// SPEC-TRAVELASK-001: a create call with a place and no route. The first call must be refused with the travel question
+    /// and build no card; then one user line is added (the answer to that question) and the same call is made again.
+    func createAfterAsk(place: String, title: String = "Team sync",
+                        file: StaticString = #filePath, line: UInt = #line) -> AgentToolOutcome {
+        let asked = create(place: place, title: title)
+        XCTAssertEqual(asked.json as NSDictionary?, ["status": "rejected", "message": PlaceText.travelAsk] as NSDictionary,
+                       "a place card waits for the travel question", file: file, line: line)
+        XCTAssertNil(asked.card, "no card before the travel question", file: file, line: line)
+        let earlier = tools.userLines()
+        tools.userLines = { earlier + ["I'm already there."] }
+        return create(place: place, title: title)
     }
 
     /// Search for "cafe" (p1 Example Cafe, p2 Example Cafe elsewhere, p3 Sample Noodle House), then a transit route

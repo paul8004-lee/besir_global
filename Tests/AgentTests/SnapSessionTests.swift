@@ -391,7 +391,13 @@ final class SnapSessionTests: XCTestCase {
         XCTAssertEqual(rig.tools.registry.placeHandles, ["p1", "p2"])
         XCTAssertEqual(rig.tools.registry.place("p1"), library)
 
-        // create_activity builds the card for the registered place.
+        // create_activity builds the card for the registered place. SPEC-TRAVELASK-001: with no route the first call is refused
+        // with the travel question, and the card is built after one user line.
+        let asked = await rig.run("create_activity", ["title": "Team sync", "start": "2026-10-28T19:00", "end": "2026-10-28T20:00", "place_id": "p1"])
+        XCTAssertNil(asked.card, "no card before the travel question")
+        XCTAssertEqual(asked.text.flatMap(TestClock.object) as NSDictionary?,
+                       ["status": "rejected", "message": PlaceText.travelAsk] as NSDictionary)
+        rig.tools.userLines = { ["I'm already there."] }
         let created = await rig.run("create_activity", ["title": "Team sync", "start": "2026-10-28T19:00", "end": "2026-10-28T20:00", "place_id": "p1"])
         let card = try XCTUnwrap(created.card, created.text ?? "no card")
         XCTAssertEqual(card.lines, ["Add event", "Team sync", "Wed, Oct 28, 7:00 PM - 8:00 PM", "At Main Library"])
@@ -428,6 +434,10 @@ final class SnapSessionTests: XCTestCase {
         let rig = SnapSession([call("search_places", ["query": "Marina Green San Francisco"], id: "c1"),
                                call("create_activity", ["title": "Harbor Lights Concert", "start": "2026-10-30T19:30",
                                                         "end": "2026-10-30T20:30", "place_id": "p1"], id: "c2"),
+                               // SPEC-TRAVELASK-001: the place-only call is refused, the model asks, the user answers.
+                               .turn(Turns.text("How will you travel to Marina Green?")),
+                               call("create_activity", ["title": "Harbor Lights Concert", "start": "2026-10-30T19:30",
+                                                        "end": "2026-10-30T20:30", "place_id": "p1"], id: "c3"),
                                .turn(Turns.text("Cancelled."))],
                               now: "2026-10-27T09:00", places: marina)
         let poster = SnapClue(kind: .eventPoster, name: "Marina Green", placeType: nil, text: nil, title: "Harbor Lights Concert",
@@ -443,22 +453,29 @@ final class SnapSessionTests: XCTestCase {
         XCTAssertEqual(rig.fake.request(1), [.user(try golden("snap-poster-message"))], "request 1 holds exactly the poster message")
         XCTAssertNil(rig.tools.dayPlan, "a poster is an ordinary message: no plan turn")
         XCTAssertEqual(rig.session.userTexts, ["I snapped a poster."], "the chat draws the short line")
+        // SPEC-TRAVELASK-001: the place-only call was refused, so no card waits before the travel question.
+        XCTAssertNil(rig.session.pendingCard, "no card before the travel question")
+        XCTAssertEqual(rig.fake.requests.count, 3, "the search, the refused create and the question")
+        // The messages of the tap joined the tap's flow (the hand-off offered it). Measured before the user's answer, whose
+        // message starts its own flow.
+        await rig.log.flush()
+        let messages = rig.log.packets.filter { $0.kind == .agentMessage }
+        XCTAssertEqual(messages.count, 3)
+        XCTAssertTrue(messages.allSatisfy { $0.flowID == flow }, "the agent messages carry the flow of the snap")
+
+        rig.session.send("I'm already there.")
+        await rig.session.settle()
         let card = try XCTUnwrap(rig.session.pendingCard)
         XCTAssertEqual(card.lines, ["Add event", "Harbor Lights Concert", "Fri, Oct 30, 7:30 PM - 8:30 PM", "At Marina Green"])
         XCTAssertTrue(card.showsGoogleMark)
         await rig.session.cancelCard()
         await rig.session.settle()
-        XCTAssertEqual(rig.fake.requests.count, 3)
+        XCTAssertEqual(rig.fake.requests.count, 5)
         XCTAssertEqual(rig.fake.remaining, 0)
         XCTAssertEqual(rig.agentPlaces.callCount, 1, "one place search")
         XCTAssertEqual(rig.routes.callCount, 0, "no Routes lookup")
         XCTAssertEqual(rig.session.errorLines, [])
         XCTAssertTrue(rig.store.activities.isEmpty, "Cancel adds nothing")
-        // The messages of the tap joined the tap's flow (the hand-off offered it).
-        await rig.log.flush()
-        let messages = rig.log.packets.filter { $0.kind == .agentMessage }
-        XCTAssertEqual(messages.count, 3)
-        XCTAssertTrue(messages.allSatisfy { $0.flowID == flow }, "the agent messages carry the flow of the snap")
     }
 
     // MARK: AC-CAMSNAP-013

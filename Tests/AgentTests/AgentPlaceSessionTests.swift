@@ -435,7 +435,7 @@ final class AgentPlaceSessionTests: XCTestCase {
         // A lookup, New chat, then a plain message gives none: the flag was cleared. The lookup's ok result is latched,
         // the model then proposes a card, and New chat resolves it.
         let reset = PlaceSessionRig([.turn(PlaceTurns.search(id: "c1")),
-                                     .turn(PlaceTurns.create(place: "p1", id: "c2")),
+                                     .turn(PlaceTurns.create(id: "c2")),
                                      .turn(Turns.text("Hi."))])
         await reset.say("Add dinner at the cafe")
         XCTAssertEqual(reset.resultStatuses.first, "ok")
