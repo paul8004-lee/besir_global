@@ -24,6 +24,10 @@ struct EventDetailView: View {
     }()
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    /// The system did not open the Uber link at the last tap (SPEC-UBERLINK-001); cleared at the next tap.
+    @State private var uberOpenFailed = false
 
     /// The strings Google returned with the walking or bicycling route of this event, in its order.
     @State private var routeWarnings: [String] = []
@@ -82,6 +86,26 @@ struct EventDetailView: View {
                 // The departure card shows a Google travel time for every mode; the transit route card carries its own mark.
                 if event.mode != .transit, event.departureDate != nil, event.travelSeconds != nil {
                     GoogleMapsAttribution()
+                }
+
+                // SPEC-UBERLINK-001: Uber opens with the stored destination as the drop-off, for every travel choice. The
+                // button sends no request and writes nothing; with no valid coordinate there is no link and no button.
+                if let link = UberLink.url(for: event.destination) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button("Open in Uber") {
+                            uberOpenFailed = false
+                            openURL(link) { accepted in
+                                if !accepted { uberOpenFailed = true }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Open in Uber")
+
+                        if uberOpenFailed {
+                            Label("Couldn't open Uber.", systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(Theme.warn)
+                        }
+                    }
                 }
 
                 transitItinerary
