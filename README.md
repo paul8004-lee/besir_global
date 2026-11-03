@@ -54,7 +54,7 @@ Each feature below has a screenshot from the iOS simulator, in English with the 
 
 ### 3. be full sir: places to eat and partner orders
 
-<img src="docs/guide/03-full.png" alt="A be full sir result opened, with its meal and partner buttons" width="300"> <img src="docs/guide/03-partner.png" alt="A partner booking card filled in, with its travel mode choices, Confirm and Cancel, ending in Example Tables - Simulated" width="300">
+<img src="docs/guide/03-full.png" alt="The be full sir results with the Paris Cafe result opened, showing its photos and the Google Maps mark" width="300"> <img src="docs/guide/03-partner.png" alt="A partner booking card filled in, with its travel mode choices, Confirm and Cancel, ending in Example Tables - Simulated" width="300">
 
 1. Tap `be full sir`, type in `Menu or type of place` (or tap a chip such as `Cafe`) and tap `Search`.
 2. Tap a result to open it. Its icon buttons are `I ate here`, `Add meal event`, and one per partner: `Reserve a table` (Example Tables) and `Order delivery` (Example Delivery).
