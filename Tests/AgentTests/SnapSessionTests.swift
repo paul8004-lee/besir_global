@@ -814,16 +814,31 @@ final class SnapSessionTests: XCTestCase {
     }
 
     func testCAMSNAP_T53_anOverlapShortensTheMealThenTheLateArrivalOrDropsIt() async throws {
-        for row in [Rows.r3, Rows.r4, Rows.r4b, Rows.r7] {
+        for row in [Rows.r3, Rows.r4] {
             let rig = try await startMeal(row)
             try await assertRow(row, rig)
         }
     }
 
     func testCAMSNAP_T54_aProblemWithTheMealListedSecondIsKeptAndShown() async throws {
-        for row in [Rows.r6, Rows.r8] {
+        for row in [Rows.r8] {
             let rig = try await startMeal(row)
             try await assertRow(row, rig)
+        }
+    }
+
+    // MARK: SPEC-SNAPREWALK-001 - the rows with no room never reach the model
+
+    /// R4b and R7 leave 15 free minutes and R6 has an event running at the meal's start: the app ends the flow with the fixed
+    /// no-time line. The helper never hands off (`snap` only builds the outcome), so the session sees nothing.
+    func testSNAPREWALK_T06_theRowsWithNoRoomEndWithTheNoTimeLine() async throws {
+        for row in [Rows.r4b, Rows.r6, Rows.r7] {
+            let rig = SnapSession([], routes: PlaceStubs.routes(seconds: row.seconds))
+            seed(rig, row)
+            let snapped = await rig.snap(foodClue(), found: fooAnswer, mode: .walk)
+            XCTAssertNil(snapped.outcome, "\(row.name): no plan outcome")
+            XCTAssertEqual(snapped.flow.flow.phase, .line(SnapLine.noTime), "\(row.name): the no-time line")
+            XCTAssertEqual(rig.store.activities.map(\.title).sorted(), row.events.map(\.title).sorted(), "\(row.name): the Store is unchanged")
         }
     }
 }
