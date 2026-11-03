@@ -1212,7 +1212,7 @@ struct EventSyncContent: Encodable {
     let forPayload: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, origin, destination, mode, bufferMinutes, notifyLeadMinutes, notifyEnabled
+        case id, title, origin, destination, mode, viaUber, bufferMinutes, notifyLeadMinutes, notifyEnabled
         case recurrenceId, linkedActivityId, anchor, anchorDate
         case arrivalDate, departureDate, travelSeconds
     }
@@ -1224,6 +1224,8 @@ struct EventSyncContent: Encodable {
         try c.encodeIfPresent(event.origin, forKey: .origin)
         try c.encode(event.destination, forKey: .destination)
         try c.encode(event.mode, forKey: .mode)
+        // The Uber mark is the user's choice, like notifyEnabled; a trip without it keeps the bytes it had.
+        try c.encodeIfPresent(event.viaUber, forKey: .viaUber)
         try c.encode(event.bufferMinutes, forKey: .bufferMinutes)
         try c.encode(event.notifyLeadMinutes, forKey: .notifyLeadMinutes)
         try c.encodeIfPresent(event.notifyEnabled, forKey: .notifyEnabled)
