@@ -1,6 +1,6 @@
 # besir — the app that connects your apps
 
-An iOS planning agent, powered by Meta Muse Spark, that sits between the apps on your phone. What you find in one app becomes a plan, and the plan is carried to the next app for you.
+An iOS planning agent, powered by Meta Muse Spark, with Muse Spark Open reading images and Muse Voice Transcribe turning speech into text, that sits between the apps on your phone. What you find in one app becomes a plan, and the plan is carried to the next app for you.
 
 ## Why besir: connecting apps
 
@@ -12,7 +12,7 @@ Three principles guide every connection:
 
 - **Convenience** — besir fills in the details (time, place, travel time, party size); the user's only job is to confirm.
 - **Your apps stay your apps** — besir does not replace the apps you already use, so there is no new service to sign up for and no habit to give up. Instead it connects them, even apps from fields that seem to have nothing in common, so that the whole plan can be managed from one place.
-- **The user stays in control** — nothing is saved or sent to another app until the user taps Confirm, and besir only receives what the user chooses to share (no scraping).
+- **The user stays in control** — a plan, a booking or an order is saved or sent to another app only after the user taps Confirm on its card (or Add on a form they filled in); a few actions run at once: `Open in Uber`, `I ate here` and a cancel from History when tapped, a spend recorded by hand when `Record spend` is tapped, and a spend the user states in the chat when the assistant records it; and besir only receives what the user chooses to share (no scraping).
 
 Not every app offers an API or MCP server for this, so besir carries data in one common shape — which app it came from, which app it goes to, what it is and its status — whatever the app on the other side supports.
 
@@ -21,25 +21,103 @@ As an MVP, besir starts with one everyday scenario — an event you came across,
 | Connection | Direction | Status |
 |---|---|---|
 | Instagram post or screenshot → besir, through the iOS share sheet | in | built for screenshots and photos; an Instagram post shares only its link, which besir does not open |
-| Image → Muse Spark Open, read into a title, time and place | in | built |
-| besir ↔ Google Places and Routes | both ways | built |
+| Shared image → Muse Spark Open, read into a title, time and place | in | built |
+| Camera photo → Muse Spark Open, read into what it shows (a poster, a place to eat or another place); for a place, the place is then found with Google Places | in | built |
+| Voice clip → Muse Voice Transcribe, turned into a chat message | in | built |
+| besir ↔ Google Places, Routes and Maps (places and their photos, travel times, the route map) | both ways | built |
 | Muse Spark agent → besir schedule, through tool calls the user confirms | in | built |
-| besir → Apple Calendar | out | built for the events you confirm, written to the default calendar; reading today's events is built but only a Debug button uses it until Plan my day |
-| besir → a reservation app, filled in from the plan, and the booking back into besir | round trip | built with a simulated partner app clearly labeled *Simulated*; no real reservation app yet |
-| besir ↔ a budget app (this week's dining budget left, a spend, a booking's estimated spend) | round trip | built with a simulated partner app clearly labeled *Simulated*; no real budget app yet |
+| besir ↔ Apple Calendar | both ways | built: the events you confirm are written to the default calendar, and Plan my day and the camera snap's meal plan read today's events |
+| besir → a reservation app, filled in from the plan, and the booking back into besir | round trip | built with a simulated partner app, Example Tables, clearly labeled *Simulated*; no real reservation app yet |
+| besir → a delivery app, filled in from the plan, the order back into besir and its estimated total sent to the budget app | round trip | built with a simulated partner app, Example Delivery, clearly labeled *Simulated*; no real delivery app yet |
+| besir ↔ a budget app (this week's dining budget left, a spend, the estimated spend of a booking or an order) | round trip | built with a simulated partner app, Example Budget, clearly labeled *Simulated*, and shown on the be rich sir screen; no real budget app yet |
+| besir → Uber, the trip's destination as the drop-off | out | built as a link that opens Uber; besir makes no Uber request and gets nothing back |
 | besir → health apps | out | roadmap |
+
+## Using besir
+
+Each feature below has a screenshot from the iOS simulator, in English with the location set to San Francisco (the camera snap shots use the photo's own street in Menlo Park), and a few steps. The partner apps are simulated; in these shots, partner data appears with the word `Simulated`.
+
+### 1. The lobby
+
+<img src="docs/guide/01-lobby.png" alt="The besir lobby with the be on-time sir, be full sir and be rich sir rows and their key lines" width="300">
+
+1. Open besir. Each row shows today's key lines, such as `Leave by` with a time, a partner booking marked `Simulated`, or what is left of this week's budget.
+2. Tap a row to open it. The header holds the `Camera` icon and the `Settings` gear, and the round `besir AI` button sits at the bottom right; the icon and the button show only when besir has its Worker address and app token.
+
+### 2. be on-time sir: schedule and leave-by alarm
+
+<img src="docs/guide/02-on-time.png" alt="The be on-time sir day timetable with an activity and its travel leg" width="300"> <img src="docs/guide/02-trip.png" alt="A trip detail screen with its departure time, its alert and the Open in Uber button" width="300">
+
+1. Tap `be on-time sir`. It opens on the month; tap a day to see its timetable.
+2. Long-press an empty time in the timetable to open `New Activity`. Fill in `Activity Title`, pick a `Place` and set the time; then set `Outbound Travel` to `Create`, choose the `Origin` and the `Outbound Travel Mode`, and tap `Add`.
+3. Tap the travel block to see the `Departure Time` and when the alert is scheduled. `Open in Uber` opens Uber with the destination as the drop-off.
+
+### 3. be full sir: places to eat and partner orders
+
+<img src="docs/guide/03-full.png" alt="The be full sir results with the Paris Cafe result opened, showing its photos and the Google Maps mark" width="300"> <img src="docs/guide/03-partner.png" alt="A partner booking card filled in, with its travel mode choices, Confirm and Cancel, ending in Example Tables - Simulated" width="300">
+
+1. Tap `be full sir`, type in `Menu or type of place` (or tap a chip such as `Cafe`) and tap `Search`.
+2. Tap a result to open it. Its icon buttons are `I ate here`, `Add meal event`, and one per partner: `Reserve a table` (Example Tables) and `Order delivery` (Example Delivery).
+3. Fill in the partner card and tap `Confirm`. Its last line ends in `Simulated`, and `History` in the toolbar lists the bookings, each with a `Cancel` button.
+
+### 4. be rich sir: budget and stats
+
+<img src="docs/guide/04-rich.png" alt="The be rich sir This week tab with the budget left and the Simulated label" width="300">
+
+1. Tap `be rich sir`. The `This week` tab shows what is left (or over) of the week's dining budget and how much of $200.00 is spent; the toolbar says `Simulated`, because the budget app, Example Budget, is simulated.
+2. Type an amount in `Amount` and tap `Record spend` (the plus).
+3. `Where`, `Trends` and `Entries` are drawn from the same ledger on the phone.
+
+### 5. Camera snap
+
+<img src="docs/guide/05-snap.png" alt="The chat after a camera snap of a place to eat, with the Plan for today card" width="300"> <img src="docs/guide/05-travel.png" alt="The How will you travel? choice after a camera snap" width="300">
+
+1. Tap the `Camera` icon in the lobby. A phone opens the camera; with no camera, as in the simulator, the photo library opens.
+2. Take or pick a photo of a poster, a place to eat or another place. For a place, besir looks for it nearby when your location is on; if several match, tap one.
+3. For a place to eat, answer `How will you travel?`, and besir proposes a meal for today on a `Plan for today` card. Tap `Confirm` to add it.
+
+Muse Spark Open reads the photo, and Muse Spark makes the plan. Photo used for these shots: "Taqueria El Jarochito in Menlo Park, California (front door)" by Suiren2022, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0), via [Wikimedia Commons](https://commons.wikimedia.org/wiki/File:Taqueria_El_Jarochito_in_Menlo_Park,_California_%28front_door%29.jpg).
+
+### 6. Share sheet: screenshot to event
+
+<img src="docs/guide/06-share.png" alt="The chat after a shared image, with an Add event card for Jazz Night" width="300">
+
+1. In Photos or another app, share a screenshot or photo and choose besir.
+2. Tap the notification from besir.
+3. besir reads the image and opens the chat. If it asks how you will travel, answer; then check the values on the `Add event` card and tap `Confirm`. With two or more shares waiting, the `Plan my day` button plans them together.
+
+Muse Spark Open reads the image, and Muse Spark makes the card.
+
+### 7. besir AI chat with voice
+
+<img src="docs/guide/07-chat.png" alt="The besir AI chat with a typed message, an Add event card waiting for Confirm, and the microphone button" width="300">
+
+1. Tap the round `besir AI` button. Type in `Message` and tap `Send`, or tap the microphone, speak (up to 28 seconds) and tap it again.
+2. The recording is turned into text and sent like a typed message.
+3. besir answers, and each change to the schedule comes as a card; nothing is added to the schedule until you tap `Confirm`.
+
+Muse Spark answers, and Muse Voice Transcribe turns the recording into text.
+
+### Models
+
+- **Muse Spark** (`muse-spark-1.3`, Worker `/ai`): the planner behind the chat and its cards.
+- **Muse Spark Open** (`meta-models/muse-spark-open-1026`, served on Baseten, Worker `/vision` and `/snap`): reads a shared image or a camera snap photo into fixed fields, as the Open weight section below explains.
+- **Muse Voice Transcribe** (`muse-voice-transcribe-1.0`, hosted by Meta, Worker `/voice`): turns a recorded clip into text; the clip goes to Meta's own API, not to Baseten.
+- **Google Places and Routes** (Worker `/places`, `/routes` and `/place-photo`): place search, place photos and travel times; the route map is drawn with the Google Maps SDK.
+
+Credits: Google results in the app carry the Google Maps mark, and the camera snap photo is credited in entry 5.
 
 ## Open weight: Muse Spark Open on Baseten
 
 For images, the work is split between two models. Muse Spark Open (`meta-models/muse-spark-open-1026`, served on Baseten) reads one image per request into fixed fields. Muse Spark, the planner, never receives the image.
 
 - **Shared screenshots and photos** go to the Worker's `/vision` route, which returns `title`, `time`, `place` and `confidence` (0 to 1). The prompt asks for null when a field is not visible, and for `time` as written, not converted. Plan my day reads its shared images through the same route, up to five per tap and three at a time. The planner gets these fields.
-- **Camera photos** go to the Worker's `/snap` route, which returns `kind`, `name`, `place_type`, `text`, `title`, `time` and `confidence`; `kind` is one of `event_poster`, `food_place`, `other_place` or `unknown`. Only a poster hands its fields to the planner (title, time and venue name). For a food place or other place, the app makes one nearby Google Places search when the phone has a location fix, with the sign name, or else the place type plus any short sign text; with neither, there is no search. No result ends with a fixed line; with several, the user picks one of up to three. The planner gets that place (name, address and `place_id`), not the sign text.
+- **Camera snap photos**, taken with the camera or picked from the library on the camera screen, go to the Worker's `/snap` route, which returns `kind`, `name`, `place_type`, `text`, `title`, `time` and `confidence`; `kind` is one of `event_poster`, `food_place`, `other_place` or `unknown`. Only a poster hands its fields to the planner (title, time and venue name). For a food place or other place, the app makes one Google Places search within 500 m, nearest first, when the phone has a location fix, with the sign name, or else the place type plus any short sign text; with neither, or with a search text shorter than two characters, there is no search. No result ends with a fixed line; with several, the user picks one of up to three. The planner gets that place (name, address and `place_id`), not the sign text.
 
 Why fields and not the image:
 
 - **They feed the confirm card.** The planner turns what it gets, the fields or the found place, into a card, and nothing is added to the schedule until the user taps Confirm.
-- **The fields can be checked.** An image shared on its own with confidence under 0.5 or no time, or a poster with no time (at 0.5 or more), adds a line telling the planner to ask the user to confirm the values first. A camera reading of kind `unknown` or under 0.5, a poster included, ends with a fixed line and no planner call. The Worker and the app both refuse a reading of the wrong shape, and the Worker cuts each text to 200 code points.
+- **The fields can be checked.** An image share read outside Plan my day, with or without a caption, with confidence under 0.5 or no time, or a poster with no time (at 0.5 or more), adds a line telling the planner to ask the user to confirm the values first. A camera reading of kind `unknown` or under 0.5, a poster included, ends with a fixed line and no planner call. The Worker and the app both refuse a reading of the wrong shape, and the Worker cuts each text to 200 code points.
 - **Text in a picture is passed on as data.** The Worker prompt tells the model to ignore any instruction inside the image, and the app hands the values to the planner as JSON values after a sentence that calls them data, not instructions.
 - **The prompt and the field list are fixed in the Worker.** The app's request body carries only the image and its type.
 - **The Baseten key is a Worker secret.** It is not in the app.
@@ -57,17 +135,17 @@ What the baseline already does:
 - **Manual entry** — add and edit trips and activities by hand, through one shared edit card that shows every value before saving
 - **Recurrence rules** — weekly, every N weeks, daily, monthly (nth weekday), yearly, lunar and date-list repeats, with optional skipping of Korean public holidays
 - **Favorites** — saved places such as home and work
-- **Place search, travel time and route map** — place search and per-mode travel time (car, transit, walk, bicycle) through Kakao, with a MapKit search fallback and a native route map; the Kakao part is replaced during the hackathon
+- **Place search, travel time and route map** — place search and per-mode travel time (car, transit, walk, bicycle) through Kakao, with a MapKit search fallback and a native route map; during the hackathon these were replaced by Google Places, Google Routes and a Google map
 - **be full sir** — find a place to eat near a chosen location, log what was eaten, and turn a pick into a meal block with round-trip travel
-- **Service home** — the start screen that switches between be on-time sir and be full sir
-- **Settings**
+- **Service home** — the start screen that switches between be on-time sir and be full sir (now the lobby with three rows, built during the hackathon)
+- **Settings** (the Rules and Memory tabs were added during the hackathon)
 - **Schedule model and `Store`** — events, activities and favorites held in a single store with on-device persistence
 - **Departure-time calculation** — departure = arrival − travel time − buffer
 - **Local notifications** — departure alarms scheduled from that calculation
 - **Share extension skeleton** — receives shared text and images and hands them to the app through a shared inbox
 - **Theme** — color tokens and the app mark, with light and dark mode following the device setting
 
-The AI layer, calendar sync and map view of the earlier app were removed from the baseline; their replacements are built during the hackathon.
+The AI layer, calendar sync and map view of the earlier app were removed from the baseline; their replacements were built during the hackathon: the Muse Spark agent, Apple Calendar through EventKit and a Google map.
 
 One commit sits between the baseline tag and the first hackathon work: [`89c8ab3`](https://github.com/paul8004-lee/besir_global/commit/89c8ab3d7e495ebb5f6e24724ffea86857bd2378), a one-line `.gitignore` tidy-up made before the kickoff (Oct 26, 2026, 07:40 AM ET).
 
@@ -171,14 +249,16 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **Travel question before a place card** — before a chat card adds an event at a place, the agent now asks how you will travel, so the card can carry its trip lines — [#132](https://github.com/paul8004-lee/besir_global/pull/132)
 - **Open in Uber from a trip, and trips by Uber** — the trip detail screen has an `Open in Uber` button that opens Uber with the trip's destination as the drop-off and the pickup left to Uber, and a trip can be made by Uber (an `Uber` choice on the trip form, the activity card and be full sir, or by naming Uber in the chat), timed as a car and shown as Uber; besir makes no Uber request and gets nothing back — [#134](https://github.com/paul8004-lee/besir_global/pull/134)
 - **Uber in the other travel pickers** — the Plan my day and snap travel dialogs and the partner card's `Travel mode` row now offer `Uber` after `Car`; an Uber plan, meal stop or partner booking is looked up as a car, saved with the Uber mark and shown as Uber, and the model is still told car — [#136](https://github.com/paul8004-lee/besir_global/pull/136)
+- **Using besir guide** — a step-by-step guide in the README with seven entries, from the lobby to the besir AI chat, and ten simulator screenshots; the other README lines are brought up to date — [#137](https://github.com/paul8004-lee/besir_global/pull/137)
 
-Some baseline files are edited in place, only for two reasons: the English localization of the app UI, and the split of the app and App Group identifiers from the earlier app. Both are listed as lines above when they land. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
+Some baseline files are edited in place: for the English localization of the app UI, for the split of the app and App Group identifiers from the earlier app, and where a feature built during the hackathon changes a baseline screen or service. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
 ## Roadmap (not built yet)
 
 - **be healthy sir** — fit workouts into the free time between plans
 - **be fun sir** — suggest leisure and events that fit the day's schedule
-- **be rich sir** — track spending tied to each plan
-- **More connections** — real partner apps in place of the simulated reservation partner, and outgoing records to budget and health apps (Apple Health, Plaid, Ticketmaster and others), each one confirmed by the user
-- **besir memory** — remembers the user's choices over time and shows recommendations that fit them; the user always makes the choice and besir never picks for them, so the app grows to fit each user
+- **be rich sir with a real budget app** — be rich sir is built on the simulated Example Budget; a real budget app is not connected yet
+- **More connections** — real partner apps in place of the simulated table, delivery and budget partners (for example Plaid for spending or Ticketmaster for tickets), and outgoing records to health apps such as Apple Health, each one confirmed by the user
+- **besir memory, next steps** — built so far: a short line for each saved choice, older lines folded into counts, up to 16 count lines from the last 42 days sent with each chat request, and the Memory and Rules tabs in Settings; not built yet: recommendations shown outside the chat; the user always makes the choice and besir never picks for them
 - **Auto mode** — an opt-in setting where besir carries out what it is confident about without a Confirm each time; anything that spends money, cancels a booking or places an order still waits for the user's tap
+- **Meta AI glasses** — take the camera snap's photo from Meta AI glasses
