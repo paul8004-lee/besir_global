@@ -11,6 +11,7 @@
 //   POST /delivery -> simulated food-delivery partner (an upstream for lookup only, one Places Text Search; no storage)
 //   POST /place-photo -> one Google place photo by its resource name (an upstream per request, no storage)
 //   POST /voice  -> Meta Muse Voice Transcribe: one base64 WAV in, {text} out (an upstream per request, no storage)
+//   POST /signs  -> Meta SAM 3.1: one image in, at most 5 sign boxes out (an upstream per request, no storage)
 import { handleVision } from "./vision.js";
 import { handleSnap } from "./snap.js";
 import { handleBooking, handleBookingCancel } from "./booking.js";
@@ -19,6 +20,7 @@ import { handleBudget } from "./budget.js";
 import { handleDelivery } from "./delivery.js";
 import { handlePlacePhoto } from "./placephoto.js";
 import { handleVoice } from "./voice.js";
+import { handleSigns } from "./signs.js";
 
 const META_RESPONSES_URL = "https://api.meta.ai/v1/responses";
 const PLACES_URL = "https://places.googleapis.com/v1/places:searchText";
@@ -175,6 +177,7 @@ export default {
       case "/delivery": return handleDelivery(request, { json, lookup: placesLookup(env) });
       case "/place-photo": return handlePlacePhoto(request, { json, photo: placePhoto(env) });
       case "/voice": return handleVoice(request, env, { json });
+      case "/signs": return handleSigns(request, env, { json });
       default:
         return json(404, { error: "not_found" });
     }

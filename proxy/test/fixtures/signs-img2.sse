@@ -1,0 +1,29 @@
+event: response.created
+data: {"response":{"background":false,"error":null,"id":"resp_synthetic0000000000000000","metadata":{"include_confidence":"true"},"model":"sam-3.1","object":"response","status":"in_progress","store":false,"output":[]},"sequence_number":0,"type":"response.created"}
+
+event: response.in_progress
+data: {"response":{"background":false,"error":null,"id":"resp_synthetic0000000000000000","metadata":{"include_confidence":"true"},"model":"sam-3.1","object":"response","status":"in_progress","store":false,"output":[]},"sequence_number":1,"type":"response.in_progress"}
+
+event: response.output_item.added
+data: {"item":{"id":"msg_synthetic-0000","role":"assistant","status":"in_progress","type":"message","content":[{"annotations":[],"logprobs":[],"text":"","type":"output_text"}]},"output_index":0,"sequence_number":2,"type":"response.output_item.added"}
+
+event: response.content_part.added
+data: {"content_index":0,"item_id":"msg_synthetic-0000","output_index":0,"part":{"annotations":[],"logprobs":[],"text":"","type":"output_text"},"sequence_number":3,"type":"response.content_part.added"}
+
+event: response.output_text.delta
+data: {"content_index":0,"delta":"<0f>0<|box;x1=636;y1=774;x2=766;y2=837;w=2048;h=1536;c=0.6683937907218933|><|mask;x=0;y=0;c=0.6683937907218933;data=71,70,~!!!1!#K{%m|>,1<|box;x1=583;y1=891;x2=613;y2=933;w=2048;h=1536;c=0.5311|><|mask;x=0;y=0;c=0.5311;data=71,70,~!!!1!#K{%m|>,2<|box;x1=518;y1=786;x2=587;y2=856;w=2048;h=1536;c=0.5114504098892212|><|mask;x=0;y=0;c=0.5114504098892212;data=71,70,~!!!1!#K{%m|>","item_id":"msg_synthetic-0000","logprobs":[],"output_index":0,"sequence_number":4,"type":"response.output_text.delta"}
+
+event: response.output_text.done
+data: {"content_index":0,"item_id":"msg_synthetic-0000","logprobs":[],"output_index":0,"text":"<0f>0<|box;x1=636;y1=774;x2=766;y2=837;w=2048;h=1536;c=0.6683937907218933|><|mask;x=0;y=0;c=0.6683937907218933;data=71,70,~!!!1!#K{%m|>,1<|box;x1=583;y1=891;x2=613;y2=933;w=2048;h=1536;c=0.5311|><|mask;x=0;y=0;c=0.5311;data=71,70,~!!!1!#K{%m|>,2<|box;x1=518;y1=786;x2=587;y2=856;w=2048;h=1536;c=0.5114504098892212|><|mask;x=0;y=0;c=0.5114504098892212;data=71,70,~!!!1!#K{%m|>","sequence_number":5,"type":"response.output_text.done"}
+
+event: response.content_part.done
+data: {"content_index":0,"item_id":"msg_synthetic-0000","output_index":0,"part":{"annotations":[],"logprobs":[],"text":"<0f>0<|box;x1=636;y1=774;x2=766;y2=837;w=2048;h=1536;c=0.6683937907218933|><|mask;x=0;y=0;c=0.6683937907218933;data=71,70,~!!!1!#K{%m|>,1<|box;x1=583;y1=891;x2=613;y2=933;w=2048;h=1536;c=0.5311|><|mask;x=0;y=0;c=0.5311;data=71,70,~!!!1!#K{%m|>,2<|box;x1=518;y1=786;x2=587;y2=856;w=2048;h=1536;c=0.5114504098892212|><|mask;x=0;y=0;c=0.5114504098892212;data=71,70,~!!!1!#K{%m|>","type":"output_text"},"sequence_number":6,"type":"response.content_part.done"}
+
+event: response.output_item.done
+data: {"item":{"id":"msg_synthetic-0000","role":"assistant","status":"completed","type":"message","content":[{"annotations":[],"logprobs":[],"text":"<0f>0<|box;x1=636;y1=774;x2=766;y2=837;w=2048;h=1536;c=0.6683937907218933|><|mask;x=0;y=0;c=0.6683937907218933;data=71,70,~!!!1!#K{%m|>,1<|box;x1=583;y1=891;x2=613;y2=933;w=2048;h=1536;c=0.5311|><|mask;x=0;y=0;c=0.5311;data=71,70,~!!!1!#K{%m|>,2<|box;x1=518;y1=786;x2=587;y2=856;w=2048;h=1536;c=0.5114504098892212|><|mask;x=0;y=0;c=0.5114504098892212;data=71,70,~!!!1!#K{%m|>","type":"output_text"}]},"output_index":0,"sequence_number":7,"type":"response.output_item.done"}
+
+event: response.completed
+data: {"response":{"background":false,"error":null,"id":"resp_synthetic0000000000000000","metadata":{"include_confidence":"true"},"model":"sam-3.1","object":"response","status":"completed","store":false,"output":[{"id":"msg_synthetic-0000","role":"assistant","status":"completed","type":"message","content":[{"annotations":[],"logprobs":[],"text":"<0f>0<|box;x1=636;y1=774;x2=766;y2=837;w=2048;h=1536;c=0.6683937907218933|><|mask;x=0;y=0;c=0.6683937907218933;data=71,70,~!!!1!#K{%m|>,1<|box;x1=583;y1=891;x2=613;y2=933;w=2048;h=1536;c=0.5311|><|mask;x=0;y=0;c=0.5311;data=71,70,~!!!1!#K{%m|>,2<|box;x1=518;y1=786;x2=587;y2=856;w=2048;h=1536;c=0.5114504098892212|><|mask;x=0;y=0;c=0.5114504098892212;data=71,70,~!!!1!#K{%m|>","type":"output_text"}]}],"usage":{"images_processed":1,"input_tokens":0,"output_tokens":0,"total_tokens":0}},"sequence_number":8,"type":"response.completed"}
+
+data: [DONE]
+
