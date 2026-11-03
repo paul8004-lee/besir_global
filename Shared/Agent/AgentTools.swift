@@ -937,7 +937,7 @@ final class AgentToolbox {
                     to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude), flow: flow)
                 guard let seconds = estimate.duration else { continue }
                 routes[pair] = AgentRoute(mode: mode, seconds: seconds, origin: origin, destination: destination,
-                                          warnings: estimate.warnings, createdAt: now())
+                                          warnings: estimate.warnings, createdAt: now(), viaUber: context.choice == .uber)
             }
             guard !Task.isCancelled else { return AgentPlaces.travelFailure(nil) }
             let evaluated = AgentDayPlan.evaluate(stops: stops, routes: routes, bufferMinutes: AgentPlaces.legBufferMinutes,
@@ -1009,6 +1009,7 @@ final class AgentToolbox {
             let made = await store.addActivityWithTravel(
                 title: stop.title, location: stop.place, startDate: stop.start, endDate: stop.end, travelFrom: route?.origin,
                 returnTo: nil, outboundMode: context.mode, returnMode: context.mode,
+                outboundUber: route?.viaUber ?? false,
                 bufferMinutes: route == nil ? 0 : AgentPlaces.legBufferMinutes,
                 notifyLeadMinutes: route == nil ? 0 : AgentPlaces.legNotifyLeadMinutes,
                 syncToCalendar: store.calendarSyncDefault, travelSecondsHint: route?.seconds)
