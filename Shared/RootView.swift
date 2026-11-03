@@ -120,7 +120,7 @@ struct RootView: View {
         // Cancelling or dismissing reads no item, asks for no calendar access and makes no call.
         .confirmationDialog("How will you travel today?", isPresented: $choosingMode, titleVisibility: .visible) {
             ForEach(PlanMyDay.modeChoices, id: \.self) { choice in
-                Button(choice.title) { Task { await runPlan(mode: choice.mode, viaUber: false) } }
+                Button(choice.title) { Task { await runPlan(mode: choice.mode, viaUber: choice == .uber) } }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -160,7 +160,7 @@ struct RootView: View {
         ensureSession()
         guard let session = chatHolder.session else { return }
         let client = VisionClient(config: store.config, send: { try await URLSession(configuration: .ephemeral).data(for: $0) })
-        await shareImport.planPass(mode: mode, vision: client, activities: { store.activitiesForPlanning() }, mirror: store.calendarMirror,
+        await shareImport.planPass(mode: mode, viaUber: viaUber, vision: client, activities: { store.activitiesForPlanning() }, mirror: store.calendarMirror,
                                    prepare: { session.prepareDayPlan(events: $0) }, canHand: { session.canSend },
                                    hand: { message, shown, context in
             openChat()

@@ -58,7 +58,7 @@ struct SnapView: View {
                                                  set: { if !$0 { Task { await flow.chooseMode(nil) } } }),
                             titleVisibility: .visible) {
             ForEach(PlanMyDay.modeChoices, id: \.self) { choice in
-                Button(choice.title) { Task { await flow.chooseMode(choice.mode) } }
+                Button(choice.title) { Task { await flow.chooseMode(choice.mode, viaUber: choice == .uber) } }
             }
             Button("Cancel", role: .cancel) {}
         }

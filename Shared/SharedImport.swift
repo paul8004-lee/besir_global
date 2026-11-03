@@ -222,7 +222,7 @@ final class SharedImport: ObservableObject {
                                         calendarAvailable: entries != nil)
         let shown = PlanMyDay.shownLine(sharedCount: usable.count, eventCount: events.count, calendarAvailable: entries != nil, cut: today.cut)
         let dayEnd = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: current)) ?? current
-        let context = DayPlanContext(mode: mode, events: events, checkWindowEnd: dayEnd, calendarAvailable: entries != nil)
+        let context = DayPlanContext(mode: mode, events: events, checkWindowEnd: dayEnd, calendarAvailable: entries != nil, viaUber: viaUber)
 
         connections.offerFlow(flow)
         let accepted = hand(message, shown, context)

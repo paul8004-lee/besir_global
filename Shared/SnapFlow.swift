@@ -197,7 +197,7 @@ final class SnapFlow: ObservableObject {
                                     start: meal.start, end: meal.end)
         let dayEnd = deps.calendar.date(byAdding: .day, value: 1, to: deps.calendar.startOfDay(for: now)) ?? now
         outcome = .plan(text: text, shown: SnapMessage.shownLine(for: clue, calendarAvailable: entries != nil),
-                        context: DayPlanContext(mode: mode, events: events, checkWindowEnd: dayEnd), flow: tap)
+                        context: DayPlanContext(mode: mode, events: events, checkWindowEnd: dayEnd, viaUber: viaUber), flow: tap)
         self.clue = nil
         self.place = nil
         phase = .done
