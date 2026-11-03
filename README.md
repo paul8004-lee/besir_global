@@ -4,6 +4,10 @@ An iOS planning agent, powered by Meta Muse Spark, with Muse Spark Open reading 
 
 **Contents**
 
+- [Quickstart](#quickstart)
+  - [1. What you need](#1-what-you-need)
+  - [2. Deploy the Worker](#2-deploy-the-worker)
+  - [3. Build and run the app](#3-build-and-run-the-app)
 - [Why besir: connecting apps](#why-besir-connecting-apps)
 - [How besir connects apps](#how-besir-connects-apps)
   - [One partner card from a field list](#one-partner-card-from-a-field-list)
@@ -24,6 +28,77 @@ An iOS planning agent, powered by Meta Muse Spark, with Muse Spark Open reading 
 - [Pre-existing code](#pre-existing-code-before-the-hackathon-kickoff--oct-26-2026-1200-pm-et)
 - [Built during the hackathon](#built-during-the-hackathon-oct-26--nov-4-2026)
 - [Roadmap (not built yet)](#roadmap-not-built-yet)
+- [License](#license)
+
+## Quickstart
+
+These steps build besir from this repository and run it in the iOS Simulator with your own keys. There is no shared key, token or demo account: each service below needs your own account and key, and any usage charges come from that service's provider.
+
+### 1. What you need
+
+- A Mac with Xcode 26 or later and an iOS Simulator; the app runs on iOS 17.0 or later.
+- XcodeGen, for example from [Homebrew](https://brew.sh/): `brew install xcodegen`.
+- Node.js 22 or later, for `wrangler`, the Cloudflare tool that deploys the Worker.
+- A Cloudflare account for the Worker in `proxy/`, which holds the Meta key, the Baseten key and the Google Places and Routes key.
+- These keys:
+
+| Key | Used for | Where it goes |
+|---|---|---|
+| Meta Model API key ([Meta developer site](https://dev.meta.ai/)) | Muse Spark (Worker `/ai`) and Muse Voice Transcribe (Worker `/voice`) | Worker secret `META_API_KEY` |
+| Baseten API key ([Baseten docs](https://docs.baseten.co/)) | Muse Spark Open, `meta-models/muse-spark-open-1026` (Worker `/vision` and `/snap`) | Worker secret `BASETEN_API_KEY` |
+| Google Maps Platform key for Places API (New) and Routes API ([Places](https://developers.google.com/maps/documentation/places/web-service/get-api-key), [Routes](https://developers.google.com/maps/documentation/routes/get-api-key)) | place search, place photos and travel times (Worker `/places`, `/place-photo` and `/routes`) | Worker secret `GOOGLE_MAPS_KEY` |
+| Google Maps Platform key for the Maps SDK for iOS ([guide](https://developers.google.com/maps/documentation/ios-sdk/get-api-key)) | the map on a trip's screen in the app | `BESIR_MAPS_IOS_KEY` in `Config/Local.xcconfig` |
+| App token: a string you make up, for example the output of `openssl rand -hex 24` | the Worker answers only requests that carry it | Worker secret `APP_TOKEN` and `BESIR_APP_TOKEN` in `Config/Local.xcconfig`, the same string in both |
+
+### 2. Deploy the Worker
+
+From the repository root:
+
+```sh
+cd proxy
+npm ci
+npx wrangler login
+npx wrangler deploy
+npx wrangler secret put META_API_KEY
+npx wrangler secret put BASETEN_API_KEY
+npx wrangler secret put GOOGLE_MAPS_KEY
+npx wrangler secret put APP_TOKEN
+```
+
+`npx wrangler deploy` prints the Worker's address; the part after `https://` is your Worker host. Each `secret put` asks for its value. To check the Worker, with your host and token in place of `your-worker-host-here` and `your-app-token-here`:
+
+```sh
+curl https://your-worker-host-here/health
+curl -H 'x-besir-token: your-app-token-here' -d '{"op":"list"}' https://your-worker-host-here/partners
+```
+
+The first prints `{"ok":true}`. The second prints the simulated partners, starting with `{"partners":[{"id":"booking","name":"Example Tables"`, or `{"error":"unauthorized"}` when the token is not the Worker's `APP_TOKEN`.
+
+`proxy/dev.vars.example` is for running the Worker on your Mac instead: copy it to `proxy/.dev.vars`, fill in the four values and run `npm run dev` in `proxy/` to try its routes with `curl`. The app cannot use that local Worker, because it always calls `https://` plus the Worker host it was built with.
+
+### 3. Build and run the app
+
+From the repository root (run `cd ..` first if you are still in `proxy/`):
+
+```sh
+cp Config/Local.xcconfig.example Config/Local.xcconfig
+```
+
+In `Config/Local.xcconfig`, replace the three placeholders with your Worker host (without `https://`), your app token and your iOS map key, with one space around `=` and no quotes. Then generate the Xcode project and build for the iOS Simulator:
+
+```sh
+xcodegen generate
+xcodebuild -scheme besir-iOS -destination 'generic/platform=iOS Simulator' -derivedDataPath build build
+```
+
+The first build downloads the Google Maps SDK for iOS. Start the Simulator app with `open -a Simulator`, wait for its home screen, then install and open besir:
+
+```sh
+xcrun simctl install booted build/Build/Products/Debug-iphonesimulator/besir.app
+xcrun simctl launch booted com.iseongmin.besir.global
+```
+
+With `BESIR_PROXY_HOST` or `BESIR_APP_TOKEN` left empty, the lobby shows no `Camera` icon and no `besir AI` button; with `BESIR_MAPS_IOS_KEY` left empty, a trip's map reads `Map unavailable`.
 
 ## Why besir: connecting apps
 
@@ -343,3 +418,11 @@ Some baseline files are edited in place: for the English localization of the app
 - **besir memory, next steps** — built so far: a short line for each saved choice, older lines folded into counts, up to 16 count lines from the last 42 days sent with each chat request, and the Memory and Rules tabs in Settings; not built yet: recommendations shown outside the chat; the user always makes the choice and besir never picks for them
 - **Auto mode** — an opt-in setting where besir carries out what it is confident about without a Confirm each time; anything that spends money, cancels a booking or places an order still waits for the user's tap
 - **Meta AI glasses** — take the camera snap's photo from Meta AI glasses
+
+## License
+
+besir is licensed under the [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0); the full text is in [LICENSE](LICENSE).
+
+That license does not cover the photo used for the camera snap shots, "Taqueria El Jarochito in Menlo Park, California (front door)" by Suiren2022. The photo is not in this repository; it keeps its own license, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0), and is credited in entry 5 of Using besir.
+
+The license does not cover Google Maps content either: the map, the place photos and the Google Maps mark in the screenshots, and the Google Maps logo files in `Resources/Assets.xcassets/GoogleMapsLogo.imageset`.
