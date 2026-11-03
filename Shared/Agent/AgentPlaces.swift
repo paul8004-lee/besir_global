@@ -136,7 +136,7 @@ enum AgentPlaces {
             return AgentLookupOutput(result: travelUnavailable, showsGoogleData: false)
         }
         var object: [String: Any] = [
-            "status": "ok", "route_id": handle, "mode": route.mode.rawValue,
+            "status": "ok", "route_id": handle, "mode": route.choice.value,
             "minutes": roundedMinutes(fromSeconds: route.seconds),
             "origin": displayName(route.origin.name), "destination": displayName(route.destination.name),
             "source": "Google Routes"]

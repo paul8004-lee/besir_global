@@ -2255,7 +2255,7 @@ final class Store: ObservableObject {
         f.locale = Locale(identifier: "en_US")
         f.dateFormat = "h:mm a"
         let dep = event.departureDate.map { f.string(from: $0) } ?? "-"
-        return "\(event.mode.title) to \(event.destination.name): \(estimate.durationText). Leave at \(dep)."
+        return "\(event.travelChoice.title) to \(event.destination.name): \(estimate.durationText). Leave at \(dep)."
     }
 
     // MARK: - 드래그로 시간 재조정(일간 시간표)
@@ -3005,12 +3005,12 @@ final class Store: ObservableObject {
             let depText = f.string(from: dep)
             switch verdict {
             case .catchUp:
-                let base = "\(record.mode.title) to \(record.destination.name): \(estimate.durationText). Leave by \(depText) to make it."
+                let base = "\(record.travelChoice.title) to \(record.destination.name): \(estimate.durationText). Leave by \(depText) to make it."
                 notifications.deliverNow(title: "🚶 \(record.title) — leave earlier than planned",
                                          body: Replan.catchUpBody(base: base, outcome: replanOutcomes[id]),
                                          id: "catchup-" + record.id.uuidString, eventID: record.id)
             case .late:
-                let base = "\(record.mode.title) to \(record.destination.name): \(estimate.durationText). The departure time (\(depText)) has passed."
+                let base = "\(record.travelChoice.title) to \(record.destination.name): \(estimate.durationText). The departure time (\(depText)) has passed."
                 notifications.deliverNow(title: "🚶 \(record.title) — the departure time has passed",
                                          body: Replan.catchUpBody(base: base, outcome: replanOutcomes[id]),
                                          id: "catchup-" + record.id.uuidString, eventID: record.id)

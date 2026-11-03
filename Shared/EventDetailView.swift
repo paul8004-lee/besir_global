@@ -217,7 +217,7 @@ struct EventDetailView: View {
                 HStack {
                     Image(systemName: event.mode.systemImage)
                     // "대중교통로"가 되지 않게 조사 붙은 이름을 쓴다(D14) — 캘린더 설명과 같은 출처.
-                    Text("\(event.mode.titleWithParticle) · about \(minutes) min")
+                    Text("\(event.travelChoice.titleWithParticle) · about \(minutes) min")
                         .font(.headline)
                     Spacer()
                 }
@@ -423,7 +423,7 @@ struct EventDetailView: View {
             // 값 행(+반복 배지)만 카드로 감싼다 — 삭제 단추는 카드 밖에 그대로 둔다(AC-006
             // 8·9행의 분할이 규범 — REQ-020의 :302-348 인용이 잘못 넓었고 0.1.3으로 정정).
             VStack(alignment: .leading, spacing: 10) {
-                row("Travel Mode", "\(event.mode.title)")
+                row("Travel Mode", "\(event.travelChoice.title)")
                 row("Arrival Buffer", "\(event.bufferMinutes) min")
                 // 위 캡션(alarmStatus)은 알림 상태를 사실대로 말하는데 이 행은 무조건 "출발 N분 전"을
                 // 그려 "알림 꺼짐" 캡션과 모순됐다 — 끈 일정에는 받지 않음을 보인다.
