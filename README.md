@@ -2,6 +2,29 @@
 
 An iOS planning agent, powered by Meta Muse Spark, with Muse Spark Open reading images and Muse Voice Transcribe turning speech into text, that sits between the apps on your phone. What you find in one app becomes a plan, and the plan is carried to the next app for you.
 
+**Contents**
+
+- [Why besir: connecting apps](#why-besir-connecting-apps)
+- [How besir connects apps](#how-besir-connects-apps)
+  - [One partner card from a field list](#one-partner-card-from-a-field-list)
+  - [Partner results come back into besir](#partner-results-come-back-into-besir)
+  - [The AI runs the same actions as your buttons](#the-ai-runs-the-same-actions-as-your-buttons)
+  - [One record shape in the connection log](#one-record-shape-in-the-connection-log)
+  - [What waits for Confirm](#what-waits-for-confirm)
+- [Using besir](#using-besir)
+  - [1. The lobby](#1-the-lobby)
+  - [2. be on-time sir: schedule and leave-by alarm](#2-be-on-time-sir-schedule-and-leave-by-alarm)
+  - [3. be full sir: places to eat and partner orders](#3-be-full-sir-places-to-eat-and-partner-orders)
+  - [4. be rich sir: budget and stats](#4-be-rich-sir-budget-and-stats)
+  - [5. Camera snap](#5-camera-snap)
+  - [6. Share sheet: screenshot to event](#6-share-sheet-screenshot-to-event)
+  - [7. besir AI chat with voice](#7-besir-ai-chat-with-voice)
+  - [Models](#models)
+- [Open weight: Muse Spark Open on Baseten](#open-weight-muse-spark-open-on-baseten)
+- [Pre-existing code](#pre-existing-code-before-the-hackathon-kickoff--oct-26-2026-1200-pm-et)
+- [Built during the hackathon](#built-during-the-hackathon-oct-26--nov-4-2026)
+- [Roadmap (not built yet)](#roadmap-not-built-yet)
+
 ## Why besir: connecting apps
 
 Google connected websites. Facebook and Instagram connected people. **besir connects the apps on your phone.**
@@ -14,7 +37,7 @@ Three principles guide every connection:
 - **Your apps stay your apps** — besir does not replace the apps you already use, so there is no new service to sign up for and no habit to give up. Instead it connects them, even apps from fields that seem to have nothing in common, so that the whole plan can be managed from one place.
 - **The user stays in control** — a plan, a booking or an order is saved or sent to another app only after the user taps Confirm on its card (or Add on a form they filled in); a few actions run at once: `Open in Uber`, `I ate here` and a cancel from History when tapped, a spend recorded by hand when `Record spend` is tapped, and a spend the user states in the chat when the assistant records it; and besir only receives what the user chooses to share (no scraping).
 
-Not every app offers an API or MCP server for this, so besir carries data in one common shape — which app it came from, which app it goes to, what it is and its status — whatever the app on the other side supports.
+Not every app offers an API or MCP server for this, so besir works with each app in the way that app supports, and keeps a log of its connections on the phone in one common shape — which app it came from, which app it goes to, what it is and its status.
 
 As an MVP, besir starts with one everyday scenario — an event you came across, a place to eat nearby, a booking and the time in your calendar — and connects the few apps that scenario needs. Each app connected later adds to what the others can do, so the value of besir grows with every new connection. The table below shows where each connection stands today.
 
@@ -32,6 +55,62 @@ As an MVP, besir starts with one everyday scenario — an event you came across,
 | besir ↔ a budget app (this week's dining budget left, a spend, the estimated spend of a booking or an order) | round trip | built with a simulated partner app, Example Budget, clearly labeled *Simulated*, and shown on the be rich sir screen; no real budget app yet |
 | besir → Uber, the trip's destination as the drop-off | out | built as a link that opens Uber; besir makes no Uber request and gets nothing back |
 | besir → health apps | out | roadmap |
+
+## How besir connects apps
+
+The partner apps in this section are simulated: Example Tables (Simulated), Example Delivery (Simulated) and Example Budget (Simulated).
+
+### One partner card from a field list
+
+The app's code names no table or delivery partner. besir asks the Worker for a directory of partners and asks each partner for its field list: the fields of a request and of its result. From that list besir draws one partner card, the same card in the chat and behind each partner button in be full sir.
+
+- A request field is one of seven kinds: `text`, `place`, `time`, `number`, `pick_one`, `on_off` or `group`, and a card has at most eight fields.
+- A `place` field can ask the partner for its own places, and a `group` is a menu with prices and a total, as on the Example Delivery (Simulated) card.
+- A result field is a `time`, an amount of `money` or a `text`.
+
+A new simulated partner needs no app change: one entry in the Worker's partner directory, one Worker route that sends its field list and takes the request, and an update to the directory test. besir drops any partner answer that is not marked simulated. Example Budget (Simulated) is the exception: it is fixed in the app and is not in the directory.
+
+### Partner results come back into besir
+
+When the user taps `Confirm` on a partner card and the partner confirms, besir acts on each result by its kind:
+
+- **`time`**: with `Add to schedule` on (it starts on), the time becomes an entry in be on-time sir whose title names the partner and ends in `(Simulated)`. The `End` row sets its length, and a card with no time field gives 60 minutes. With `Travel` on, the entry also gets its travel leg.
+- **`money`**: the amount goes to Example Budget (Simulated) as an estimated spend in the week of the `time` result, or this week when there is none, whether or not `Add to schedule` is on. When the budget app cannot be reached, the booking still stands.
+- **`text`**: an order number or a note stays in the answer; besir does not act on it.
+
+A booking that added an entry is listed in `History` in be full sir, where `Cancel` sends one cancel to the partner. An accepted cancel also deletes the entry and removes its estimated spend. Only a partner with a cancel route can accept one; today that is Example Tables (Simulated).
+
+### The AI runs the same actions as your buttons
+
+besir AI acts through tools, and for partners, cancels and spends a tool runs the same app code as the button a person taps:
+
+- `get_partners` loads the partner directory with the same code as be full sir, and `request_partner` opens the same partner card as a partner button there.
+- `cancel_booking` runs the same cancel as `Cancel` in `History`, after its own `Confirm` card.
+- `record_spend` records a spend the same way as `Record spend` in be rich sir.
+
+The starting values differ: a card from the chat starts with the values the user said, each checked against the user's own words, and with a place the chat already holds, for example from a search, the camera snap or today's schedule; a partner button starts with the tapped place's name only.
+
+One message can chain several steps, for example a place search whose result goes into a partner card. For a booking that returns a time and an amount, one `Confirm` then sends the request, adds the entry while `Add to schedule` is on (with its travel leg when `Travel` is on) and sends the estimated spend. A message may use up to six model requests, so at most five tool steps (12 requests for `Plan my day` and the camera snap's meal plan); past that the chat says `The assistant needed too many steps. Try again with a simpler request.` besir AI cannot tap `Confirm` itself.
+
+### One record shape in the connection log
+
+besir writes each logged connection on the phone as one record with the same fields: an id, an optional flow id that ties one action's records together, the time, the app it came from, the app it went to, the kind, a short summary and the status (OK, Failed, Declined or No route).
+
+- The log is one file on the phone, `connections.json`, that keeps the newest 200 records. besir does not send it anywhere, and the app does not show it today.
+- Most summaries are a few fixed words, a partner's name or a count, and none holds a chat message, a shared text, an image or an amount. The exception is a place search, whose summary keeps the searched text, or the keyword or kind of place of a nearby search. Text that looks like a key becomes `Details hidden`, a web address becomes its host, and a summary stops at 80 characters.
+- On the wire, each partner gets its own field-list form, not this record.
+- Some connections are not logged: voice clips, Google place photos and Apple Calendar writes.
+
+### What waits for Confirm
+
+A change to the schedule, a day plan, a partner request, and a cancel or rule from the chat each come as a card, and nothing is saved or sent until the user taps `Confirm`. One partner `Confirm` does several things at once:
+
+- it sends the request to the partner;
+- when the result holds a time and `Add to schedule` is on, it adds the entry to the schedule, and to Apple Calendar while `Add events to Apple Calendar` is on in Settings (it starts on) and besir has full calendar access;
+- when the result holds an amount, it sends the estimated spend to Example Budget (Simulated);
+- when it added an entry, it saves a `History` record and one memory line.
+
+Besides the actions listed under **The user stays in control** above, these need no card: besir AI reading the schedule (the titles, times and places it reads go to besir AI), lookups (a place search, a travel time, the partner list, the budget left, and a partner's places for a place field, which sends the typed text and, when known, the position rounded to about 1 km), rules added or deleted and memory lines deleted in Settings, and the `Plan my day` button, which sends the waiting shares and today's schedule to besir AI and lets it check the plan's travel times; the plan that comes back waits for `Confirm`.
 
 ## Using besir
 
@@ -251,6 +330,7 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **Uber in the other travel pickers** — the Plan my day and snap travel dialogs and the partner card's `Travel mode` row now offer `Uber` after `Car`; an Uber plan, meal stop or partner booking is looked up as a car, saved with the Uber mark and shown as Uber, and the model is still told car — [#136](https://github.com/paul8004-lee/besir_global/pull/136)
 - **Using besir guide** — a step-by-step guide in the README with seven entries, from the lobby to the besir AI chat, and ten simulator screenshots; the other README lines are brought up to date — [#137](https://github.com/paul8004-lee/besir_global/pull/137)
 - **Snap meal fits the free time** — the snap meal now fits into the free time before the next event; when an event is under way at the meal's start or fewer than 20 free minutes remain, the snap screen shows `No time is left today for a meal.` instead of a card that overlaps, and a suggested end that would run into the next event is cut back to it, with the message stating the real length — [#138](https://github.com/paul8004-lee/besir_global/pull/138)
+- **How besir connects apps, and a table of contents** — a README section on the partner card drawn from each partner's field list, results that come back by kind, the AI running the same actions as the buttons, the connection log's common record and what waits for Confirm, and a table of contents that links every section — [#141](https://github.com/paul8004-lee/besir_global/pull/141)
 
 Some baseline files are edited in place: for the English localization of the app UI, for the split of the app and App Group identifiers from the earlier app, and where a feature built during the hackathon changes a baseline screen or service. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
