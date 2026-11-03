@@ -76,7 +76,7 @@ enum AgentPartner {
         let choice = AgentFieldSpec.onOff(key: cardSwitchKey, label: cardSwitchLabel, on: cardOnWord, off: cardOffWord)
         let from = AgentFieldSpec(key: cardFromKey, kind: .place, label: cardFromLabel)
         let mode = AgentFieldSpec(key: cardModeKey, kind: .pickOne, label: cardModeLabel,
-                                  options: TransportMode.allCases.map { AgentFieldOption(id: $0.rawValue, label: $0.title) })
+                                  options: TravelChoice.all.map { AgentFieldOption(id: $0.value, label: $0.title) })
         let travel = AgentFieldSpec.onOff(key: cardTravelKey, label: cardTravelLabel, on: cardOnWord, off: cardOffWord)
         let travelRow: AgentFieldRow = .switchField(travel, value: .flag(false), source: .inferred, dependents: [
             .field(from, value: origin.map { .place($0) }, source: .inferred),

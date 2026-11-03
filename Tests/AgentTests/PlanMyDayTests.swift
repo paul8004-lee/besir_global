@@ -155,9 +155,9 @@ final class PlanMyDayTests: XCTestCase {
         XCTAssertEqual(PlanMyDay.buttonLabel(count: 3, held: true), "Plan my day (3)")
     }
 
-    func testPLANDAY_T07_modeChoicesAreTheFourModesInOrder() {
-        XCTAssertEqual(PlanMyDay.modeChoices, [.car, .transit, .walk, .bicycle])
-        XCTAssertEqual(PlanMyDay.modeChoices.map(\.title), ["Car", "Transit", "Walk", "Bicycle"])
+    func testPLANDAY_T07_modeChoicesAreTheFiveTravelChoicesInOrder() {
+        XCTAssertEqual(PlanMyDay.modeChoices, [.standard(.car), .uber, .standard(.transit), .standard(.walk), .standard(.bicycle)])
+        XCTAssertEqual(PlanMyDay.modeChoices.map(\.title), ["Car", "Uber", "Transit", "Walk", "Bicycle"])
     }
 
     // MARK: today's events

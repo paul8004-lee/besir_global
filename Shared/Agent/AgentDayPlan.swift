@@ -421,7 +421,7 @@ enum AgentDayPlan {
             if let leg = check.legs.first(where: { $0.to == index + 1 }) {
                 if let route = leg.route, let leave = leg.leave {
                     let duration = TravelEstimate(mode: mode, duration: route.seconds, distance: nil, source: "Google").durationText
-                    var line = "Leave \(time.string(from: leave)) - \(duration) \(AgentPlaces.modePhrase(mode))"
+                    var line = "Leave \(time.string(from: leave)) - \(duration) \(AgentPlaces.modePhrase(route.choice))"
                     if above != leg.from - 1 { line += " from \(title(at: leg.from))" }
                     lines.append(line + " - " + AgentPlaces.verifiedLine)
                 } else {

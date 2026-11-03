@@ -937,7 +937,7 @@ final class AgentToolbox {
                     to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude), flow: flow)
                 guard let seconds = estimate.duration else { continue }
                 routes[pair] = AgentRoute(mode: mode, seconds: seconds, origin: origin, destination: destination,
-                                          warnings: estimate.warnings, createdAt: now())
+                                          warnings: estimate.warnings, createdAt: now(), viaUber: context.choice == .uber)
             }
             guard !Task.isCancelled else { return AgentPlaces.travelFailure(nil) }
             let evaluated = AgentDayPlan.evaluate(stops: stops, routes: routes, bufferMinutes: AgentPlaces.legBufferMinutes,
@@ -1009,6 +1009,7 @@ final class AgentToolbox {
             let made = await store.addActivityWithTravel(
                 title: stop.title, location: stop.place, startDate: stop.start, endDate: stop.end, travelFrom: route?.origin,
                 returnTo: nil, outboundMode: context.mode, returnMode: context.mode,
+                outboundUber: route?.viaUber ?? false,
                 bufferMinutes: route == nil ? 0 : AgentPlaces.legBufferMinutes,
                 notifyLeadMinutes: route == nil ? 0 : AgentPlaces.legNotifyLeadMinutes,
                 syncToCalendar: store.calendarSyncDefault, travelSecondsHint: route?.seconds)
@@ -1234,24 +1235,24 @@ final class AgentToolbox {
 
         // The travel rows are the app's own: they count only while the schedule switch and `Travel` are on. Leave from and the mode
         // must hold values, and the entry must have a location (the form needs a lookup field) for the leg to have a destination.
-        var travel: (from: Place, mode: TransportMode, destination: Place)?
+        var travel: (from: Place, choice: TravelChoice, destination: Place)?
         if scheduleOn, taken.flag(AgentPartner.cardTravelKey) == true {
             guard let from = taken.place(AgentPartner.cardFromKey), let modeID = taken.option(AgentPartner.cardModeKey),
-                  let mode = TransportMode(rawValue: modeID), let destination = place else { return partnerEditRejected() }
-            travel = (from, mode, destination)
+                  let choice = TravelChoice(value: modeID), let destination = place else { return partnerEditRejected() }
+            travel = (from, choice, destination)
         }
 
         let flow = ConnectionLog.beginFlow()
         // The one Routes lookup of the leg, before anything is sent: no travel time (offline, a Routes error, no route, a cancelled
         // lookup) ends Confirm here. The service notes its own packet under this flow.
-        var leg: (from: Place, mode: TransportMode, seconds: TimeInterval)?
+        var leg: (from: Place, mode: TransportMode, uber: Bool, seconds: TimeInterval)?
         if let travel {
             let service = directionsProvider?() ?? store.directions
             let estimate = await service.estimate(
-                travel.mode, from: CLLocationCoordinate2D(latitude: travel.from.latitude, longitude: travel.from.longitude),
+                travel.choice.mode, from: CLLocationCoordinate2D(latitude: travel.from.latitude, longitude: travel.from.longitude),
                 to: CLLocationCoordinate2D(latitude: travel.destination.latitude, longitude: travel.destination.longitude), flow: flow)
             guard let seconds = estimate.duration, !Task.isCancelled else { return partnerUnavailable(spec) }
-            leg = (travel.from, travel.mode, seconds)
+            leg = (travel.from, travel.choice.mode, travel.choice == .uber, seconds)
         }
         let answer = await partnerClient().submit(PartnerRequest(requestID: requestID, values: items), to: spec, flow: flow)
         // Cancellation is checked after the answer is known and before anything is written.
@@ -1271,7 +1272,7 @@ final class AgentToolbox {
     /// Acting by kind, from the answer only: a `time` item becomes the entry when the switch was on, a `money` item goes to the
     /// budget as an estimate in the week of the `time` item (this week when there is none), a `text` item stays in the reply.
     private func actOnPartner(_ spec: PartnerSpec, results: [PartnerResultItem], scheduleOn: Bool, skipped: Bool, minutes: Int,
-                              place: Place?, leg: (from: Place, mode: TransportMode, seconds: TimeInterval)?, requestID: String,
+                              place: Place?, leg: (from: Place, mode: TransportMode, uber: Bool, seconds: TimeInterval)?, requestID: String,
                               quantityHint: Int?, flow: UUID) async -> (AgentResolution, AgentCardMark) {
         var start: Date?
         var itemName: String?
@@ -1286,7 +1287,7 @@ final class AgentToolbox {
             let made = await store.addActivityWithTravel(
                 title: AgentPartner.entryTitle(partner: spec.entry.name, item: itemName), location: place, startDate: start,
                 endDate: start.addingTimeInterval(TimeInterval(minutes * 60)), travelFrom: leg?.from, returnTo: nil,
-                outboundMode: leg?.mode ?? .walk, returnMode: .walk, bufferMinutes: 0, notifyLeadMinutes: 0,
+                outboundMode: leg?.mode ?? .walk, returnMode: .walk, outboundUber: leg?.uber ?? false, bufferMinutes: 0, notifyLeadMinutes: 0,
                 syncToCalendar: store.calendarSyncDefault, travelSecondsHint: leg?.seconds, remembers: false)
             entryID = made.activityId
         }

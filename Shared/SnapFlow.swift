@@ -176,7 +176,7 @@ final class SnapFlow: ObservableObject {
     }
 
     /// The travel mode of a place to eat; nil (Cancel, or the dialog dismissed) ends the flow with nothing.
-    func chooseMode(_ mode: TransportMode?) async {
+    func chooseMode(_ mode: TransportMode?, viaUber: Bool = false) async {
         guard let deps, let g = generation, let clue, let place, phase == .awaitingMode else { return }
         guard let mode else {
             self.clue = nil
@@ -197,7 +197,7 @@ final class SnapFlow: ObservableObject {
                                     start: meal.start, end: meal.end)
         let dayEnd = deps.calendar.date(byAdding: .day, value: 1, to: deps.calendar.startOfDay(for: now)) ?? now
         outcome = .plan(text: text, shown: SnapMessage.shownLine(for: clue, calendarAvailable: entries != nil),
-                        context: DayPlanContext(mode: mode, events: events, checkWindowEnd: dayEnd), flow: tap)
+                        context: DayPlanContext(mode: mode, events: events, checkWindowEnd: dayEnd, viaUber: viaUber), flow: tap)
         self.clue = nil
         self.place = nil
         phase = .done
