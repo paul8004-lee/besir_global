@@ -254,14 +254,14 @@ final class Store: ObservableObject {
         var made = 0
         if let from = travelFrom {
             _ = await addLeg(activityId: activity.id, role: .arrival, outerPlace: from,
-                             mode: outboundMode, bufferMinutes: bufferMinutes,
+                             mode: outboundMode, uber: outboundUber, bufferMinutes: bufferMinutes,
                              notifyLeadMinutes: notifyLeadMinutes, notifyEnabled: notifyEnabled,
                              travelSecondsHint: travelSecondsHint)
             made += 1
         }
         if let to = returnTo {
             _ = await addLeg(activityId: activity.id, role: .departure, outerPlace: to,
-                             mode: returnMode, bufferMinutes: 0,
+                             mode: returnMode, uber: returnUber, bufferMinutes: 0,
                              notifyLeadMinutes: notifyLeadMinutes, notifyEnabled: notifyEnabled,
                              travelSecondsHint: travelSecondsHint)
             made += 1
@@ -442,7 +442,8 @@ final class Store: ObservableObject {
             || origAnchor != anchor
             // 폼의 시각 문자열은 초 단위라 왕복에서 밀리초가 잘린다 — 1초 미만 차이는 같은 값이다.
             || abs(origBase.timeIntervalSince(baseDate)) >= 1
-            || e.mode != mode
+            // The travel choice, not the mode alone: Car against Uber is a change of the trip.
+            || TravelChoice(mode: e.mode, viaUber: e.viaUber) != TravelChoice(mode: mode, viaUber: uber)
             || origBuffer != newBuffer
             || e.notifyLeadMinutes != notifyLeadMinutes
             || e.wantsNotification != notifyEnabled
@@ -584,6 +585,7 @@ final class Store: ObservableObject {
                                  destination: role == .departure ? outerPlace : place,
                                  arrivalDate: legAnchor(role: role, activity: activity),
                                  mode: mode,
+                                 uber: uber,
                                  bufferMinutes: bufferMinutes,
                                  notifyLeadMinutes: notifyLeadMinutes,
                                  anchor: role,
@@ -640,6 +642,7 @@ final class Store: ObservableObject {
                               destination: role == .departure ? outer : (activitySide ?? leg.destination),
                               arrivalDate: act.map { legAnchor(role: role, activity: $0) } ?? anchorDate,
                               mode: mode ?? leg.mode,
+                              uber: uber,
                               bufferMinutes: bufferMinutes ?? leg.bufferMinutes,
                               notifyLeadMinutes: notifyLeadMinutes ?? leg.notifyLeadMinutes,
                               anchor: role,
@@ -1238,6 +1241,8 @@ final class Store: ObservableObject {
                                    notifyLeadMinutes: notifyLeadMinutes)
         event.linkedActivityId = linkedActivityId
         event.notifyEnabled = notifyEnabled
+        // The choice is on the record before its estimate: the departure alert body is built while it is applied.
+        event.setTravel(TravelChoice(mode: mode, viaUber: uber))
         // 호출부가 충돌 검사를 위해 이미 이동시간을 조회했다면 그 값을 쓴다(외부 API 중복 호출 방지).
         switch (anchor, travelSecondsHint) {
         case (.arrival, let hint?):
@@ -1297,8 +1302,11 @@ final class Store: ObservableObject {
         let location = confirmedPlace("location_query")
         let from = outboundOn ? confirmedPlace(LegRowKeys.originQuery) : nil
         let to = returnOn ? confirmedPlace(LegRowKeys.returnQuery) : nil
-        let outboundMode = field(LegRowKeys.outboundMode)?.chosen.flatMap(TransportMode.init(rawValue:)) ?? .transit
-        let returnMode = field(LegRowKeys.returnMode)?.chosen.flatMap(TransportMode.init(rawValue:)) ?? .transit
+        // The chips are read through the travel-choice rule: Uber is routed as a car and carries the mark.
+        let outboundChoice = field(LegRowKeys.outboundMode)?.chosen.flatMap(TravelChoice.init(value:)) ?? .standard(.transit)
+        let returnChoice = field(LegRowKeys.returnMode)?.chosen.flatMap(TravelChoice.init(value:)) ?? .standard(.transit)
+        let outboundMode = outboundChoice.mode
+        let returnMode = returnChoice.mode
         // 여유 줄은 가는 편이 켜져 있어야 배열에 있으므로 폴백 0은 다리 없는 저장에만 닿는다.
         let buffer = field(LegRowKeys.bufferMinutes)?.chosen.flatMap { Int($0) } ?? 0
         // 알림 줄이 꺼져서 없으면 문법 값이 기억한 마지막 값을 쓴다(REQ-012).
@@ -1309,6 +1317,7 @@ final class Store: ObservableObject {
         guard let active = form.activeRecurrence else {
             _ = await addActivityWithTravel(title: title, location: location, startDate: start, endDate: end,
                                             travelFrom: from, returnTo: to, outboundMode: outboundMode, returnMode: returnMode,
+                                            outboundUber: outboundChoice == .uber, returnUber: returnChoice == .uber,
                                             bufferMinutes: buffer, notifyLeadMinutes: notifyLead,
                                             notifyEnabled: notifyOn, syncToCalendar: sync)
             return true
@@ -1336,7 +1345,9 @@ final class Store: ObservableObject {
         let legPlan: LegPlan? = (from == nil && to == nil) ? nil
             : LegPlan(outboundFrom: from, returnTo: to, outboundMode: outboundMode, returnMode: returnMode,
                       bufferMinutes: Self.clampBuffer(buffer), notifyLeadMinutes: Self.clampNotifyLead(notifyLead),
-                      notifyEnabled: notifyOn)
+                      notifyEnabled: notifyOn,
+                      outboundUber: outboundChoice == .uber ? true : nil,
+                      returnUber: returnChoice == .uber ? true : nil)
         let made = RepeatSeries(id: RepeatSeries.newID(), title: title, location: location, rule: rule,
                                 lunarCalendar: lunar, firstDayKey: Self.dayKey(startDay, calendar: cal),
                                 lastDayKey: active.endDate.map { Self.dayKey($0, calendar: cal) },
@@ -1372,6 +1383,8 @@ final class Store: ObservableObject {
         let origin: Place
         let destination: Place
         let mode: TransportMode
+        /// The leg is made by Uber (a car leg with the mark).
+        let uber: Bool
     }
 
     private struct LegFillAttempt {
@@ -1422,9 +1435,13 @@ final class Store: ObservableObject {
 
     private func legFillRoute(_ plan: LegPlan, place: Place, role: ScheduleAnchor) -> LegFillRoute? {
         if role == .arrival {
-            return plan.outboundFrom.map { LegFillRoute(origin: $0, destination: place, mode: plan.outboundMode) }
+            return plan.outboundFrom.map {
+                LegFillRoute(origin: $0, destination: place, mode: plan.outboundMode, uber: plan.outboundUber == true)
+            }
         }
-        return plan.returnTo.map { LegFillRoute(origin: place, destination: $0, mode: plan.returnMode) }
+        return plan.returnTo.map {
+            LegFillRoute(origin: place, destination: $0, mode: plan.returnMode, uber: plan.returnUber == true)
+        }
     }
 
     /// The days to fill for one series at `now`: `key >= today`, `key <= today + legWindowDays`, `key` above the series'
@@ -1665,6 +1682,8 @@ final class Store: ObservableObject {
         event.recurrenceId = work.series.id
         event.linkedActivityId = occurrence.id
         event.notifyEnabled = work.plan.notifyEnabled
+        // Both roles get the plan's choice before any estimate.
+        event.setTravel(TravelChoice(mode: route.mode, viaUber: route.uber))
         if outbound {
             event.anchor = .arrival
             if let seconds {
@@ -1779,6 +1798,8 @@ final class Store: ObservableObject {
                                      notifyLeadMinutes: notifyLeadMinutes)
             leg.linkedActivityId = occurrence.id
             leg.notifyEnabled = notifyEnabled
+            // The choice is on the leg before its estimate.
+            leg.setTravel(TravelChoice(mode: mode, viaUber: uber))
             // 같은 저장에서 편집 회차가 빠지면(회차를 바꿨거나 "이 일정만"을 골랐을 때) 그 회차의
             // 이동은 번호 없이 만든다(REQ-016 끝 문장).
             if tid == editedActivityId && editedDetaches {
@@ -1823,8 +1844,8 @@ final class Store: ObservableObject {
         // 직접 써 activities·events 저장을 각 한 번으로 유지한다(REQ-005).
         var detachedActivity = false
         // A computed series keeps the role in its leg plan, so later fills carry it.
-        recordLegRole(role, inSeries: seriesId, outerPlace: outerPlace, mode: mode, bufferMinutes: bufferMinutes,
-                      notifyLeadMinutes: notifyLeadMinutes, notifyEnabled: notifyEnabled)
+        recordLegRole(role, inSeries: seriesId, outerPlace: outerPlace, mode: mode, uber: uber,
+                      bufferMinutes: bufferMinutes, notifyLeadMinutes: notifyLeadMinutes, notifyEnabled: notifyEnabled)
         if editedDetaches {
             // A computed edited occurrence becomes a stored copy (and saves itself); a stored one is cleared as before.
             if materialize(editedActivityId) == nil {
@@ -1843,19 +1864,24 @@ final class Store: ObservableObject {
     /// make the same legs again. A mark that exists is left alone: raising it would hide the days between the old mark
     /// and the window end from the old role, which no fill has made yet.
     private func recordLegRole(_ role: ScheduleAnchor, inSeries seriesID: UUID, outerPlace: Place, mode: TransportMode,
+                               uber: Bool = false,
                                bufferMinutes: Int, notifyLeadMinutes: Int, notifyEnabled: Bool) {
         guard let index = series.firstIndex(where: { $0.id == seriesID }) else { return }
         var updated = series[index]
         var plan = updated.legPlan ?? LegPlan(outboundFrom: nil, returnTo: nil, outboundMode: mode, returnMode: mode,
                                               bufferMinutes: role == .arrival ? bufferMinutes : 0,
                                               notifyLeadMinutes: notifyLeadMinutes, notifyEnabled: notifyEnabled)
+        // The plan keeps the Uber mark of the role as the legs carry it: true for Uber, absent otherwise.
+        let mark: Bool? = TravelChoice(mode: mode, viaUber: uber) == .uber ? true : nil
         if role == .arrival {
             plan.outboundFrom = outerPlace
             plan.outboundMode = mode
+            plan.outboundUber = mark
             plan.bufferMinutes = bufferMinutes
         } else {
             plan.returnTo = outerPlace
             plan.returnMode = mode
+            plan.returnUber = mark
         }
         updated.legPlan = plan
         if updated.legsFilledThroughDayKey == nil {
@@ -1959,7 +1985,8 @@ final class Store: ObservableObject {
         for id in ids {
             guard let idx = events.firstIndex(where: { $0.id == id }) else { continue }
             var event = events[idx]
-            if let mode { event.mode = mode }
+            // A series mode is a choice other than Uber, so it removes a mark; no mode keeps it.
+            if let mode { event.setTravel(.standard(mode)) }
             // 출발 기준(귀가 등) 구간은 버퍼 개념이 없다 — 항상 0으로 강제. 음수 버퍼는 매 회차
             // 늦게 출발하게 만들므로, clampBuffer의 상하한으로 묶는다.
             if let bufferMinutes { event.bufferMinutes = (event.anchor == .departure) ? 0 : Self.clampBuffer(bufferMinutes) }
@@ -2017,7 +2044,9 @@ final class Store: ObservableObject {
         event.origin = origin
         event.destination = destination
         event.arrivalDate = arrivalDate
-        event.mode = mode
+        // The choice is on the record before its estimate (the alert body is built there). An omitted `uber` keeps the
+        // record's Uber choice while the trip stays a car trip; `false` or another mode removes the mark.
+        event.setTravel(TravelChoice(mode: mode, viaUber: uber ?? (event.travelChoice == .uber)))
         event.bufferMinutes = anchor == .departure ? 0 : bufferMinutes
         event.notifyLeadMinutes = notifyLeadMinutes
         if let notifyEnabled { event.notifyEnabled = notifyEnabled }

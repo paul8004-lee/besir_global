@@ -553,6 +553,7 @@ struct ActivityDetailView: View {
                         continue
                     case .update(let legId, _, let outer, let mode, let buffer, let lead, let enabled):
                         outcome = await store.updateLeg(legId: legId, outerPlace: outer, mode: mode?.mode,
+                                                             uber: mode.map { $0 == .uber },
                                                              bufferMinutes: buffer,
                                                              notifyLeadMinutes: lead,
                                                              notifyEnabled: enabled)
@@ -565,7 +566,8 @@ struct ActivityDetailView: View {
                             let counts = await store.addLegToSeries(editedActivityId: a.id,
                                                                     seriesId: ask.preview.seriesId,
                                                                     role: role, outerPlace: outer,
-                                                                    mode: mode.mode, bufferMinutes: buffer,
+                                                                    mode: mode.mode, uber: mode == .uber,
+                                                                    bufferMinutes: buffer,
                                                                     notifyLeadMinutes: lead,
                                                                     notifyEnabled: enabled,
                                                                     targetActivityIds: ask.preview.eligibleIds,
@@ -574,7 +576,8 @@ struct ActivityDetailView: View {
                             continue
                         }
                         outcome = await store.addLeg(activityId: a.id, role: role, outerPlace: outer,
-                                                          mode: mode.mode, bufferMinutes: buffer,
+                                                          mode: mode.mode, uber: mode == .uber,
+                                                          bufferMinutes: buffer,
                                                           notifyLeadMinutes: lead, notifyEnabled: enabled)
                     }
                     switch outcome {

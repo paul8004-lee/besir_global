@@ -454,8 +454,8 @@ private struct MealScheduleSheet: View {
     @State private var destination: Place?
     @State private var addOutbound = true
     @State private var addReturn = true
-    @State private var outboundMode: TransportMode = .walk
-    @State private var returnMode: TransportMode = .walk
+    @State private var outboundChoice: TravelChoice = .standard(.walk)
+    @State private var returnChoice: TravelChoice = .standard(.walk)
     @State private var saving = false
     @State private var loadedSuggestion = false
     /// 사용자가 출발지·도착지를 직접 건드렸으면 시각을 바꿔도 제안으로 되돌리지 않는다.
@@ -488,8 +488,8 @@ private struct MealScheduleSheet: View {
                         // 제안값을 그대로 쓰는 경우가 대부분이지만, 바꿀 수 있어야 한다
                         // (제안은 앞뒤 일정에서 추정한 것이라 늘 맞지는 않는다).
                         PlaceField(title: "Origin", systemImage: "figure.walk.departure", place: $origin)
-                        Picker("Travel Mode", selection: $outboundMode) {
-                            ForEach(TransportMode.allCases) { m in Text(m.title).tag(m) }
+                        Picker("Travel Mode", selection: $outboundChoice) {
+                            ForEach(TravelChoice.all, id: \.self) { c in Text(c.title).tag(c) }
                         }
                         .pickerStyle(.segmented)
                     }
@@ -498,8 +498,8 @@ private struct MealScheduleSheet: View {
                     Toggle("Add Return Travel", isOn: $addReturn)
                     if addReturn {
                         PlaceField(title: "Destination", systemImage: "house", place: $destination)
-                        Picker("Travel Mode", selection: $returnMode) {
-                            ForEach(TransportMode.allCases) { m in Text(m.title).tag(m) }
+                        Picker("Travel Mode", selection: $returnChoice) {
+                            ForEach(TravelChoice.all, id: \.self) { c in Text(c.title).tag(c) }
                         }
                         .pickerStyle(.segmented)
                     }
@@ -582,8 +582,10 @@ private struct MealScheduleSheet: View {
             endDate: end,
             travelFrom: addOutbound ? origin : nil,
             returnTo: addReturn ? destination : nil,
-            outboundMode: outboundMode,
-            returnMode: returnMode,
+            outboundMode: outboundChoice.mode,
+            returnMode: returnChoice.mode,
+            outboundUber: outboundChoice == .uber,
+            returnUber: returnChoice == .uber,
             bufferMinutes: 5,
             notifyLeadMinutes: 20,
             syncToCalendar: store.calendarSyncDefault)   // 함수 기본값 true면 설정을 끈 사용자도 미러에 올라간다
