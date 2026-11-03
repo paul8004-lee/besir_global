@@ -27,7 +27,7 @@ private let bigRaw = [
 
 /// The three entries of BIG that are not raw lines (2026-10-22 is a Thursday).
 private let bigNotRaw = [
-    "- count | 2026-09-01..2026-09-30 | activity | mode=walk | - | 9 of 9",
+    "- count | 2026-09-01..2026-09-30 | activity | mode=walk | 9 of 9",
     "# a heading line",
     "- 2026-10-22 | Wed | 7:00 AM | activity | Example Gym | mode=walk",
 ]
@@ -239,7 +239,7 @@ final class MemoryCountsTests: XCTestCase {
     func testMSUM_C08_OnlyRawLinesAreCounted() {
         let l1 = "- 2026-10-20 | Tue | 7:00 AM | zz_raw | - | x=a"
         let r1 = "- 2026-10-21 | Tue | 7:00 AM | zz_raw | - | x=a"
-        let r2 = "- count | 2026-10-01..2026-10-20 | zz_raw | x=a | - | 9 of 9"
+        let r2 = "- count | 2026-10-01..2026-10-20 | zz_raw | x=a | 9 of 9"
         let r3 = "## x=a"
         let l2 = "- 2026-10-23 | Fri | 7:00 AM | zz_raw | - | x=a"
         assertRaw([l1, l2])

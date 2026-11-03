@@ -29,6 +29,23 @@ As an MVP, besir starts with one everyday scenario — an event you came across,
 | besir ↔ a budget app (this week's dining budget left, a spend, a booking's estimated spend) | round trip | built with a simulated partner app clearly labeled *Simulated*; no real budget app yet |
 | besir → health apps | out | roadmap |
 
+## Open weight: Muse Spark Open on Baseten
+
+For images, the work is split between two models. Muse Spark Open (`meta-models/muse-spark-open-1026`, served on Baseten) reads one image per request into fixed fields. Muse Spark, the planner, never receives the image.
+
+- **Shared screenshots and photos** go to the Worker's `/vision` route, which returns `title`, `time`, `place` and `confidence` (0 to 1). The prompt asks for null when a field is not visible, and for `time` as written, not converted. Plan my day reads its shared images through the same route, up to five per tap and three at a time. The planner gets these fields.
+- **Camera photos** go to the Worker's `/snap` route, which returns `kind`, `name`, `place_type`, `text`, `title`, `time` and `confidence`; `kind` is one of `event_poster`, `food_place`, `other_place` or `unknown`. Only a poster hands its fields to the planner (title, time and venue name). For a food place or other place, the app makes one nearby Google Places search when the phone has a location fix, with the sign name, or else the place type plus any short sign text; with neither, there is no search. No result ends with a fixed line; with several, the user picks one of up to three. The planner gets that place (name, address and `place_id`), not the sign text.
+
+Why fields and not the image:
+
+- **They feed the confirm card.** The planner turns what it gets, the fields or the found place, into a card, and nothing is added to the schedule until the user taps Confirm.
+- **The fields can be checked.** An image shared on its own with confidence under 0.5 or no time, or a poster with no time (at 0.5 or more), adds a line telling the planner to ask the user to confirm the values first. A camera reading of kind `unknown` or under 0.5, a poster included, ends with a fixed line and no planner call. The Worker and the app both refuse a reading of the wrong shape, and the Worker cuts each text to 200 code points.
+- **Text in a picture is passed on as data.** The Worker prompt tells the model to ignore any instruction inside the image, and the app hands the values to the planner as JSON values after a sentence that calls them data, not instructions.
+- **The prompt and the field list are fixed in the Worker.** The app's request body carries only the image and its type.
+- **The Baseten key is a Worker secret.** It is not in the app.
+
+Both Worker prompts tell the model never to identify, describe or infer anything about people or faces.
+
 ## Pre-existing code (before the hackathon kickoff — Oct 26, 2026, 12:00 PM ET)
 
 Everything in the baseline commit was written before the hackathon. It is tagged
@@ -149,6 +166,8 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **Be rich sir stats tabs** — the be rich sir screen now has four tabs (This week, Where, Trends, Entries) built from the budget ledger on the device; a new ledger entry stores its day, and a partner estimate also stores the partner name and the kind the partner announced — [#124](https://github.com/paul8004-lee/besir_global/pull/124)
 - **besir memory, part 3: your own rules** — a Rules tab in Settings lists, adds and deletes your standing rules, and the chat can offer a Save rule card from your own words (for example "I always take public transit"); a rule is saved only when you tap Confirm or Add, and each saved rule is sent with every chat request under the rules from `besir.md`, so the AI follows it while the Confirm card still comes before anything is added — [#125](https://github.com/paul8004-lee/besir_global/pull/125)
 - **Lobby rows: placeholder lines and equal heights** — an empty be on-time sir or be full sir row now says `No plans today` or `No orders today`, be full sir shows at most its two earliest partner lines, and the three rows keep the same height because each reserves room for its name plus three key lines (a line that is wider than the row wraps and is never cut off); key lines are drawn in the regular weight and the row's colour — [#128](https://github.com/paul8004-lee/besir_global/pull/128)
+- **besir memory, part 4: the memory file compacts itself** — when a save brings the memory file past 60 saved choices, every choice but the newest 30 folds into count lines (for example "you chose car 3 of 3 times"); each chat request counts those count lines together with the saved choices, so a folded choice keeps its weight, a count line leaves the file once its last date is older than the 42-day window, and the file stays within 100 lines; no Settings screen changed, and the count lines show in its Memory list like any other line — [#130](https://github.com/paul8004-lee/besir_global/pull/130)
+- **README section on the open-weight image reader** — the README now says that Muse Spark Open on Baseten reads shared and camera images into fixed fields, and that the planner gets those fields and not the image — [#131](https://github.com/paul8004-lee/besir_global/pull/131)
 
 Some baseline files are edited in place, only for two reasons: the English localization of the app UI, and the split of the app and App Group identifiers from the earlier app. Both are listed as lines above when they land. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
