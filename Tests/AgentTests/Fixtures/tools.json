@@ -124,7 +124,7 @@
         },
         "mode": {
           "type": "string",
-          "description": "How the user travels: car, transit, walk or bicycle. The user chooses; ask them if they have not said."
+          "description": "How the user travels: car, transit, walk or bicycle. The user chooses; ask them if they have not said. Use uber only when the user has named Uber themselves."
         },
         "origin_place_id": {
           "type": "string",
