@@ -210,9 +210,11 @@ struct MemoryBook {
 
     /// Appends one raw line. Past 200 raw lines the first-written raw lines (topmost in the file, whatever their dates) are
     /// dropped; other item lines (count lines) are neither counted nor dropped, and nothing is merged.
-    func appending(_ line: MemoryLine) -> [String]? {
+    /// Given a compaction, the item lines are compacted once the line is added, before that cap applies.
+    func appending(_ line: MemoryLine, compaction: MemoryCompaction? = nil) -> [String]? {
         guard var items = read() else { return nil }
         items.append(line.text)
+        if let compaction { items = compaction.compact(items) }
         var rawCount = items.filter { MemoryLine(text: $0) != nil }.count
         while rawCount > MemoryLine.maxRawLines, let first = items.firstIndex(where: { MemoryLine(text: $0) != nil }) {
             items.remove(at: first)

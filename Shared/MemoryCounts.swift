@@ -16,7 +16,7 @@ struct MemoryCountLine: Equatable {
     }
 }
 
-// @MX:NOTE: [AUTO] One generic rule over the fields of the raw memory lines: no list of kinds, keys or partners, and every line is read through MemoryLine(text:). The window (42 calendar days in the request's zone), the thresholds (leader 2, slice 3) and the limits (16 lines, 1600 code points) are the named constants below.
+// @MX:NOTE: [AUTO] One generic rule over the fields of the raw memory lines: no list of kinds, keys or partners, and every raw line is read through MemoryLine(text:). The count lines MemoryCountLine(text:) accepts are read too (SPEC-MEMORY-004). The window (42 calendar days in the request's zone), the thresholds (leader 2, slice 3) and the limits (16 lines, 1600 code points) are the named constants below.
 /// The counts the app makes from the raw lines of `memory.md` for the chat request.
 enum MemoryCounts {
     static let windowDays = 42
@@ -51,12 +51,9 @@ enum MemoryCounts {
         }
     }
 
-    /// Every count line the raw lines dated on or after today minus 42 calendar days support (today and the window start taken
-    /// in `timeZone`, with no upper bound). For each kind and each subject key (the place, and each field not named `place`):
-    /// an overall line when the leader was chosen at least twice, and a slice line for each context fact (weekday, part of the
-    /// day, place) of another name whose slice holds at least three lines, whose leader was chosen at least twice and differs
-    /// from the overall leader. A line's dates are the first and last date of its leader's lines in its group.
-    static func candidates(from lines: [String], now: Date, timeZone: TimeZone) -> [MemoryCountLine] {
+    /// Today and the first day of the window as `yyyy-MM-dd` texts, both taken in `timeZone`: the window is the last 42 calendar
+    /// days, with no upper bound.
+    static func window(now: Date, timeZone: TimeZone) -> (today: String, start: String) {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timeZone
         let formatter = DateFormatter()
@@ -64,29 +61,50 @@ enum MemoryCounts {
         formatter.calendar = calendar
         formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd"
-        guard let startDay = calendar.date(byAdding: .day, value: -windowDays, to: calendar.startOfDay(for: now)) else { return [] }
-        let start = formatter.string(from: startDay)
+        let today = formatter.string(from: now)
+        guard let startDay = calendar.date(byAdding: .day, value: -windowDays, to: calendar.startOfDay(for: now)) else {
+            return (today, today)
+        }
+        return (today, formatter.string(from: startDay))
+    }
+
+    /// Every count line the raw lines dated on or after today minus 42 calendar days support (today and the window start taken
+    /// in `timeZone`, with no upper bound), together with the count lines of the file whose last date is on or after the window
+    /// start, whatever their first date, at most the first 40 of them in file order (SPEC-MEMORY-004). For each kind and each
+    /// subject key (the place, and each field not named `place`): an overall line when the leader was chosen at least twice, and
+    /// a slice line for each context fact (weekday, part of the day, place) of another name whose slice holds at least three
+    /// lines, whose leader was chosen at least twice and differs from the overall leader. A value's count is its raw lines plus
+    /// the `n` of the file's count lines of the same identity (kind, key, context), and the total is the raw lines' number plus
+    /// their totals. A line's dates are the first and last date of its leader's raw lines and of its leader's count lines.
+    // @MX:ANCHOR fan_in 2 - the summary sent with the chat request and the fold of MemoryCompaction both call it.
+    // @MX:REASON: changing a rule here changes both what is sent and what is written to the file.
+    static func candidates(from lines: [String], now: Date, timeZone: TimeZone) -> [MemoryCountLine] {
+        let start = window(now: now, timeZone: timeZone).start
 
         let counted = lines.compactMap(MemoryLine.init(text:)).filter { $0.date >= start }.map(Counted.init)
+        let files = Array(lines.compactMap(MemoryCountLine.init(text:)).filter { $0.to >= start }.prefix(MemoryCompaction.maxCounts))
         var result: [MemoryCountLine] = []
-        for kind in firstAppearances(counted.map(\.line.kind)) {
+        for kind in firstAppearances(counted.map(\.line.kind) + files.map(\.kind)) {
             let ofKind = counted.filter { $0.line.kind == kind }
-            for key in firstAppearances(ofKind.flatMap { $0.subjects.map(\.key) }) {
+            let filesOfKind = files.filter { $0.kind == kind }
+            for key in firstAppearances(ofKind.flatMap { $0.subjects.map(\.key) } + filesOfKind.map(\.field.key)) {
                 let group = ofKind.compactMap { entry in entry.value(for: key).map { (value: $0, entry: entry) } }
-                guard let overall = leader(of: group) else { continue }
-                if overall.n >= leaderMinimum {
+                let filesOfKey = filesOfKind.filter { $0.field.key == key }
+                let overall = leader(of: group, plus: filesOfKey.filter { $0.context == nil })
+                if let overall, overall.n >= leaderMinimum {
                     result.append(MemoryCountLine(from: overall.from, to: overall.to, kind: kind,
                                                   field: MemoryField(key: key, value: overall.value), context: nil,
-                                                  n: overall.n, total: group.count))
+                                                  n: overall.n, total: overall.total))
                 }
-                let contexts = firstAppearances(group.flatMap { $0.entry.contexts }.filter { $0.key != key })
+                let contexts = firstAppearances(group.flatMap { $0.entry.contexts }.filter { $0.key != key }
+                                                + filesOfKey.compactMap(\.context))
                 for context in contexts {
                     let slice = group.filter { $0.entry.contexts.contains(context) }
-                    guard slice.count >= sliceMinimum, let top = leader(of: slice),
-                          top.n >= leaderMinimum, top.value != overall.value else { continue }
+                    guard let top = leader(of: slice, plus: filesOfKey.filter { $0.context == context }),
+                          top.total >= sliceMinimum, top.n >= leaderMinimum, top.value != overall?.value else { continue }
                     result.append(MemoryCountLine(from: top.from, to: top.to, kind: kind,
                                                   field: MemoryField(key: key, value: top.value), context: context,
-                                                  n: top.n, total: slice.count))
+                                                  n: top.n, total: top.total))
                 }
             }
         }
@@ -97,13 +115,7 @@ enum MemoryCounts {
     /// order; taken in that order until the first line that would make more than 16 lines or more than 1600 code points, each
     /// line counted with one line feed.
     static func select(_ candidates: [MemoryCountLine]) -> [MemoryCountLine] {
-        let ordered = candidates.sorted { a, b in
-            let left = a.n * a.n * b.total
-            let right = b.n * b.n * a.total
-            if left != right { return left > right }
-            if a.to != b.to { return a.to > b.to }
-            return a.text.unicodeScalars.lexicographicallyPrecedes(b.text.unicodeScalars)
-        }
+        let ordered = ranked(candidates)
         var taken: [MemoryCountLine] = []
         var used = 0
         for line in ordered {
@@ -113,6 +125,18 @@ enum MemoryCounts {
             used += size
         }
         return taken
+    }
+
+    /// The count lines by strength n*n/N (compared by cross-multiplication), then the later `to` date, then the text in code-point
+    /// order: the order `select` takes them in, with no limit.
+    static func ranked(_ candidates: [MemoryCountLine]) -> [MemoryCountLine] {
+        candidates.sorted { a, b in
+            let left = a.n * a.n * b.total
+            let right = b.n * b.n * a.total
+            if left != right { return left > right }
+            if a.to != b.to { return a.to > b.to }
+            return a.text.unicodeScalars.lexicographicallyPrecedes(b.text.unicodeScalars)
+        }
     }
 
     /// The texts of the selected count lines of `lines` at `now` in `timeZone`.
@@ -141,17 +165,21 @@ enum MemoryCounts {
         }
     }
 
-    /// The value chosen most often (a tie goes to the value first in code-point order), how often, and the first and last date
-    /// of its lines; nil for an empty group.
-    private static func leader(of group: [(value: String, entry: Counted)]) -> (value: String, n: Int, from: String, to: String)? {
+    /// The value chosen most often (a tie goes to the value first in code-point order), how often, the total of the group, and the
+    /// first and last date of its lines; nil for an empty group. The count lines of the same identity add their `n` to their
+    /// value and their total to the group's total, and their dates to the leader's.
+    private static func leader(of group: [(value: String, entry: Counted)], plus files: [MemoryCountLine] = [])
+        -> (value: String, n: Int, total: Int, from: String, to: String)? {
         var counts: [String: Int] = [:]
         for item in group { counts[item.value, default: 0] += 1 }
+        for file in files { counts[file.field.value, default: 0] += file.n }
         guard let best = counts.max(by: { a, b in
             a.value != b.value ? a.value < b.value : b.key.unicodeScalars.lexicographicallyPrecedes(a.key.unicodeScalars)
         }) else { return nil }
         let dates = group.filter { $0.value == best.key }.map(\.entry.line.date)
+            + files.filter { $0.field.value == best.key }.flatMap { [$0.from, $0.to] }
         guard let from = dates.min(), let to = dates.max() else { return nil }
-        return (best.key, best.value, from, to)
+        return (best.key, best.value, group.count + files.reduce(0) { $0 + $1.total }, from, to)
     }
 
     /// The distinct elements in the order they first appear.
