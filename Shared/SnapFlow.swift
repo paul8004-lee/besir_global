@@ -188,8 +188,10 @@ final class SnapFlow: ObservableObject {
         let entries = await PlanMyDay.todaysEntries(from: deps.mirror, now: deps.now(), calendar: deps.calendar)
         guard generation == g else { return }
         let now = deps.now()
-        guard let meal = SnapPlan.suggestedMeal(now: now, calendar: deps.calendar) else { phase = .line(SnapLine.noTime); return }
         let today = PlanMyDay.events(activities: deps.activities(), entries: entries ?? [], now: now, calendar: deps.calendar)
+        guard let suggested = SnapPlan.suggestedMeal(now: now, calendar: deps.calendar),
+              let meal = SnapPlan.fitMeal(start: suggested.start, end: suggested.end, events: today.events)
+        else { phase = .line(SnapLine.noTime); return }
         let events = deps.prepare(today.events)
         // The chosen place is registered last, so it is the newest entry of the registry.
         guard let handle = deps.register(place) else { phase = .line(SnapLine.assistantBusy); return }

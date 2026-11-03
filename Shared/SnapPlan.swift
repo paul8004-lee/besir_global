@@ -51,7 +51,8 @@ enum SnapPlan {
     static let mealMinutes = 45
     static let markMinutes = 5
     static let leadMinutes = 10
-    /// The shortest meal the message allows. It is the message's rule, not the app's: the day-plan tools take any stop.
+    /// The shortest meal. The message asks the model never to go below it, and the app also uses it to decide whether a snapped
+    /// meal fits the free time (`fitMeal`); the day-plan tools themselves take any stop.
     static let mealFloorMinutes = 20
 
     /// The one existing sanitizer, then every run of whitespace collapsed to one space, then trimmed; empty is nil.
@@ -98,6 +99,17 @@ enum SnapPlan {
               calendar.isDate(start, inSameDayAs: now),
               let end = calendar.date(byAdding: .minute, value: mealMinutes, to: start) else { return nil }
         return (start, end)
+    }
+
+    /// The suggested meal fitted to the day's events. Nil (no time for a meal) when an event is under way at `start`, that is it
+    /// began at or before `start` and has not ended (one ending exactly at `start` does not block), or when the next event that
+    /// starts after `start` is less than `mealFloorMinutes` away. Otherwise the meal runs from `start` to the earlier of `end` and
+    /// that next start; with no later event the end stays `end`.
+    static func fitMeal(start: Date, end: Date, events: [PlanMyDay.Event]) -> (start: Date, end: Date)? {
+        if events.contains(where: { $0.start <= start && start < $0.end }) { return nil }
+        guard let next = events.map(\.start).filter({ $0 > start }).min() else { return (start, end) }
+        guard next.timeIntervalSince(start) >= Double(mealFloorMinutes * 60) else { return nil }
+        return (start, min(end, next))
     }
 }
 

@@ -226,4 +226,42 @@ final class SnapPlanTests: XCTestCase {
         XCTAssertEqual(shortest, 541, "never less than 9 minutes 1 second ahead")
         XCTAssertEqual(longest, 840, "never more than 14 minutes ahead")
     }
+
+    // MARK: SPEC-SNAPREWALK-001
+
+    func testSNAPREWALK_T05_fitMealRows() {
+        func event(_ start: String, _ end: String) -> PlanMyDay.Event {
+            PlanMyDay.Event(handle: "e1", title: "Event", start: TestClock.date("2026-10-27T" + start),
+                            end: TestClock.date("2026-10-27T" + end), locationText: nil, place: nil, placeHandle: nil, source: .besir)
+        }
+        let start = TestClock.date("2026-10-27T12:15")
+        let end = TestClock.date("2026-10-27T13:00")
+        // Each row: the events, then the fitted end (nil: no time for a meal). The start never moves.
+        let rows: [(String, [PlanMyDay.Event], String?)] = [
+            ("an event covering S", [event("12:00", "13:30")], nil),
+            ("an event starting at S", [event("12:15", "13:00")], nil),
+            ("an event ending at S does not block", [event("11:30", "12:15")], "2026-10-27T13:00"),
+            ("19 minutes to the next event", [event("12:34", "13:30")], nil),
+            ("20 minutes to the next event", [event("12:35", "13:30")], "2026-10-27T12:35"),
+            ("30 minutes: cut", [event("12:45", "13:45")], "2026-10-27T12:45"),
+            ("45 minutes: no cut", [event("13:00", "14:00")], "2026-10-27T13:00"),
+            ("60 minutes: no cut", [event("13:15", "14:15")], "2026-10-27T13:00"),
+            ("no events", [], "2026-10-27T13:00"),
+            ("later events out of order", [event("14:00", "15:00"), event("12:40", "13:00"), event("13:30", "14:00")], "2026-10-27T12:40"),
+            ("only earlier events", [event("09:00", "10:00")], "2026-10-27T13:00")
+        ]
+        for (name, events, fittedEnd) in rows {
+            let meal = SnapPlan.fitMeal(start: start, end: end, events: events)
+            if let fittedEnd {
+                XCTAssertEqual(meal.map { TestClock.local($0.start) }, "2026-10-27T12:15", name)
+                XCTAssertEqual(meal.map { TestClock.local($0.end) }, fittedEnd, name)
+            } else {
+                XCTAssertNil(meal, name)
+            }
+        }
+        // The late end of the day: no event, the end stays after midnight (T26).
+        let late = SnapPlan.fitMeal(start: TestClock.date("2026-10-27T23:55"), end: TestClock.date("2026-10-28T00:40"), events: [])
+        XCTAssertEqual(late.map { TestClock.local($0.start) }, "2026-10-27T23:55")
+        XCTAssertEqual(late.map { TestClock.local($0.end) }, "2026-10-28T00:40")
+    }
 }
