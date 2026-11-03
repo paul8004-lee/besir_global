@@ -62,7 +62,7 @@ enum SnapMessage {
             "Current local date and time: \(local.string(from: now)) (\(weekday.string(from: now))), time zone \(zone.identifier).",
             "I will travel by \(mode.rawValue). Do not ask me how I travel.",
             "I am at the place below now. Add exactly one new stop there for a meal, starting at the suggested start and ending at the "
-                + "suggested end, which is \(SnapPlan.mealMinutes) minutes later.",
+                + "suggested end, which is \(Int(end.timeIntervalSince(start) / 60)) minutes later.",
             "The place already has a place_id. Do not search for it.",
             "Events with an id are already in my schedule or calendar. They stay as they are and the app compares your plan with all of them. "
                 + "Refer to an event by id only to give it a place: if the next event has a location and no place_id, call search_places "

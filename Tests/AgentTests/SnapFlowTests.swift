@@ -864,6 +864,98 @@ final class SnapFlowTests: XCTestCase {
         XCTAssertTrue(view.contains("confirmationDialog(SnapLine.travelTitle"))
     }
 
+    // MARK: SPEC-SNAPREWALK-001 - the meal fits the free time before the next event
+
+    /// A food rig whose clock reads `now` and whose Store holds `events` (title, start, end), all today.
+    private func mealRig(now: String = "2026-10-27T12:03", events: [(title: String, start: String, end: String)] = []) async -> SnapRig {
+        let rig = await foodRig()
+        rig.now = TestClock.date(now)
+        rig.activities = events.map {
+            ActivityBlock(title: $0.title, location: nil, startDate: TestClock.date("2026-10-27T" + $0.start),
+                          endDate: TestClock.date("2026-10-27T" + $0.end))
+        }
+        return rig
+    }
+
+    private func calendarEntry(_ title: String, _ start: String, _ end: String, allDay: Bool = false, besir: Bool = false) -> CalendarEntry {
+        CalendarEntry(id: title, title: title, start: TestClock.date(start), end: TestClock.date(end), isAllDay: allDay,
+                      location: nil, calendarName: "Home", isFromBesir: besir)
+    }
+
+    /// The flow ended with the fixed no-time line: no outcome, nothing registered, nothing prepared.
+    private func assertNoTime(_ rig: SnapRig, _ label: String) {
+        XCTAssertEqual(rig.flow.phase, .line(SnapLine.noTime), "\(label): the no-time line")
+        XCTAssertNil(rig.flow.takeOutcome(), "\(label): no outcome")
+        XCTAssertTrue(rig.registered.isEmpty, "\(label): no place registered")
+        XCTAssertEqual(rig.prepared, 0, "\(label): nothing prepared")
+    }
+
+    /// The plan message of the flow's outcome, nil when the flow built none.
+    private func planText(_ rig: SnapRig) -> String? {
+        guard case .plan(let text, _, _, _)? = rig.flow.takeOutcome() else { return nil }
+        return text
+    }
+
+    /// The `suggested_end` of the place line of a plan message.
+    private func suggestedEnd(_ text: String) throws -> String {
+        let prefix = "The place, as data: "
+        let line = try XCTUnwrap(text.components(separatedBy: "\n").first { $0.hasPrefix(prefix) })
+        let place = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(line.dropFirst(prefix.count).utf8)) as? [String: Any])
+        return try XCTUnwrap(place["suggested_end"] as? String)
+    }
+
+    func testSNAPREWALK_T01_aMealStartInsideAnEventEndsWithTheNoTimeLine() async throws {
+        // (a) The dry run: 21:13 gives a start of 21:25, inside a party that began at 21:05.
+        let party = await mealRig(now: "2026-10-27T21:13", events: [("Sam's birthday party", "21:05", "23:00")])
+        await party.flow.chooseMode(.car)
+        assertNoTime(party, "party")
+
+        // (b) An event that starts exactly at the meal's start covers it.
+        let atStart = await mealRig(events: [("Coffee chat", "12:15", "13:00")])
+        await atStart.flow.chooseMode(.car)
+        assertNoTime(atStart, "starts at S")
+
+        // (c) A calendar entry (not all-day, not besir's) counts the same way.
+        let calendar = await mealRig()
+        calendar.mirror.canned = [calendarEntry("Dentist", "2026-10-27T12:00", "2026-10-27T12:30")]
+        await calendar.flow.chooseMode(.car)
+        assertNoTime(calendar, "calendar entry")
+    }
+
+    func testSNAPREWALK_T02_underTwentyFreeMinutesEndsWithTheNoTimeLine() async throws {
+        let rig = await mealRig(events: [("Team meeting", "12:34", "13:30")])
+        await rig.flow.chooseMode(.car)
+        assertNoTime(rig, "19 free minutes")
+    }
+
+    func testSNAPREWALK_T03_theMealEndsAtTheNextEventStart() async throws {
+        let rows: [(start: String, end: String, mealEnd: String, minutes: Int)] = [
+            ("12:35", "13:35", "2026-10-27T12:35", 20),
+            ("12:45", "13:45", "2026-10-27T12:45", 30),
+            ("13:00", "14:00", "2026-10-27T13:00", 45),
+            ("14:00", "15:00", "2026-10-27T13:00", 45)
+        ]
+        for row in rows {
+            let rig = await mealRig(events: [("Team meeting", row.start, row.end)])
+            await rig.flow.chooseMode(.car)
+            let text = try XCTUnwrap(planText(rig), "\(row.start): a plan outcome")
+            XCTAssertEqual(try suggestedEnd(text), row.mealEnd, "\(row.start): the suggested end")
+            XCTAssertTrue(text.contains("which is \(row.minutes) minutes later."), "\(row.start): the length in the sentence")
+        }
+    }
+
+    func testSNAPREWALK_T04_allDayBesirAndTouchingEventsLeaveTheMeal() async throws {
+        let rig = await mealRig(events: [("Breakfast", "11:30", "12:15")])
+        rig.mirror.canned = [
+            calendarEntry("Holiday", "2026-10-27T00:00", "2026-10-28T00:00", allDay: true),
+            calendarEntry("Written by besir", "2026-10-27T12:00", "2026-10-27T13:00", besir: true)
+        ]
+        await rig.flow.chooseMode(.car)
+        let text = try XCTUnwrap(planText(rig), "a plan outcome")
+        XCTAssertEqual(try suggestedEnd(text), "2026-10-27T13:00")
+        XCTAssertTrue(text.contains("which is 45 minutes later."))
+    }
+
     /// Hands out handles the way an agent session does, so a flow test sees real place handles.
     private final class RegistryBox {
         var registry = AgentPlaceRegistry()
