@@ -43,6 +43,9 @@ struct LegPlan: Codable {
     var bufferMinutes: Int
     var notifyLeadMinutes: Int
     var notifyEnabled: Bool
+    /// The Uber mark of each outbound and return leg the plan makes (SPEC-UBERLINK-001); an older build ignores the keys.
+    var outboundUber: Bool? = nil
+    var returnUber: Bool? = nil
 }
 
 // MARK: - Occurrence ids

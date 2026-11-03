@@ -1691,9 +1691,9 @@ extension EndWheelSpec {
 enum LegSaveOp {
     case remove(legId: UUID)
     /// nil 인자는 "그 값은 그대로 둔다"다(updateLeg의 옵션 인자와 같은 규칙).
-    case update(legId: UUID, role: ScheduleAnchor, outerPlace: Place?, mode: TransportMode?,
+    case update(legId: UUID, role: ScheduleAnchor, outerPlace: Place?, mode: TravelChoice?,
                 bufferMinutes: Int?, notifyLeadMinutes: Int?, notifyEnabled: Bool?)
-    case add(role: ScheduleAnchor, outerPlace: Place, mode: TransportMode, bufferMinutes: Int,
+    case add(role: ScheduleAnchor, outerPlace: Place, mode: TravelChoice, bufferMinutes: Int,
              notifyLeadMinutes: Int, notifyEnabled: Bool)
 }
 
@@ -1792,7 +1792,7 @@ extension LegCardForm {
             }
             let outerPlace = current.card.fields.first { $0.key == placeKey }
                 .flatMap { $0.chosen == nil ? nil : current.confirmedPlaces[$0.id] }
-            let mode = chosen(current, modeKey).flatMap(TransportMode.init(rawValue:))
+            let mode = chosen(current, modeKey).flatMap(TransportMode.init(rawValue:)).map(TravelChoice.standard)
             let buffer = role == .departure ? nil : Int(chosen(current, LegRowKeys.bufferMinutes) ?? "")
             let notifyLead = Int(chosen(current, LegRowKeys.notifyLeadMinutes) ?? current.lastNotifyLead)
             let notifyOn = chosen(current, LegRowKeys.notifyEnabled) != "false"

@@ -228,6 +228,9 @@ struct ScheduledEvent: Identifiable, Codable {
     var notifyLeadMinutes: Int
     /// 이 일정의 출발 알림을 켤지. 옛 데이터는 nil이고 켜진 것으로 본다(`wantsNotification`).
     var notifyEnabled: Bool?
+    /// The Uber mark of a car trip (SPEC-UBERLINK-001): written only as `true`, only with `mode == .car`, and only by
+    /// `setTravel`. Old data has no key and reads as nil (not Uber).
+    var viaUber: Bool?
     /// 계산된 출발 시각(스냅샷).
     var departureDate: Date?
     /// 계산에 사용된 이동시간(초) 스냅샷.

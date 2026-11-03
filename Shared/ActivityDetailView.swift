@@ -552,7 +552,7 @@ struct ActivityDetailView: View {
                     case .remove:
                         continue
                     case .update(let legId, _, let outer, let mode, let buffer, let lead, let enabled):
-                        outcome = await store.updateLeg(legId: legId, outerPlace: outer, mode: mode,
+                        outcome = await store.updateLeg(legId: legId, outerPlace: outer, mode: mode?.mode,
                                                              bufferMinutes: buffer,
                                                              notifyLeadMinutes: lead,
                                                              notifyEnabled: enabled)
@@ -565,7 +565,7 @@ struct ActivityDetailView: View {
                             let counts = await store.addLegToSeries(editedActivityId: a.id,
                                                                     seriesId: ask.preview.seriesId,
                                                                     role: role, outerPlace: outer,
-                                                                    mode: mode, bufferMinutes: buffer,
+                                                                    mode: mode.mode, bufferMinutes: buffer,
                                                                     notifyLeadMinutes: lead,
                                                                     notifyEnabled: enabled,
                                                                     targetActivityIds: ask.preview.eligibleIds,
@@ -574,7 +574,7 @@ struct ActivityDetailView: View {
                             continue
                         }
                         outcome = await store.addLeg(activityId: a.id, role: role, outerPlace: outer,
-                                                          mode: mode, bufferMinutes: buffer,
+                                                          mode: mode.mode, bufferMinutes: buffer,
                                                           notifyLeadMinutes: lead, notifyEnabled: enabled)
                     }
                     switch outcome {
