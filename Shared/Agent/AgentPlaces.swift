@@ -78,7 +78,12 @@ enum AgentPlaces {
 
     /// `by car`, `by transit`, `on foot` or `by bicycle`.
     static func modePhrase(_ mode: TransportMode) -> String {
-        let phrase = mode.titleWithParticle
+        modePhrase(.standard(mode))
+    }
+
+    /// The phrase of a travel choice: its `titleWithParticle` with a lowercased first letter.
+    static func modePhrase(_ choice: TravelChoice) -> String {
+        let phrase = choice.titleWithParticle
         return phrase.prefix(1).lowercased() + phrase.dropFirst()
     }
 
@@ -131,7 +136,7 @@ enum AgentPlaces {
             return AgentLookupOutput(result: travelUnavailable, showsGoogleData: false)
         }
         var object: [String: Any] = [
-            "status": "ok", "route_id": handle, "mode": route.mode.rawValue,
+            "status": "ok", "route_id": handle, "mode": route.choice.value,
             "minutes": roundedMinutes(fromSeconds: route.seconds),
             "origin": displayName(route.origin.name), "destination": displayName(route.destination.name),
             "source": "Google Routes"]
@@ -153,6 +158,11 @@ struct AgentRoute: Equatable {
     var destination: Place
     var warnings: [String]
     var createdAt: Date
+    /// The route was asked for by Uber (SPEC-UBERLINK-001); it is still a car route.
+    var viaUber: Bool = false
+
+    /// The travel choice of the route, read from its mode and mark.
+    var choice: TravelChoice { TravelChoice(mode: mode, viaUber: viaUber) }
 }
 
 /// The places and routes the model may point at with a handle. The model never sees a coordinate or a Google id.

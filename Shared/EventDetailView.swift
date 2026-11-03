@@ -24,6 +24,10 @@ struct EventDetailView: View {
     }()
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    /// The system did not open the Uber link at the last tap (SPEC-UBERLINK-001); cleared at the next tap.
+    @State private var uberOpenFailed = false
 
     /// The strings Google returned with the walking or bicycling route of this event, in its order.
     @State private var routeWarnings: [String] = []
@@ -82,6 +86,26 @@ struct EventDetailView: View {
                 // The departure card shows a Google travel time for every mode; the transit route card carries its own mark.
                 if event.mode != .transit, event.departureDate != nil, event.travelSeconds != nil {
                     GoogleMapsAttribution()
+                }
+
+                // SPEC-UBERLINK-001: Uber opens with the stored destination as the drop-off, for every travel choice. The
+                // button sends no request and writes nothing; with no valid coordinate there is no link and no button.
+                if let link = UberLink.url(for: event.destination) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button("Open in Uber") {
+                            uberOpenFailed = false
+                            openURL(link) { accepted in
+                                if !accepted { uberOpenFailed = true }
+                            }
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Open in Uber")
+
+                        if uberOpenFailed {
+                            Label("Couldn't open Uber.", systemImage: "exclamationmark.triangle")
+                                .font(.caption).foregroundStyle(Theme.warn)
+                        }
+                    }
                 }
 
                 transitItinerary
@@ -217,7 +241,7 @@ struct EventDetailView: View {
                 HStack {
                     Image(systemName: event.mode.systemImage)
                     // "대중교통로"가 되지 않게 조사 붙은 이름을 쓴다(D14) — 캘린더 설명과 같은 출처.
-                    Text("\(event.mode.titleWithParticle) · about \(minutes) min")
+                    Text("\(event.travelChoice.titleWithParticle) · about \(minutes) min")
                         .font(.headline)
                     Spacer()
                 }
@@ -423,7 +447,7 @@ struct EventDetailView: View {
             // 값 행(+반복 배지)만 카드로 감싼다 — 삭제 단추는 카드 밖에 그대로 둔다(AC-006
             // 8·9행의 분할이 규범 — REQ-020의 :302-348 인용이 잘못 넓었고 0.1.3으로 정정).
             VStack(alignment: .leading, spacing: 10) {
-                row("Travel Mode", "\(event.mode.title)")
+                row("Travel Mode", "\(event.travelChoice.title)")
                 row("Arrival Buffer", "\(event.bufferMinutes) min")
                 // 위 캡션(alarmStatus)은 알림 상태를 사실대로 말하는데 이 행은 무조건 "출발 N분 전"을
                 // 그려 "알림 꺼짐" 캡션과 모순됐다 — 끈 일정에는 받지 않음을 보인다.

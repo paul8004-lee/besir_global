@@ -92,7 +92,7 @@ enum AgentTools {
           "type": "object",
           "properties": {
             "place_id": {"type": "string", "description": "The destination: a place_id returned by search_places."},
-            "mode": {"type": "string", "description": "How the user travels: car, transit, walk or bicycle. The user chooses; ask them if they have not said."},
+            "mode": {"type": "string", "description": "How the user travels: car, transit, walk or bicycle. The user chooses; ask them if they have not said. Use uber only when the user has named Uber themselves."},
             "origin_place_id": {"type": "string", "description": "Optional starting point: a place_id returned by search_places. Omit it to start from the user's current location."},
             "arrive_by": {"type": "string", "description": "Optional arrival time as a local date-time, YYYY-MM-DDTHH:MM. When given, the result also states when to leave."}
           },
@@ -799,6 +799,7 @@ final class AgentToolbox {
             let made = await store.addActivityWithTravel(
                 title: title, location: trip.place, startDate: start, endDate: end, travelFrom: route?.origin, returnTo: nil,
                 outboundMode: route?.mode ?? .walk, returnMode: route?.mode ?? .walk,
+                outboundUber: route?.viaUber ?? false,
                 bufferMinutes: route == nil ? 0 : AgentPlaces.legBufferMinutes,
                 notifyLeadMinutes: route == nil ? 0 : AgentPlaces.legNotifyLeadMinutes,
                 syncToCalendar: store.calendarSyncDefault, travelSecondsHint: route?.seconds)
@@ -835,7 +836,7 @@ final class AgentToolbox {
         let duration = TravelEstimate(mode: route.mode, duration: route.seconds, distance: nil, source: "Google").durationText
         let warnings = route.warnings.map { Self.sanitized($0) }.filter { !$0.isEmpty }
         return ["From \(AgentPlaces.displayName(route.origin.name))",
-                "Leave \(leaveText) - \(duration) \(AgentPlaces.modePhrase(route.mode))"]
+                "Leave \(leaveText) - \(duration) \(AgentPlaces.modePhrase(route.choice))"]
             + warnings + [AgentPlaces.verifiedLine]
     }
 
@@ -861,7 +862,9 @@ final class AgentToolbox {
     private func travel(_ values: [String: String], flow: UUID?) throws -> AgentToolOutcome {
         guard let destinationId = values["place_id"], AgentPlaces.isPlaceHandle(destinationId),
               let destination = registry.place(destinationId) else { throw Rejection(Say.findPlace) }
-        guard let modeText = values["mode"], let mode = TransportMode(rawValue: modeText) else { throw Rejection(Say.mode) }
+        guard let modeText = values["mode"], let choice = TravelChoice(value: modeText) else { throw Rejection(Say.mode) }
+        // @MX:NOTE: [AUTO] uber is accepted only when a line the user wrote names Uber; the model alone cannot choose it.
+        guard choice != .uber || userLines().contains(where: TravelChoice.namesUber) else { throw Rejection(Say.mode) }
         let origin: Place
         if let originId = values["origin_place_id"] {
             guard AgentPlaces.isPlaceHandle(originId), let named = registry.place(originId) else {
@@ -882,13 +885,13 @@ final class AgentToolbox {
         return .lookup(AgentLookup { [self] in
             let service = directionsProvider?() ?? store.directions
             let estimate = await service.estimate(
-                mode, from: CLLocationCoordinate2D(latitude: origin.latitude, longitude: origin.longitude),
+                choice.mode, from: CLLocationCoordinate2D(latitude: origin.latitude, longitude: origin.longitude),
                 to: CLLocationCoordinate2D(latitude: destination.latitude, longitude: destination.longitude),
                 flow: flow)
             guard let seconds = estimate.duration else { return AgentPlaces.travelFailure(estimate.failure) }
             guard !Task.isCancelled else { return AgentPlaces.travelFailure(nil) }
-            let route = AgentRoute(mode: mode, seconds: seconds, origin: origin, destination: destination,
-                                   warnings: estimate.warnings, createdAt: now())
+            let route = AgentRoute(mode: choice.mode, seconds: seconds, origin: origin, destination: destination,
+                                   warnings: estimate.warnings, createdAt: now(), viaUber: choice == .uber)
             let leaveBy = arrival.map {
                 local.string(from: Store.departureTime(arrival: $0, travelSeconds: seconds, bufferMinutes: AgentPlaces.legBufferMinutes))
             }

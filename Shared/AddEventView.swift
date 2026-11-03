@@ -221,9 +221,10 @@ struct AddEventView: View {
         card?.fields.contains { $0.key == "arrival_iso" } ?? false
     }
 
-    /// The mode chosen on the card (transit until one is picked), read the same way `syncFieldExtras` reads it.
+    /// The routing mode of the choice on the card (transit until one is picked; car for Uber), read the same way
+    /// `syncFieldExtras` reads it.
     private var chosenMode: TransportMode {
-        card?.fields.first(where: { $0.key == "mode" })?.chosen.flatMap(TransportMode.init(rawValue:)) ?? .transit
+        (card?.fields.first(where: { $0.key == "mode" })?.chosen.flatMap(TravelChoice.init(value:)) ?? .standard(.transit)).mode
     }
 
     /// The strings Google returned with the chosen walking or bicycling route, exactly as returned.
@@ -270,7 +271,7 @@ struct AddEventView: View {
             .init(key: "arrival_iso", kind: .datetime, label: "Time", options: [],
                   allowsCustom: false, chosen: datetime),
             .init(key: "mode", kind: .mode, label: "Travel Mode",
-                  options: TransportMode.allCases.map { .init(label: $0.title, value: $0.rawValue) },
+                  options: TravelChoice.all.map { .init(label: $0.title, value: $0.value) },
                   allowsCustom: false, chosen: mode, busy: estimating),
             .init(key: "buffer_minutes", kind: .buffer, label: "Buffer",
                   options: [.init(label: "0 min", value: "0"), .init(label: "10 min", value: "10"),
@@ -290,7 +291,7 @@ struct AddEventView: View {
     /// 편집 씨앗의 여섯 인자 변환은 이 과부하 하나에만 산다 — 변환식이 두 벌이면 필드가 늘 때
     /// 한쪽만 고치는 날이 온다(BesirMark 기하 상수를 한곳에 두는 것과 같은 이유).
     private func gatedRows(seeding e: ScheduledEvent) -> [EditField] {
-        gatedRows(datetime: editingDatetime(e), mode: e.mode.rawValue,
+        gatedRows(datetime: editingDatetime(e), mode: e.travelChoice.value,
                   buffer: String(e.bufferMinutes), notifyOn: String(e.wantsNotification),
                   lead: String(e.notifyLeadMinutes))
     }
@@ -575,11 +576,12 @@ struct AddEventView: View {
     /// 시각, 출발지 줄의 권한 거부 안내. 이 문자열들을 조립하는 곳은 이 함수 하나다(REQ-030(c)).
     private func syncFieldExtras() {
         guard var c = card else { return }
-        let currentMode = c.fields.first(where: { $0.key == "mode" })?.chosen
-            .flatMap(TransportMode.init(rawValue:)) ?? .transit
+        // The routing mode of the chosen chip: the Uber chip reads the car estimate.
+        let currentMode = (c.fields.first(where: { $0.key == "mode" })?.chosen
+            .flatMap(TravelChoice.init(value:)) ?? .standard(.transit)).mode
         if let mi = c.fields.firstIndex(where: { $0.key == "mode" }) {
             for oi in c.fields[mi].options.indices {
-                let m = TransportMode(rawValue: c.fields[mi].options[oi].value)
+                let m = TravelChoice(value: c.fields[mi].options[oi].value)?.mode
                 let est = m.flatMap { estimates[$0] }
                 // 값이 없고 이유가 있으면 이유 캡션(D10) — 예비 경로가 사라져 네 칩이 한꺼번에 비는
                 // 일이 생기는데, 모두 "정보 없음"이면 사용자가 원인을 알 수 없다. 이유가 없는 빈 값
@@ -704,7 +706,8 @@ struct AddEventView: View {
         // parsed가 "기준 시각"이다 — anchor == .arrival이면 도착 시각, .departure면 출발 시각이고
         // store의 arrivalDate 파라미터는 기준 시각을 받아 안에서 방향에 맞게 처리한다.
         let anchor: ScheduleAnchor = BesirTime.anchor(ofPrefix: parsed.prefix) ?? .departure
-        let mode = field("mode")?.chosen.flatMap(TransportMode.init(rawValue:)) ?? .transit
+        // Uber is saved as a car trip with the mark and timed with the car estimate.
+        let choice = field("mode")?.chosen.flatMap(TravelChoice.init(value:)) ?? .standard(.transit)
         let bufferMinutes = field("buffer_minutes")?.chosen.flatMap { Int($0) } ?? 0
         // 알림 줄이 꺼져서 없으면 화면이 기억한 마지막 값을 쓴다(REQ-022(b))
         let notifyLeadMinutes = field("notify_lead_minutes")?.chosen.flatMap { Int($0) }
@@ -717,11 +720,12 @@ struct AddEventView: View {
         // 옛 쌍이면 nil로 저장 시 한 번 재조회하게 한다(수리 전과 같은 정확성. code-safety F1).
         var hint: TimeInterval?
         if let pair = estimatesFor, pair.origin == origin, pair.destination == dest {
-            hint = estimates[mode]?.duration
+            hint = estimates[choice.mode]?.duration
         }
         if let e = editing {
             await store.updateEvent(id: e.id, title: title, origin: origin, destination: dest,
-                                    arrivalDate: parsed.date, mode: mode,
+                                    arrivalDate: parsed.date, mode: choice.mode,
+                                    uber: choice == .uber,
                                     bufferMinutes: bufferMinutes, notifyLeadMinutes: notifyLeadMinutes,
                                     anchor: anchor, travelSecondsHint: hint,
                                     notifyEnabled: notifyEnabled)
@@ -734,7 +738,8 @@ struct AddEventView: View {
             // 반복에서 빠지면 사용자가 한 일이 없는데 묶음이 깨진다. 판정은 드라이버가 부를 수 있게
             // Store에 있다(계약 5).
             if Store.legEditChangesOccurrence(original: e, title: title, origin: origin, destination: dest,
-                                              baseDate: parsed.date, anchor: anchor, mode: mode,
+                                              baseDate: parsed.date, anchor: anchor, mode: choice.mode,
+                                              uber: choice == .uber,
                                               bufferMinutes: bufferMinutes,
                                               notifyLeadMinutes: notifyLeadMinutes,
                                               notifyEnabled: notifyEnabled) {
@@ -746,7 +751,8 @@ struct AddEventView: View {
             }
         } else {
             await store.addEvent(title: title, origin: origin, destination: dest,
-                                 arrivalDate: parsed.date, mode: mode,
+                                 arrivalDate: parsed.date, mode: choice.mode,
+                                 uber: choice == .uber,
                                  bufferMinutes: bufferMinutes, notifyLeadMinutes: notifyLeadMinutes,
                                  anchor: anchor, travelSecondsHint: hint,
                                  notifyEnabled: notifyEnabled)

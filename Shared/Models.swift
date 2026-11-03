@@ -228,6 +228,9 @@ struct ScheduledEvent: Identifiable, Codable {
     var notifyLeadMinutes: Int
     /// 이 일정의 출발 알림을 켤지. 옛 데이터는 nil이고 켜진 것으로 본다(`wantsNotification`).
     var notifyEnabled: Bool?
+    /// The Uber mark of a car trip (SPEC-UBERLINK-001): written only as `true`, only with `mode == .car`, and only by
+    /// `setTravel`. Old data has no key and reads as nil (not Uber).
+    var viaUber: Bool?
     /// 계산된 출발 시각(스냅샷).
     var departureDate: Date?
     /// 계산에 사용된 이동시간(초) 스냅샷.
@@ -1209,7 +1212,7 @@ struct EventSyncContent: Encodable {
     let forPayload: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, origin, destination, mode, bufferMinutes, notifyLeadMinutes, notifyEnabled
+        case id, title, origin, destination, mode, viaUber, bufferMinutes, notifyLeadMinutes, notifyEnabled
         case recurrenceId, linkedActivityId, anchor, anchorDate
         case arrivalDate, departureDate, travelSeconds
     }
@@ -1221,6 +1224,8 @@ struct EventSyncContent: Encodable {
         try c.encodeIfPresent(event.origin, forKey: .origin)
         try c.encode(event.destination, forKey: .destination)
         try c.encode(event.mode, forKey: .mode)
+        // The Uber mark is the user's choice, like notifyEnabled; a trip without it keeps the bytes it had.
+        try c.encodeIfPresent(event.viaUber, forKey: .viaUber)
         try c.encode(event.bufferMinutes, forKey: .bufferMinutes)
         try c.encode(event.notifyLeadMinutes, forKey: .notifyLeadMinutes)
         try c.encodeIfPresent(event.notifyEnabled, forKey: .notifyEnabled)

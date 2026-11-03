@@ -667,7 +667,7 @@ enum PlaceLine {
         // .readonly는 값이 아니라 보이기만 하는 줄이라 무엇도 받지 않는다.
         case .readonly: return nil
         case .place, .title, .toggle: return t
-        case .mode: return TransportMode(rawValue: t) != nil ? t : nil
+        case .mode: return TravelChoice(value: t) != nil ? t : nil
         case .buffer:
             guard let v = Int(t), (0...Store.maxBufferMinutes).contains(v) else { return nil }
             return String(v)
@@ -1466,7 +1466,7 @@ extension EndWheelSpec {
                   options: favoriteOptions + specials.map { PlaceTokens.chip($0) },
                   allowsCustom: true, chosen: origin, placeSpecials: specials),
             .init(key: LegRowKeys.outboundMode, kind: .mode, label: "Outbound Travel Mode",
-                  options: TransportMode.allCases.map { .init(label: $0.title, value: $0.rawValue) },
+                  options: TravelChoice.all.map { .init(label: $0.title, value: $0.value) },
                   allowsCustom: false, chosen: mode),
             // 이름에 "가는 편"이 붙는 이유: 복귀 구간의 여유는 Store가 0으로 박아 둔다
             // (addActivityWithTravel). "도착 여유"라고만 쓰면 이 줄이 오는 편에도 적용된다고
@@ -1486,7 +1486,7 @@ extension EndWheelSpec {
                   options: favoriteOptions + specials.map { PlaceTokens.chip($0) },
                   allowsCustom: true, chosen: to, placeSpecials: specials),
             .init(key: LegRowKeys.returnMode, kind: .mode, label: "Return Travel Mode",
-                  options: TransportMode.allCases.map { .init(label: $0.title, value: $0.rawValue) },
+                  options: TravelChoice.all.map { .init(label: $0.title, value: $0.value) },
                   allowsCustom: false, chosen: mode),
         ]
     }
@@ -1691,9 +1691,9 @@ extension EndWheelSpec {
 enum LegSaveOp {
     case remove(legId: UUID)
     /// nil 인자는 "그 값은 그대로 둔다"다(updateLeg의 옵션 인자와 같은 규칙).
-    case update(legId: UUID, role: ScheduleAnchor, outerPlace: Place?, mode: TransportMode?,
+    case update(legId: UUID, role: ScheduleAnchor, outerPlace: Place?, mode: TravelChoice?,
                 bufferMinutes: Int?, notifyLeadMinutes: Int?, notifyEnabled: Bool?)
-    case add(role: ScheduleAnchor, outerPlace: Place, mode: TransportMode, bufferMinutes: Int,
+    case add(role: ScheduleAnchor, outerPlace: Place, mode: TravelChoice, bufferMinutes: Int,
              notifyLeadMinutes: Int, notifyEnabled: Bool)
 }
 
@@ -1751,7 +1751,7 @@ extension LegCardForm {
                          value: origin.name, place: origin)
             }
             f.choose(field: f.card.fields.first { $0.key == LegRowKeys.outboundMode }!.id,
-                     value: leg.mode.rawValue)
+                     value: leg.travelChoice.value)
             f.choose(field: f.card.fields.first { $0.key == LegRowKeys.bufferMinutes }!.id,
                      value: String(leg.bufferMinutes))
         }
@@ -1760,7 +1760,7 @@ extension LegCardForm {
             f.choose(field: f.card.fields.first { $0.key == LegRowKeys.returnQuery }!.id,
                      value: leg.destination.name, place: leg.destination)
             f.choose(field: f.card.fields.first { $0.key == LegRowKeys.returnMode }!.id,
-                     value: leg.mode.rawValue)
+                     value: leg.travelChoice.value)
         }
         return f
     }
@@ -1792,7 +1792,7 @@ extension LegCardForm {
             }
             let outerPlace = current.card.fields.first { $0.key == placeKey }
                 .flatMap { $0.chosen == nil ? nil : current.confirmedPlaces[$0.id] }
-            let mode = chosen(current, modeKey).flatMap(TransportMode.init(rawValue:))
+            let mode = chosen(current, modeKey).flatMap(TravelChoice.init(value:))
             let buffer = role == .departure ? nil : Int(chosen(current, LegRowKeys.bufferMinutes) ?? "")
             let notifyLead = Int(chosen(current, LegRowKeys.notifyLeadMinutes) ?? current.lastNotifyLead)
             let notifyOn = chosen(current, LegRowKeys.notifyEnabled) != "false"
