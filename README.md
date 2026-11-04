@@ -2,6 +2,8 @@
 
 An iOS planning agent, powered by Meta Muse Spark, with Muse Spark Open reading images and Muse Voice Transcribe turning speech into text, that sits between the apps on your phone. What you find in one app becomes a plan, and the plan is carried to the next app for you.
 
+**Demo video:** https://youtu.be/f9ZuqpyMBwk
+
 **Contents**
 
 - [Quickstart](#quickstart)
