@@ -34,7 +34,9 @@ An iOS planning agent, powered by Meta Muse Spark, with Muse Spark Open reading 
 
 ## Quickstart
 
-These steps build besir from this repository and run it in the iOS Simulator with your own keys. There is no shared key, token or demo account: each service below needs your own account and key, and any usage charges come from that service's provider.
+These steps build besir from this repository and run it in the iOS Simulator with your own keys. To run them yourself, each service below needs your own account and key, and any usage charges come from that service's provider.
+
+**For judges:** if you do not want to create the Meta, Baseten, Google and Cloudflare accounts, email paul8004@gmail.com to receive a Worker host, an app token and an iOS map key for the judging period. Put them in `Config/Local.xcconfig` as described in step 3. You then need only Xcode and XcodeGen from step 1, and you skip step 2.
 
 ### 1. What you need
 
@@ -410,6 +412,7 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **How besir connects apps, and a table of contents** — a README section on the partner card drawn from each partner's field list, results that come back by kind, the AI running the same actions as the buttons, the connection log's common record and what waits for Confirm, and a table of contents that links every section — [#141](https://github.com/paul8004-lee/besir_global/pull/141)
 - **Quickstart and license** — a README Quickstart for the keys, the Worker and a Simulator build, and a LICENSE file with the PolyForm Noncommercial License 1.0.0 — [#142](https://github.com/paul8004-lee/besir_global/pull/142)
 - **Demo video link** — a link to the demo video at the top of the README, right under the opening paragraph — [#144](https://github.com/paul8004-lee/besir_global/pull/144)
+- **Judge access** — a "For judges" paragraph in the Quickstart: judges can email for a Worker host, an app token and an iOS map key for the judging period instead of creating their own accounts — [#146](https://github.com/paul8004-lee/besir_global/pull/146)
 
 Some baseline files are edited in place: for the English localization of the app UI, for the split of the app and App Group identifiers from the earlier app, and where a feature built during the hackathon changes a baseline screen or service. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
