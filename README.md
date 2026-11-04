@@ -34,7 +34,9 @@ An iOS planning agent, powered by Meta Muse Spark, with Muse Spark Open reading 
 
 ## Quickstart
 
-These steps build besir from this repository and run it in the iOS Simulator with your own keys. There is no shared key, token or demo account: each service below needs your own account and key, and any usage charges come from that service's provider.
+These steps build besir from this repository and run it in the iOS Simulator with your own keys. To run them yourself, each service below needs your own account and key, and any usage charges come from that service's provider.
+
+**For judges:** if you do not want to create the Meta, Baseten, Google and Cloudflare accounts, email paul8004@gmail.com to receive a Worker host, an app token and an iOS map key for the judging period. Put them in `Config/Local.xcconfig` as described in step 3. You then need only Xcode and XcodeGen from step 1, and you skip step 2.
 
 ### 1. What you need
 
