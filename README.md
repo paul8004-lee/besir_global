@@ -412,6 +412,7 @@ Each merged unit of work gets one short line below: what was newly built and a l
 - **How besir connects apps, and a table of contents** — a README section on the partner card drawn from each partner's field list, results that come back by kind, the AI running the same actions as the buttons, the connection log's common record and what waits for Confirm, and a table of contents that links every section — [#141](https://github.com/paul8004-lee/besir_global/pull/141)
 - **Quickstart and license** — a README Quickstart for the keys, the Worker and a Simulator build, and a LICENSE file with the PolyForm Noncommercial License 1.0.0 — [#142](https://github.com/paul8004-lee/besir_global/pull/142)
 - **Demo video link** — a link to the demo video at the top of the README, right under the opening paragraph — [#144](https://github.com/paul8004-lee/besir_global/pull/144)
+- **Judge access** — a "For judges" paragraph in the Quickstart: judges can email for a Worker host, an app token and an iOS map key for the judging period instead of creating their own accounts — [#146](https://github.com/paul8004-lee/besir_global/pull/146)
 
 Some baseline files are edited in place: for the English localization of the app UI, for the split of the app and App Group identifiers from the earlier app, and where a feature built during the hackathon changes a baseline screen or service. Baseline files are never mass-reformatted, renamed or moved, so the diff shows old code and new code apart.
 
